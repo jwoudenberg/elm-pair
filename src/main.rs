@@ -25,7 +25,7 @@ fn main() {
 
 fn handle_event(event: DebouncedEvent) {
     if let Some(tree) = event_path(event).and_then(parse) {
-        print_tree(tree)
+        print_tree(0, &mut tree.walk())
     }
 }
 
@@ -55,6 +55,13 @@ fn parse(path: PathBuf) -> Option<tree_sitter::Tree> {
     parser.parse(code, None)
 }
 
-fn print_tree(tree: tree_sitter::Tree) {
-    println!("{:?}", tree);
+fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
+    println!("{}{:?}", "  ".repeat(indent), cursor.node());
+    if cursor.goto_first_child() {
+        print_tree(indent + 1, cursor);
+        cursor.goto_parent();
+    }
+    if cursor.goto_next_sibling() {
+        print_tree(indent, cursor);
+    }
 }
