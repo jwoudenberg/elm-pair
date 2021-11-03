@@ -24,8 +24,9 @@ fn main() {
 }
 
 fn handle_event(event: DebouncedEvent) {
-    let ast = event_path(event).and_then(parse);
-    println!("{:?}", ast);
+    if let Some(tree) = event_path(event).and_then(parse) {
+        print_tree(tree)
+    }
 }
 
 fn event_path(event: DebouncedEvent) -> Option<PathBuf> {
@@ -52,4 +53,8 @@ fn parse(path: PathBuf) -> Option<tree_sitter::Tree> {
         .set_language(tree_sitter_elm::language())
         .expect("Error loading elm grammer");
     parser.parse(code, None)
+}
+
+fn print_tree(tree: tree_sitter::Tree) {
+    println!("{:?}", tree);
 }
