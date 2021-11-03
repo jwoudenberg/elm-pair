@@ -1,6 +1,7 @@
 extern crate notify;
 
 use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -23,7 +24,8 @@ fn main() {
 }
 
 fn handle_event(event: DebouncedEvent) {
-    println!("{:?}", event_path(event));
+    let ast = event_path(event).and_then(parse);
+    println!("{:?}", ast);
 }
 
 fn event_path(event: DebouncedEvent) -> Option<PathBuf> {
@@ -41,4 +43,13 @@ fn event_path(event: DebouncedEvent) -> Option<PathBuf> {
             None
         }
     }
+}
+
+fn parse(path: PathBuf) -> Option<tree_sitter::Tree> {
+    let code = fs::read(path).ok()?;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(tree_sitter_elm::language())
+        .expect("Error loading elm grammer");
+    parser.parse(code, None)
 }

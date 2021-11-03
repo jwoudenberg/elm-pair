@@ -8,6 +8,8 @@ edition = "2018"
 
 [dependencies]
 notify = "^4.0.17"
+tree-sitter = "^0.19.5"
+tree-sitter-elm = "^5.3.7"
 
 [[bin]]
 name = "elm-pair"
