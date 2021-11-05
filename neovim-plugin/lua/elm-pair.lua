@@ -1,9 +1,9 @@
+-- luacheck: read globals vim
 local function start()
-    socket = assert(io.open("/tmp/elm-pair", "a"))
+    local socket = assert(io.open("/tmp/elm-pair", "a"))
 
-    local function on_bytes(_, bufnr, changed_tick, start_row, start_col,
-                            start_byte, old_row, old_col, old_byte, new_row,
-                            new_col, new_byte)
+    local function on_bytes(_, _, _, start_row, start_col, start_byte, old_row,
+                            old_col, old_byte, new_row, new_col, new_byte)
         local old_end_col = old_col + ((old_row == 0) and start_col or 0)
         local new_end_col = new_col + ((new_row == 0) and start_col or 0)
         local filename = vim.fn.expand("%:p")
