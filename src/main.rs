@@ -63,7 +63,9 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
 
 fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) {
     if let Some(prev_tree_exists) = prev_tree {
+        println!("edit: {:?}", edit);
         prev_tree_exists.edit(&edit);
+        print_tree(0, &mut prev_tree_exists.walk());
     }
     let parse_result = parse(prev_tree, code);
     if let Some(tree) = parse_result {
@@ -86,7 +88,7 @@ fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
     if node.has_changes() {
         println!("{}CHANGED: {:?}", "  ".repeat(indent), cursor.node());
     } else {
-        println!("{}{:?}", "  ".repeat(indent), cursor.node());
+        println!("{}{:?} {:?}", "  ".repeat(indent), node.id(), node);
     }
     if cursor.goto_first_child() {
         print_tree(indent + 1, cursor);
