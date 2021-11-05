@@ -12,7 +12,14 @@
           src = ./neovim-plugin;
         };
         devShell = pkgs.mkShell {
-          buildInputs = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy ];
+          buildInputs = [
+            pkgs.luaformatter
+            pkgs.lua53Packages.luacheck
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.rustfmt
+            pkgs.clippy
+          ];
           RUST_SRC_PATH =
             "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
