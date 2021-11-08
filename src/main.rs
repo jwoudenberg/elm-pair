@@ -71,6 +71,11 @@ fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) 
     if let Some(tree) = parse_result {
         print_tree(0, &mut tree.walk());
         println!();
+        if let Some(prev_tree_exists) = prev_tree {
+            let changes = diff_trees(prev_tree_exists, &tree);
+            println!("CHANGES: {:?}", changes);
+        }
+
         // Temporarily only save the first generated tree, to allow tests of
         // multiple edits after a 'checkpoint'.
         match prev_tree {
@@ -80,6 +85,83 @@ fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) 
             Some(_) => {}
         }
     }
+}
+
+#[derive(Debug)]
+enum Change<'a> {
+    NodeRemoved(tree_sitter::Node<'a>),
+    VariableNameChange, // TODO: add old and new name parameters and source location
+}
+
+fn diff_trees<'a>(
+    old_tree: &'a tree_sitter::Tree,
+    new_tree: &'a tree_sitter::Tree,
+) -> Vec<Change<'a>> {
+    let mut old_cursor = old_tree.walk();
+    let mut changes = Vec::new();
+    loop {
+        let old_node = old_cursor.node();
+
+        // Skip if old node hasn't been changed.
+        if !old_node.has_changes() {
+            if step_forward(&mut old_cursor) {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        // Fetch new node.
+        let opt_new_node = new_tree
+            .root_node()
+            .descendant_for_byte_range(old_node.start_byte(), old_node.end_byte());
+        let new_node = match opt_new_node {
+            None => {
+                changes.push(Change::NodeRemoved(old_node));
+                if step_forward(&mut old_cursor) {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            Some(new_node) => new_node,
+        };
+
+        // Skip if new node has the same id. (unsure: can this happen, given
+        // chec for `has_changes` above?)
+        if new_node.id() == old_node.id() {
+            if step_forward(&mut old_cursor) {
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        // TODO: skip if code covered by this node hasn't changed.
+
+        if old_node.kind() == "lower_case_identifier"
+            && new_node.kind() == "lower_case_identifier"
+            && old_node.byte_range() == new_node.byte_range()
+        {
+            changes.push(Change::VariableNameChange);
+        }
+
+        // Descend into child nodes.
+        if step_down(&mut old_cursor) {
+            continue;
+        } else {
+            break;
+        }
+    }
+    changes
+}
+
+fn step_forward(tree: &mut tree_sitter::TreeCursor) -> bool {
+    tree.goto_next_sibling() || (tree.goto_parent() && tree.goto_next_sibling())
+}
+
+fn step_down(tree: &mut tree_sitter::TreeCursor) -> bool {
+    tree.goto_first_child() || step_forward(tree)
 }
 
 fn parse(prev_tree: &mut Option<Tree>, code: &[String]) -> Option<Tree> {
