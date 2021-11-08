@@ -71,7 +71,14 @@ fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) 
     if let Some(tree) = parse_result {
         print_tree(0, &mut tree.walk());
         println!();
-        *prev_tree = Some(tree);
+        // Temporarily only save the first generated tree, to allow tests of
+        // multiple edits after a 'checkpoint'.
+        match prev_tree {
+            None => {
+                *prev_tree = Some(tree);
+            }
+            Some(_) => {}
+        }
     }
 }
 
@@ -88,7 +95,13 @@ fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
     if node.has_changes() {
         println!("{}CHANGED: {:?}", "  ".repeat(indent), cursor.node());
     } else {
-        println!("{}{:?} {:?}", "  ".repeat(indent), node.id(), node);
+        println!(
+            "{}{:?} {:?} ({:?})",
+            "  ".repeat(indent),
+            node.id(),
+            node.kind(),
+            node.byte_range()
+        );
     }
     if cursor.goto_first_child() {
         print_tree(indent + 1, cursor);
