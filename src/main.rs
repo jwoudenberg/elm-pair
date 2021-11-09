@@ -63,33 +63,34 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
         state_exists.tree.edit(&edit);
         print_tree(0, &mut state_exists.tree.walk());
     }
-    let parse_result = match state {
-        None => parse(None, changed_lines),
-        Some(old) => {
+    match state {
+        // First parse of a file.
+        None => {
+            let parse_result = parse(None, &changed_lines);
+            if let Some(tree) = parse_result {
+                print_tree(0, &mut tree.walk());
+                println!();
+                *state = Some(SourceFileState {
+                    tree,
+                    code: changed_lines,
+                });
+            };
+        }
+        // Subsequent parses of a file.
+        Some(prev_state) => {
             let range = edit.start_position.row..(edit.new_end_position.row + 1);
-            // Need to clone because I need the old source code later.
-            let mut new_code = old.code.clone();
-            new_code.splice(range, changed_lines);
-            parse(Some(&old.tree), new_code)
+            prev_state.code.splice(range, changed_lines);
+            let parse_result = parse(Some(&prev_state.tree), &prev_state.code);
+            if let Some(new_tree) = parse_result {
+                print_tree(0, &mut new_tree.walk());
+                println!();
+                let changes = diff_trees(prev_state, &new_tree);
+                println!("CHANGES: {:?}", changes);
+            }
+
+            // TODO: save a new state if compilation passes.
         }
     };
-    if let Some(new_state) = parse_result {
-        print_tree(0, &mut new_state.tree.walk());
-        println!();
-        if let Some(state_exists) = state {
-            let changes = diff_trees(state_exists, &new_state.tree);
-            println!("CHANGES: {:?}", changes);
-        }
-
-        // Temporarily only save the first generated tree, to allow tests of
-        // multiple edits after a 'state'.
-        match state {
-            None => {
-                *state = Some(new_state);
-            }
-            Some(_) => {}
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -174,14 +175,12 @@ fn step_down(tree: &mut tree_sitter::TreeCursor) -> bool {
     tree.goto_first_child() || step_forward(tree)
 }
 
-fn parse(prev_tree: Option<&Tree>, code: Vec<String>) -> Option<SourceFileState> {
+fn parse(prev_tree: Option<&Tree>, code: &[String]) -> Option<Tree> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
         .expect("Error loading elm grammer");
-    parser
-        .parse(code.join("\n"), prev_tree)
-        .map(|tree| SourceFileState { code, tree })
+    parser.parse(code.join("\n"), prev_tree)
 }
 
 fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
