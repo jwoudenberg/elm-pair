@@ -72,7 +72,7 @@ fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) 
         print_tree(0, &mut tree.walk());
         println!();
         if let Some(prev_tree_exists) = prev_tree {
-            let changes = diff_trees(prev_tree_exists, &tree);
+            let changes = diff_trees(code, prev_tree_exists, &tree);
             println!("CHANGES: {:?}", changes);
         }
 
@@ -90,10 +90,11 @@ fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) 
 #[derive(Debug)]
 enum Change<'a> {
     NodeRemoved(tree_sitter::Node<'a>),
-    VariableNameChange, // TODO: add old and new name parameters and source location
+    VariableNameChange(String, String),
 }
 
 fn diff_trees<'a>(
+    code: &[String],
     old_tree: &'a tree_sitter::Tree,
     new_tree: &'a tree_sitter::Tree,
 ) -> Vec<Change<'a>> {
@@ -143,7 +144,11 @@ fn diff_trees<'a>(
             && new_node.kind() == "lower_case_identifier"
             && old_node.byte_range() == new_node.byte_range()
         {
-            changes.push(Change::VariableNameChange);
+            // TODO: this is twice wrong. I need to consider the old code here, and the old node before we edited it (and possibly changed the byterange)
+            changes.push(Change::VariableNameChange(
+                code_slice(code, old_node.byte_range()),
+                code_slice(code, new_node.byte_range()),
+            ));
         }
 
         // Descend into child nodes.
@@ -154,6 +159,10 @@ fn diff_trees<'a>(
         }
     }
     changes
+}
+
+fn code_slice(code: &[String], range: core::ops::Range<usize>) -> String {
+    std::string::String::from_utf8(code.join("\n").as_bytes()[range].to_vec()).unwrap()
 }
 
 fn step_forward(tree: &mut tree_sitter::TreeCursor) -> bool {
