@@ -67,24 +67,10 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
             *state = Some(handle_event_first(changed_lines));
         }
         // Subsequent parses of a file.
-        Some(prev_state) => {
-            println!("edit: {:?}", edit);
-            prev_state.tree.edit(&edit);
-            print_tree(0, &mut prev_state.tree.walk());
-
-            let range = edit.start_position.row..(edit.new_end_position.row + 1);
-            prev_state.code_latest.splice(range, changed_lines);
-            let parse_result = parse(Some(&prev_state.tree), &prev_state.code_latest);
-            if let Some(new_tree) = parse_result {
-                print_tree(0, &mut new_tree.walk());
-                println!();
-                let changes = diff_trees(prev_state, &new_tree);
-                println!("CHANGES: {:?}", changes);
-            }
-
-            // TODO: save a new state if compilation passes.
-        }
+        Some(prev_state) => handle_event_but_first(prev_state, changed_lines, edit),
     };
+
+    // TODO: save a new state if compilation passes.
 }
 
 fn handle_event_first(changed_lines: Vec<String>) -> SourceFileState {
@@ -109,6 +95,25 @@ fn handle_event_first(changed_lines: Vec<String>) -> SourceFileState {
         node_ranges_at_last_checkpoint,
         code_at_last_checkpoint: changed_lines.clone(),
         code_latest: changed_lines,
+    }
+}
+fn handle_event_but_first(
+    state: &mut SourceFileState,
+    changed_lines: Vec<String>,
+    edit: InputEdit,
+) {
+    println!("edit: {:?}", edit);
+    state.tree.edit(&edit);
+    print_tree(0, &mut state.tree.walk());
+
+    let range = edit.start_position.row..(edit.new_end_position.row + 1);
+    state.code_latest.splice(range, changed_lines);
+    let parse_result = parse(Some(&state.tree), &state.code_latest);
+    if let Some(new_tree) = parse_result {
+        print_tree(0, &mut new_tree.walk());
+        println!();
+        let changes = diff_trees(state, &new_tree);
+        println!("CHANGES: {:?}", changes);
     }
 }
 
