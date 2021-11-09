@@ -61,11 +61,6 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
 }
 
 fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>, edit: InputEdit) {
-    if let Some(state_exists) = state {
-        println!("edit: {:?}", edit);
-        state_exists.tree.edit(&edit);
-        print_tree(0, &mut state_exists.tree.walk());
-    }
     match state {
         // First parse of a file.
         None => {
@@ -96,6 +91,10 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
         }
         // Subsequent parses of a file.
         Some(prev_state) => {
+            println!("edit: {:?}", edit);
+            prev_state.tree.edit(&edit);
+            print_tree(0, &mut prev_state.tree.walk());
+
             let range = edit.start_position.row..(edit.new_end_position.row + 1);
             prev_state.code_latest.splice(range, changed_lines);
             let parse_result = parse(Some(&prev_state.tree), &prev_state.code_latest);
