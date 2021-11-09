@@ -4,6 +4,9 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use tree_sitter::{InputEdit, Tree};
 
+// TODO: remove current assumption that line breaks are a single byte (`\n`)
+// TODO: check what happens if we send inclusive end-ranges to tree-sitter, i.e. 3..3 instead of 3..4 for a single-byte change.
+
 fn main() {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
@@ -11,17 +14,33 @@ fn main() {
     handle_events(&mut std::io::BufReader::new(fifo).lines());
 }
 
-struct SourceFileState {
-    code_at_last_checkpoint: Vec<String>,
+struct SourceFileState<'a> {
+    // The code at the time of the last 'checkpoint' (when the code compiled).
+    // When we get to a new checkpoint we should create a new SourceFileState
+    // struct, hence this field is not mutable.
+    code_at_last_checkpoint: &'a [u8],
+    // A map of tree-sitter node ids to byte ranges. This will allow us to
+    // look up code snippets in the checkpointed code at later time.
     node_ranges_at_last_checkpoint: HashMap<usize, Range<usize>>,
-    code_latest: Vec<String>,
+    // Vec offers a '.splice()' operation we need to replace bits of the vector
+    // in response to updates made in the editor. This is probably not super
+    // efficient though, so we should look for a better datastructure here.
+    //
+    // This is the latest version of the code. It's mutable because we'll be
+    // updating it frequently, in response to edit events from the editor.
+    // We're curently storing this in a Vec because it offers a '.splice()'
+    // function that replaces part of the vector with different contents.
+    //
+    // TODO: look into better data structures for splice-heavy workloads.
+    code_latest: &'a mut Vec<u8>,
+    // A tree-sitter concrete syntax tree of the latest code.
     tree: Tree,
 }
 
-fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
+fn parse_event(serialized_event: &str) -> (PathBuf, String, InputEdit) {
     let (
         path,
-        changed_lines,
+        changed_code,
         start_byte,
         old_end_byte,
         new_end_byte,
@@ -52,7 +71,8 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
         old_end_position,
         new_end_position,
     };
-    (path, changed_lines, input_edit)
+    println!("changed code: {:?}", changed_code);
+    (path, changed_code, input_edit)
 }
 
 fn handle_events<I>(lines: &mut I)
@@ -61,24 +81,24 @@ where
 {
     // First event returns the initial state.
     let first_line = match lines.next() {
-        None => return, // We receive no lines at all :(. Exit early.
+        None => return, // We receive no events at all :(. Exit early.
         Some(line) => line,
     };
     let (_, initial_lines, _) = parse_event(&first_line.unwrap());
-    let tree = parse(None, &initial_lines).unwrap();
+    let tree = parse(None, initial_lines.as_bytes()).unwrap();
     let node_ranges_at_last_checkpoint = byte_ranges_by_node_id(&tree, HashMap::new());
     print_tree(&tree);
     let mut state = SourceFileState {
         tree,
         node_ranges_at_last_checkpoint,
-        code_at_last_checkpoint: initial_lines.clone(),
-        code_latest: initial_lines,
+        code_at_last_checkpoint: initial_lines.as_bytes(),
+        code_latest: &mut initial_lines.clone().into_bytes(),
     };
 
     // Subsequent parses of a file.
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
-        handle_event(&mut state, changed_lines, edit)
+        handle_event(&mut state, changed_lines.into_bytes(), edit)
     }
 
     // TODO: save a new state if compilation passes.
@@ -101,14 +121,15 @@ fn byte_ranges_by_node_id(
     acc
 }
 
-fn handle_event(state: &mut SourceFileState, changed_lines: Vec<String>, edit: InputEdit) {
+fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) {
     println!("edit: {:?}", edit);
     state.tree.edit(&edit);
     print_tree(&state.tree);
 
-    let range = edit.start_position.row..(edit.new_end_position.row + 1);
-    state.code_latest.splice(range, changed_lines);
-    let parse_result = parse(Some(&state.tree), &state.code_latest);
+    let range = edit.start_byte..edit.old_end_byte;
+    state.code_latest.splice(range, changed_bytes);
+    println!("{:?}", String::from_utf8(state.code_latest.to_vec()));
+    let parse_result = parse(Some(&state.tree), state.code_latest);
     if let Some(new_tree) = parse_result {
         print_tree(&new_tree);
         let changes = diff_trees(state, &new_tree);
@@ -166,10 +187,10 @@ fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -
         let opt_old_bytes = state
             .node_ranges_at_last_checkpoint
             .get(&old_node.id())
-            .map(|range| code_slice(&state.code_at_last_checkpoint, range));
+            .map(|range| code_slice(state.code_at_last_checkpoint, range));
 
         if let Some(old_bytes) = opt_old_bytes {
-            let new_bytes = code_slice(&state.code_latest, &new_node.byte_range());
+            let new_bytes = code_slice(state.code_latest, &new_node.byte_range());
 
             // Skip if the new node and old node contain the exact same code.
             if old_bytes == new_bytes {
@@ -197,9 +218,8 @@ fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -
     changes
 }
 
-fn code_slice(code: &[String], range: &Range<usize>) -> String {
-    std::string::String::from_utf8(code.join("\n").as_bytes()[range.start..range.end].to_vec())
-        .unwrap()
+fn code_slice(code: &[u8], range: &Range<usize>) -> String {
+    std::string::String::from_utf8(code[range.start..range.end].to_vec()).unwrap()
 }
 
 fn step_forward(tree: &mut tree_sitter::TreeCursor) -> bool {
@@ -210,12 +230,12 @@ fn step_down(tree: &mut tree_sitter::TreeCursor) -> bool {
     tree.goto_first_child() || step_forward(tree)
 }
 
-fn parse(prev_tree: Option<&Tree>, code: &[String]) -> Option<Tree> {
+fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Option<Tree> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
         .expect("Error loading elm grammer");
-    parser.parse(code.join("\n"), prev_tree)
+    parser.parse(code, prev_tree)
 }
 
 fn print_tree(tree: &Tree) {
