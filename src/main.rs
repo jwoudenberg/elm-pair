@@ -1,4 +1,5 @@
 use core::ops::Range;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
 use tree_sitter::{InputEdit, Tree};
@@ -17,6 +18,7 @@ fn main() {
 
 struct SourceFileState {
     code_at_last_checkpoint: Vec<String>,
+    node_ranges_at_last_checkpoint: HashMap<usize, Range<usize>>,
     code_latest: Vec<String>,
     tree: Tree,
 }
@@ -71,8 +73,22 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
             if let Some(tree) = parse_result {
                 print_tree(0, &mut tree.walk());
                 println!();
+                let mut node_ranges_at_last_checkpoint = HashMap::new();
+                {
+                    let mut cursor = tree.walk();
+                    loop {
+                        let node = cursor.node();
+                        node_ranges_at_last_checkpoint.insert(node.id(), node.byte_range());
+                        if step_down(&mut cursor) {
+                            continue;
+                        } else {
+                            break;
+                        };
+                    }
+                }
                 *state = Some(SourceFileState {
                     tree,
+                    node_ranges_at_last_checkpoint,
                     code_at_last_checkpoint: changed_lines.clone(),
                     code_latest: changed_lines,
                 });
@@ -142,17 +158,28 @@ fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -
             }
         }
 
-        // TODO: skip if code covered by this node hasn't changed.
+        let opt_old_bytes = state
+            .node_ranges_at_last_checkpoint
+            .get(&old_node.id())
+            .map(|range| code_slice(&state.code_at_last_checkpoint, range));
 
-        if old_node.kind() == "lower_case_identifier"
-            && new_node.kind() == "lower_case_identifier"
-            && old_node.byte_range() == new_node.byte_range()
-        {
-            // TODO: Get old byterange from old nodes.
-            changes.push(Change::VariableNameChange(
-                code_slice(&state.code_at_last_checkpoint, old_node.byte_range()),
-                code_slice(&state.code_latest, new_node.byte_range()),
-            ));
+        if let Some(old_bytes) = opt_old_bytes {
+            let new_bytes = code_slice(&state.code_latest, &new_node.byte_range());
+
+            // Skip if the new node and old node contain the exact same code.
+            if old_bytes == new_bytes {
+                if step_forward(&mut old_cursor) {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+
+            if old_node.kind() == "lower_case_identifier"
+                && new_node.kind() == "lower_case_identifier"
+            {
+                changes.push(Change::VariableNameChange(old_bytes, new_bytes));
+            }
         }
 
         // Descend into child nodes.
@@ -165,12 +192,13 @@ fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -
     changes
 }
 
-fn code_slice(code: &[String], range: Range<usize>) -> String {
-    std::string::String::from_utf8(code.join("\n").as_bytes()[range].to_vec()).unwrap()
+fn code_slice(code: &[String], range: &Range<usize>) -> String {
+    std::string::String::from_utf8(code.join("\n").as_bytes()[range.start..range.end].to_vec())
+        .unwrap()
 }
 
 fn step_forward(tree: &mut tree_sitter::TreeCursor) -> bool {
-    tree.goto_next_sibling() || (tree.goto_parent() && tree.goto_next_sibling())
+    tree.goto_next_sibling() || (tree.goto_parent() && step_forward(tree))
 }
 
 fn step_down(tree: &mut tree_sitter::TreeCursor) -> bool {
