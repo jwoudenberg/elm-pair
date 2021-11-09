@@ -67,8 +67,7 @@ where
     let (_, initial_lines, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, &initial_lines).unwrap();
     let node_ranges_at_last_checkpoint = byte_ranges_by_node_id(&tree, HashMap::new());
-    print_tree(0, &mut tree.walk());
-    println!();
+    print_tree(&tree);
     let mut state = SourceFileState {
         tree,
         node_ranges_at_last_checkpoint,
@@ -105,14 +104,13 @@ fn byte_ranges_by_node_id(
 fn handle_event(state: &mut SourceFileState, changed_lines: Vec<String>, edit: InputEdit) {
     println!("edit: {:?}", edit);
     state.tree.edit(&edit);
-    print_tree(0, &mut state.tree.walk());
+    print_tree(&state.tree);
 
     let range = edit.start_position.row..(edit.new_end_position.row + 1);
     state.code_latest.splice(range, changed_lines);
     let parse_result = parse(Some(&state.tree), &state.code_latest);
     if let Some(new_tree) = parse_result {
-        print_tree(0, &mut new_tree.walk());
-        println!();
+        print_tree(&new_tree);
         let changes = diff_trees(state, &new_tree);
         println!("CHANGES: {:?}", changes);
     }
@@ -220,7 +218,13 @@ fn parse(prev_tree: Option<&Tree>, code: &[String]) -> Option<Tree> {
     parser.parse(code.join("\n"), prev_tree)
 }
 
-fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
+fn print_tree(tree: &Tree) {
+    let mut cursor = tree.walk();
+    print_tree_helper(0, &mut cursor);
+    println!();
+}
+
+fn print_tree_helper(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
     let node = cursor.node();
     if node.has_changes() {
         println!("{}CHANGED: {:?}", "  ".repeat(indent), cursor.node());
@@ -234,10 +238,10 @@ fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
         );
     }
     if cursor.goto_first_child() {
-        print_tree(indent + 1, cursor);
+        print_tree_helper(indent + 1, cursor);
         cursor.goto_parent();
     }
     if cursor.goto_next_sibling() {
-        print_tree(indent, cursor);
+        print_tree_helper(indent, cursor);
     }
 }
