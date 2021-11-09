@@ -1,27 +1,23 @@
+use core::ops::Range;
 use std::io::BufRead;
 use std::path::PathBuf;
 use tree_sitter::{InputEdit, Tree};
 
 fn main() {
-    let mut prev_tree: Option<Tree> = None;
-    let mut code: Option<Vec<String>> = None;
+    let mut state: Option<SourceFileState> = None;
 
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
     for line in std::io::BufReader::new(fifo).lines() {
         let (_, changed_lines, input_edit) = parse_event(&line.unwrap());
-        let new_code = match code {
-            None => changed_lines,
-            Some(mut old) => {
-                let range = input_edit.start_position.row..(input_edit.new_end_position.row + 1);
-                old.splice(range, changed_lines);
-                old
-            }
-        };
-        handle_event(&mut prev_tree, new_code.as_ref(), input_edit);
-        code = Some(new_code);
+        handle_event(&mut state, changed_lines, input_edit);
     }
+}
+
+struct SourceFileState {
+    code: Vec<String>,
+    tree: Tree,
 }
 
 fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
@@ -61,26 +57,35 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
     (path, changed_lines, input_edit)
 }
 
-fn handle_event(prev_tree: &mut Option<Tree>, code: &[String], edit: InputEdit) {
-    if let Some(prev_tree_exists) = prev_tree {
+fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>, edit: InputEdit) {
+    if let Some(state_exists) = state {
         println!("edit: {:?}", edit);
-        prev_tree_exists.edit(&edit);
-        print_tree(0, &mut prev_tree_exists.walk());
+        state_exists.tree.edit(&edit);
+        print_tree(0, &mut state_exists.tree.walk());
     }
-    let parse_result = parse(prev_tree, code);
-    if let Some(tree) = parse_result {
-        print_tree(0, &mut tree.walk());
+    let parse_result = match state {
+        None => parse(None, changed_lines),
+        Some(old) => {
+            let range = edit.start_position.row..(edit.new_end_position.row + 1);
+            // Need to clone because I need the old source code later.
+            let mut new_code = old.code.clone();
+            new_code.splice(range, changed_lines);
+            parse(Some(&old.tree), new_code)
+        }
+    };
+    if let Some(new_state) = parse_result {
+        print_tree(0, &mut new_state.tree.walk());
         println!();
-        if let Some(prev_tree_exists) = prev_tree {
-            let changes = diff_trees(code, prev_tree_exists, &tree);
+        if let Some(state_exists) = state {
+            let changes = diff_trees(state_exists, &new_state.tree);
             println!("CHANGES: {:?}", changes);
         }
 
         // Temporarily only save the first generated tree, to allow tests of
-        // multiple edits after a 'checkpoint'.
-        match prev_tree {
+        // multiple edits after a 'state'.
+        match state {
             None => {
-                *prev_tree = Some(tree);
+                *state = Some(new_state);
             }
             Some(_) => {}
         }
@@ -93,12 +98,8 @@ enum Change<'a> {
     VariableNameChange(String, String),
 }
 
-fn diff_trees<'a>(
-    code: &[String],
-    old_tree: &'a tree_sitter::Tree,
-    new_tree: &'a tree_sitter::Tree,
-) -> Vec<Change<'a>> {
-    let mut old_cursor = old_tree.walk();
+fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -> Vec<Change<'a>> {
+    let mut old_cursor = state.tree.walk();
     let mut changes = Vec::new();
     loop {
         let old_node = old_cursor.node();
@@ -146,8 +147,8 @@ fn diff_trees<'a>(
         {
             // TODO: this is twice wrong. I need to consider the old code here, and the old node before we edited it (and possibly changed the byterange)
             changes.push(Change::VariableNameChange(
-                code_slice(code, old_node.byte_range()),
-                code_slice(code, new_node.byte_range()),
+                code_slice(&state.code, old_node.byte_range()),
+                code_slice(&state.code, new_node.byte_range()),
             ));
         }
 
@@ -161,7 +162,7 @@ fn diff_trees<'a>(
     changes
 }
 
-fn code_slice(code: &[String], range: core::ops::Range<usize>) -> String {
+fn code_slice(code: &[String], range: Range<usize>) -> String {
     std::string::String::from_utf8(code.join("\n").as_bytes()[range].to_vec()).unwrap()
 }
 
@@ -173,12 +174,14 @@ fn step_down(tree: &mut tree_sitter::TreeCursor) -> bool {
     tree.goto_first_child() || step_forward(tree)
 }
 
-fn parse(prev_tree: &mut Option<Tree>, code: &[String]) -> Option<Tree> {
+fn parse(prev_tree: Option<&Tree>, code: Vec<String>) -> Option<SourceFileState> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
         .expect("Error loading elm grammer");
-    parser.parse(code.join("\n"), prev_tree.as_ref())
+    parser
+        .parse(code.join("\n"), prev_tree)
+        .map(|tree| SourceFileState { code, tree })
 }
 
 fn print_tree(indent: usize, cursor: &mut tree_sitter::TreeCursor) {
