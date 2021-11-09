@@ -5,15 +5,10 @@ use std::path::PathBuf;
 use tree_sitter::{InputEdit, Tree};
 
 fn main() {
-    let mut state: Option<SourceFileState> = None;
-
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
-    for line in std::io::BufReader::new(fifo).lines() {
-        let (_, changed_lines, input_edit) = parse_event(&line.unwrap());
-        handle_event(&mut state, changed_lines, input_edit);
-    }
+    handle_events(&mut std::io::BufReader::new(fifo).lines());
 }
 
 struct SourceFileState {
@@ -60,15 +55,23 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<String>, InputEdit) {
     (path, changed_lines, input_edit)
 }
 
-fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>, edit: InputEdit) {
-    match state {
-        // First parse of a file.
-        None => {
-            *state = Some(handle_event_first(changed_lines));
-        }
-        // Subsequent parses of a file.
-        Some(prev_state) => handle_event_but_first(prev_state, changed_lines, edit),
+fn handle_events<I>(lines: &mut I)
+where
+    I: Iterator<Item = Result<String, std::io::Error>>,
+{
+    // First event returns the initial state.
+    let first_line = match lines.next() {
+        None => return, // We receive no lines at all :(. Exit early.
+        Some(line) => line,
     };
+    let (_, initial_lines, _) = parse_event(&first_line.unwrap());
+    let mut state = handle_event_first(initial_lines);
+
+    // Subsequent parses of a file.
+    for line in lines {
+        let (_, changed_lines, edit) = parse_event(&line.unwrap());
+        handle_event_but_first(&mut state, changed_lines, edit)
+    }
 
     // TODO: save a new state if compilation passes.
 }
