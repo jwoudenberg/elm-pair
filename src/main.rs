@@ -66,21 +66,9 @@ where
     };
     let (_, initial_lines, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, &initial_lines).unwrap();
+    let node_ranges_at_last_checkpoint = byte_ranges_by_node_id(&tree, HashMap::new());
     print_tree(0, &mut tree.walk());
     println!();
-    let mut node_ranges_at_last_checkpoint = HashMap::new();
-    {
-        let mut cursor = tree.walk();
-        loop {
-            let node = cursor.node();
-            node_ranges_at_last_checkpoint.insert(node.id(), node.byte_range());
-            if step_down(&mut cursor) {
-                continue;
-            } else {
-                break;
-            };
-        }
-    };
     let mut state = SourceFileState {
         tree,
         node_ranges_at_last_checkpoint,
@@ -95,6 +83,23 @@ where
     }
 
     // TODO: save a new state if compilation passes.
+}
+
+fn byte_ranges_by_node_id(
+    tree: &Tree,
+    mut acc: HashMap<usize, Range<usize>>,
+) -> HashMap<usize, Range<usize>> {
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        acc.insert(node.id(), node.byte_range());
+        if step_down(&mut cursor) {
+            continue;
+        } else {
+            break;
+        };
+    }
+    acc
 }
 
 fn handle_event(state: &mut SourceFileState, changed_lines: Vec<String>, edit: InputEdit) {
