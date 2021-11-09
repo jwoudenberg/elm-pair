@@ -16,7 +16,8 @@ fn main() {
 }
 
 struct SourceFileState {
-    code: Vec<String>,
+    code_at_last_checkpoint: Vec<String>,
+    code_latest: Vec<String>,
     tree: Tree,
 }
 
@@ -72,15 +73,16 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
                 println!();
                 *state = Some(SourceFileState {
                     tree,
-                    code: changed_lines,
+                    code_at_last_checkpoint: changed_lines.clone(),
+                    code_latest: changed_lines,
                 });
             };
         }
         // Subsequent parses of a file.
         Some(prev_state) => {
             let range = edit.start_position.row..(edit.new_end_position.row + 1);
-            prev_state.code.splice(range, changed_lines);
-            let parse_result = parse(Some(&prev_state.tree), &prev_state.code);
+            prev_state.code_latest.splice(range, changed_lines);
+            let parse_result = parse(Some(&prev_state.tree), &prev_state.code_latest);
             if let Some(new_tree) = parse_result {
                 print_tree(0, &mut new_tree.walk());
                 println!();
@@ -146,10 +148,10 @@ fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -
             && new_node.kind() == "lower_case_identifier"
             && old_node.byte_range() == new_node.byte_range()
         {
-            // TODO: this is twice wrong. I need to consider the old code here, and the old node before we edited it (and possibly changed the byterange)
+            // TODO: Get old byterange from old nodes.
             changes.push(Change::VariableNameChange(
-                code_slice(&state.code, old_node.byte_range()),
-                code_slice(&state.code, new_node.byte_range()),
+                code_slice(&state.code_at_last_checkpoint, old_node.byte_range()),
+                code_slice(&state.code_latest, new_node.byte_range()),
             ));
         }
 
