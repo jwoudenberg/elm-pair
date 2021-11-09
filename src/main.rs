@@ -65,19 +65,7 @@ where
         Some(line) => line,
     };
     let (_, initial_lines, _) = parse_event(&first_line.unwrap());
-    let mut state = handle_event_first(initial_lines);
-
-    // Subsequent parses of a file.
-    for line in lines {
-        let (_, changed_lines, edit) = parse_event(&line.unwrap());
-        handle_event_but_first(&mut state, changed_lines, edit)
-    }
-
-    // TODO: save a new state if compilation passes.
-}
-
-fn handle_event_first(changed_lines: Vec<String>) -> SourceFileState {
-    let tree = parse(None, &changed_lines).unwrap();
+    let tree = parse(None, &initial_lines).unwrap();
     print_tree(0, &mut tree.walk());
     println!();
     let mut node_ranges_at_last_checkpoint = HashMap::new();
@@ -92,19 +80,24 @@ fn handle_event_first(changed_lines: Vec<String>) -> SourceFileState {
                 break;
             };
         }
-    }
-    SourceFileState {
+    };
+    let mut state = SourceFileState {
         tree,
         node_ranges_at_last_checkpoint,
-        code_at_last_checkpoint: changed_lines.clone(),
-        code_latest: changed_lines,
+        code_at_last_checkpoint: initial_lines.clone(),
+        code_latest: initial_lines,
+    };
+
+    // Subsequent parses of a file.
+    for line in lines {
+        let (_, changed_lines, edit) = parse_event(&line.unwrap());
+        handle_event(&mut state, changed_lines, edit)
     }
+
+    // TODO: save a new state if compilation passes.
 }
-fn handle_event_but_first(
-    state: &mut SourceFileState,
-    changed_lines: Vec<String>,
-    edit: InputEdit,
-) {
+
+fn handle_event(state: &mut SourceFileState, changed_lines: Vec<String>, edit: InputEdit) {
     println!("edit: {:?}", edit);
     state.tree.edit(&edit);
     print_tree(0, &mut state.tree.walk());
