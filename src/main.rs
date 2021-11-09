@@ -64,30 +64,7 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
     match state {
         // First parse of a file.
         None => {
-            let parse_result = parse(None, &changed_lines);
-            if let Some(tree) = parse_result {
-                print_tree(0, &mut tree.walk());
-                println!();
-                let mut node_ranges_at_last_checkpoint = HashMap::new();
-                {
-                    let mut cursor = tree.walk();
-                    loop {
-                        let node = cursor.node();
-                        node_ranges_at_last_checkpoint.insert(node.id(), node.byte_range());
-                        if step_down(&mut cursor) {
-                            continue;
-                        } else {
-                            break;
-                        };
-                    }
-                }
-                *state = Some(SourceFileState {
-                    tree,
-                    node_ranges_at_last_checkpoint,
-                    code_at_last_checkpoint: changed_lines.clone(),
-                    code_latest: changed_lines,
-                });
-            };
+            *state = Some(handle_event_first(changed_lines));
         }
         // Subsequent parses of a file.
         Some(prev_state) => {
@@ -108,6 +85,31 @@ fn handle_event(state: &mut Option<SourceFileState>, changed_lines: Vec<String>,
             // TODO: save a new state if compilation passes.
         }
     };
+}
+
+fn handle_event_first(changed_lines: Vec<String>) -> SourceFileState {
+    let tree = parse(None, &changed_lines).unwrap();
+    print_tree(0, &mut tree.walk());
+    println!();
+    let mut node_ranges_at_last_checkpoint = HashMap::new();
+    {
+        let mut cursor = tree.walk();
+        loop {
+            let node = cursor.node();
+            node_ranges_at_last_checkpoint.insert(node.id(), node.byte_range());
+            if step_down(&mut cursor) {
+                continue;
+            } else {
+                break;
+            };
+        }
+    }
+    SourceFileState {
+        tree,
+        node_ranges_at_last_checkpoint,
+        code_at_last_checkpoint: changed_lines.clone(),
+        code_latest: changed_lines,
+    }
 }
 
 #[derive(Debug)]
