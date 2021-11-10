@@ -128,15 +128,43 @@ fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: Input
 
     let range = edit.start_byte..edit.old_end_byte;
     state.code_latest.splice(range, changed_bytes);
-    println!("{:?}", String::from_utf8(state.code_latest.to_vec()));
     let parse_result = parse(Some(&state.tree), state.code_latest);
     if let Some(new_tree) = parse_result {
         print_tree(&new_tree);
         let mut old_cursor = state.tree.walk();
         let mut new_cursor = new_tree.walk();
-        let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
-        println!("CHANGES: {:?}", changes);
+        let tree_changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
+        match tree_changes {
+            TreeChanges::None => println!("CHANGE: None"),
+            TreeChanges::AtLeastTwoUnrelated(_, _) => println!("CHANGE: Multiple"),
+            TreeChanges::Single(old, new) => {
+                let elm_change = interpret_change(state, &old, &new);
+                println!("CHANGE: {:?}", elm_change);
+            }
+        }
     }
+}
+
+fn interpret_change(state: &SourceFileState, old: &[Node], new: &[Node]) -> Option<ElmChange> {
+    match (attach_kinds(old).as_slice(), attach_kinds(new).as_slice()) {
+        ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => Some(
+            ElmChange::RenamedVar(old_code_slice(state, before), new_code_slice(state, after)),
+        ),
+        (before, after) => {
+            println!("NOT-MATCH BEFORE: {:?}", before);
+            println!("NOT-MATCH AFTER: {:?}", after);
+            None
+        }
+    }
+}
+
+fn attach_kinds<'a>(nodes: &'a [Node<'a>]) -> Vec<(&'a str, &'a Node<'a>)> {
+    nodes.iter().map(|node| (node.kind(), node)).collect()
+}
+
+#[derive(Debug)]
+enum ElmChange {
+    RenamedVar(String, String), // TODO: have some source location here.
 }
 
 #[derive(Debug)]
@@ -175,13 +203,13 @@ fn diff_trees<'a>(
         }
 
         let mut old_removed = Vec::with_capacity(old_removed_count);
-        while old_removed.len() <= old_removed_count {
+        while old_removed.len() < old_removed_count {
             old_removed.push(old.node());
             old.goto_next_sibling();
         }
 
         let mut new_added = Vec::with_capacity(new_added_count);
-        while new_added.len() <= new_added_count {
+        while new_added.len() < new_added_count {
             new_added.push(old.node());
             old.goto_next_sibling();
         }
@@ -294,6 +322,17 @@ fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -
             let new_bytes = code_slice(state.code_latest, &new.byte_range());
             old_bytes != new_bytes
         }
+    }
+}
+
+fn new_code_slice(state: &SourceFileState, node: &Node) -> String {
+    code_slice(state.code_latest, &node.byte_range())
+}
+
+fn old_code_slice(state: &SourceFileState, node: &Node) -> String {
+    match state.node_ranges_at_last_checkpoint.get(&node.id()) {
+        None => "...".to_string(),
+        Some(range) => code_slice(state.code_at_last_checkpoint, range),
     }
 }
 
