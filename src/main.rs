@@ -133,20 +133,17 @@ fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: Input
         print_tree(&new_tree);
         let mut old_cursor = state.latest_tree.walk();
         let mut new_cursor = new_tree.walk();
-        let tree_changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
-        match tree_changes {
-            TreeChanges::None => println!("CHANGE: None"),
-            TreeChanges::AtLeastTwoUnrelated(_, _) => println!("CHANGE: Multiple"),
-            TreeChanges::Single(old, new) => {
-                let elm_change = interpret_change(state, &old, &new);
-                println!("CHANGE: {:?}", elm_change);
-            }
-        }
+        let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
+        let elm_change = interpret_change(state, &changes);
+        println!("CHANGE: {:?}", elm_change);
     }
 }
 
-fn interpret_change(state: &SourceFileState, old: &[Node], new: &[Node]) -> Option<ElmChange> {
-    match (attach_kinds(old).as_slice(), attach_kinds(new).as_slice()) {
+fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<ElmChange> {
+    match (
+        attach_kinds(&changes.old_removed).as_slice(),
+        attach_kinds(&changes.new_added).as_slice(),
+    ) {
         ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => Some(
             ElmChange::RenamedVar(old_code_slice(state, before), new_code_slice(state, after)),
         ),
@@ -168,10 +165,9 @@ enum ElmChange {
 }
 
 #[derive(Debug)]
-enum TreeChanges<'a> {
-    None,
-    Single(Vec<Node<'a>>, Vec<Node<'a>>),
-    AtLeastTwoUnrelated(Range<usize>, Range<usize>),
+struct TreeChanges<'a> {
+    old_removed: Vec<Node<'a>>,
+    new_added: Vec<Node<'a>>,
 }
 
 fn diff_trees<'a>(
@@ -181,7 +177,10 @@ fn diff_trees<'a>(
 ) -> TreeChanges<'a> {
     loop {
         if !goto_first_changed_sibling(state, old, new) {
-            return TreeChanges::None;
+            return TreeChanges {
+                old_removed: Vec::new(),
+                new_added: Vec::new(),
+            };
         }
         let first_old_changed = old.node();
         let first_new_changed = new.node();
@@ -189,8 +188,6 @@ fn diff_trees<'a>(
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
-        old.reset(first_old_changed);
-        new.reset(first_new_changed);
         if old_removed_count == 1
             && new_added_count == 1
             && first_old_changed.kind_id() == first_new_changed.kind_id()
@@ -210,13 +207,14 @@ fn diff_trees<'a>(
 
         let mut new_added = Vec::with_capacity(new_added_count);
         while new_added.len() < new_added_count {
-            new_added.push(old.node());
-            old.goto_next_sibling();
+            new_added.push(new.node());
+            new.goto_next_sibling();
         }
 
-        // TODO: confirm there are no changes elsewhere in the tree.
-
-        return TreeChanges::Single(old_removed, new_added);
+        return TreeChanges {
+            old_removed,
+            new_added,
+        };
     }
 }
 
@@ -258,25 +256,38 @@ fn goto_first_changed_sibling(
 // walking backwards we only need to proof two nodes are different ones.
 fn count_changed_siblings<'a>(
     state: &'a SourceFileState,
-    old: &'a mut TreeCursor,
-    new: &'a mut TreeCursor,
+    old: &'a TreeCursor,
+    new: &'a TreeCursor,
 ) -> (usize, usize) {
+    let mut old_sibling = old.node();
+    let mut new_sibling = new.node();
+
     // We initialize the counts at 1, because we assume the node we're currenly
     // on is the first changed node.
     let mut old_siblings_removed = 1;
     let mut new_siblings_added = 1;
 
     // Walk forward, basically counting all remaining old and new siblings.
-    while old.goto_next_sibling() {
-        old_siblings_removed += 1;
+    loop {
+        match old_sibling.next_sibling() {
+            None => break,
+            Some(next) => {
+                old_siblings_removed += 1;
+                old_sibling = next;
+            }
+        }
     }
-    while new.goto_next_sibling() {
-        new_siblings_added += 1;
+    loop {
+        match new_sibling.next_sibling() {
+            None => break,
+            Some(next) => {
+                new_siblings_added += 1;
+                new_sibling = next;
+            }
+        }
     }
 
     // Walk backwards again until we encounter a changed node.
-    let mut old_sibling = old.node();
-    let mut new_sibling = new.node();
     loop {
         if has_node_changed(state, &old_sibling, &new_sibling) {
             break;
