@@ -100,8 +100,6 @@ where
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
         handle_event(&mut state, changed_lines.into_bytes(), edit)
     }
-
-    // TODO: save a new state if compilation passes.
 }
 
 fn byte_ranges_by_node_id(
@@ -161,7 +159,7 @@ fn attach_kinds<'a>(nodes: &'a [Node<'a>]) -> Vec<(&'a str, &'a Node<'a>)> {
 
 #[derive(Debug)]
 enum ElmChange {
-    RenamedVar(String, String), // TODO: have some source location here.
+    RenamedVar(String, String),
 }
 
 #[derive(Debug)]
