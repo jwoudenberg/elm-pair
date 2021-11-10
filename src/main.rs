@@ -2,7 +2,7 @@ use core::ops::Range;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
-use tree_sitter::{InputEdit, Tree};
+use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 // TODO: remove current assumption that line breaks are a single byte (`\n`)
 // TODO: check what happens if we send inclusive end-ranges to tree-sitter, i.e. 3..3 instead of 3..4 for a single-byte change.
@@ -132,90 +132,169 @@ fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: Input
     let parse_result = parse(Some(&state.tree), state.code_latest);
     if let Some(new_tree) = parse_result {
         print_tree(&new_tree);
-        let changes = diff_trees(state, &new_tree);
+        let mut old_cursor = state.tree.walk();
+        let mut new_cursor = new_tree.walk();
+        let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
         println!("CHANGES: {:?}", changes);
     }
 }
 
 #[derive(Debug)]
-enum Change<'a> {
-    NodeRemoved(tree_sitter::Node<'a>),
-    VariableNameChange(String, String),
+enum TreeChanges<'a> {
+    None,
+    Single(Vec<Node<'a>>, Vec<Node<'a>>),
+    AtLeastTwoUnrelated(Range<usize>, Range<usize>),
 }
 
-fn diff_trees<'a>(state: &'a SourceFileState, new_tree: &'a tree_sitter::Tree) -> Vec<Change<'a>> {
-    let mut old_cursor = state.tree.walk();
-    let mut changes = Vec::new();
+fn diff_trees<'a>(
+    state: &'a SourceFileState,
+    old: &'a mut TreeCursor,
+    new: &'a mut TreeCursor,
+) -> TreeChanges<'a> {
     loop {
-        let old_node = old_cursor.node();
-
-        // Skip if old node hasn't been changed.
-        if !old_node.has_changes() {
-            if step_forward(&mut old_cursor) {
-                continue;
-            } else {
-                break;
-            }
+        if !goto_first_changed_sibling(state, old, new) {
+            return TreeChanges::None;
         }
+        let first_old_changed = old.node();
+        let first_new_changed = new.node();
+        let (old_removed_count, new_added_count) = count_changed_siblings(state, old, new);
 
-        // Fetch new node.
-        let opt_new_node = new_tree
-            .root_node()
-            .descendant_for_byte_range(old_node.start_byte(), old_node.end_byte());
-        let new_node = match opt_new_node {
-            None => {
-                changes.push(Change::NodeRemoved(old_node));
-                if step_forward(&mut old_cursor) {
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            Some(new_node) => new_node,
-        };
-
-        // Skip if new node has the same id. (unsure: can this happen, given
-        // chec for `has_changes` above?)
-        if new_node.id() == old_node.id() {
-            if step_forward(&mut old_cursor) {
-                continue;
-            } else {
-                break;
-            }
-        }
-
-        let opt_old_bytes = state
-            .node_ranges_at_last_checkpoint
-            .get(&old_node.id())
-            .map(|range| code_slice(state.code_at_last_checkpoint, range));
-
-        if let Some(old_bytes) = opt_old_bytes {
-            let new_bytes = code_slice(state.code_latest, &new_node.byte_range());
-
-            // Skip if the new node and old node contain the exact same code.
-            if old_bytes == new_bytes {
-                if step_forward(&mut old_cursor) {
-                    continue;
-                } else {
-                    break;
-                }
-            }
-
-            if old_node.kind() == "lower_case_identifier"
-                && new_node.kind() == "lower_case_identifier"
-            {
-                changes.push(Change::VariableNameChange(old_bytes, new_bytes));
-            }
-        }
-
-        // Descend into child nodes.
-        if step_down(&mut old_cursor) {
+        // If only a single sibling changed and it's kind remained the same,
+        // then we descend into that child.
+        old.reset(first_old_changed);
+        new.reset(first_new_changed);
+        if old_removed_count == 1
+            && new_added_count == 1
+            && first_old_changed.kind_id() == first_new_changed.kind_id()
+            && first_old_changed.child_count() > 0
+            && first_new_changed.child_count() > 0
+        {
+            old.goto_first_child();
+            new.goto_first_child();
             continue;
+        }
+
+        let mut old_removed = Vec::with_capacity(old_removed_count);
+        while old_removed.len() <= old_removed_count {
+            old_removed.push(old.node());
+            old.goto_next_sibling();
+        }
+
+        let mut new_added = Vec::with_capacity(new_added_count);
+        while new_added.len() <= new_added_count {
+            new_added.push(old.node());
+            old.goto_next_sibling();
+        }
+
+        // TODO: confirm there are no changes elsewhere in the tree.
+
+        return TreeChanges::Single(old_removed, new_added);
+    }
+}
+
+// Move both cursors forward through sibbling nodes in lock step, stopping when
+// we encounter a difference between the old and new node.
+fn goto_first_changed_sibling(
+    state: &SourceFileState,
+    old: &mut TreeCursor,
+    new: &mut TreeCursor,
+) -> bool {
+    loop {
+        if has_node_changed(state, &old.node(), &new.node()) {
+            return true;
         } else {
-            break;
+            match (old.goto_next_sibling(), new.goto_next_sibling()) {
+                (true, true) => continue,
+                (false, false) => return false,
+                (_, _) => return true,
+            }
         }
     }
-    changes
+}
+
+// Find how many old siblings were replaced with how many new ones. For example,
+// given the following examples:
+//
+//     old: [ a b c d e f g h ]
+//            |         | | |
+//     new: [ a x y     f g h ]
+//
+// This function would return `(4, 2)` when passed the old and new sibling nodes
+// of this example, because 4 of the old sibling nodes were replaced with 2 new
+// ones.
+//
+// We go about finding these counts by skipping to the end, then counting the
+// amount of equal nodes we encounter as we move backwards from the last old
+// and new node in lock step. We do this because on average it's less work to
+// proof two node are the same than it is to proof they are different. By
+// walking backwards we only need to proof two nodes are different ones.
+fn count_changed_siblings<'a>(
+    state: &'a SourceFileState,
+    old: &'a mut TreeCursor,
+    new: &'a mut TreeCursor,
+) -> (usize, usize) {
+    // We initialize the counts at 1, because we assume the node we're currenly
+    // on is the first changed node.
+    let mut old_siblings_removed = 1;
+    let mut new_siblings_added = 1;
+
+    // Walk forward, basically counting all remaining old and new siblings.
+    while old.goto_next_sibling() {
+        old_siblings_removed += 1;
+    }
+    while new.goto_next_sibling() {
+        new_siblings_added += 1;
+    }
+
+    // Walk backwards again until we encounter a changed node.
+    let mut old_sibling = old.node();
+    let mut new_sibling = new.node();
+    loop {
+        if has_node_changed(state, &old_sibling, &new_sibling) {
+            break;
+        }
+        match (old_sibling.prev_sibling(), new_sibling.prev_sibling()) {
+            (Some(next_old), Some(next_new)) => {
+                old_sibling = next_old;
+                new_sibling = next_new;
+                old_siblings_removed -= 1;
+                new_siblings_added -= 1;
+            }
+            (_, _) => {
+                break;
+            }
+        }
+    }
+
+    (old_siblings_removed, new_siblings_added)
+}
+
+// Check if a node has changed. We have a couple of cheap checks that can
+// confirm the node _hasn't_ changed, so we try those first.
+fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
+    old.has_changes()
+        && old.id() != new.id()
+        && (old.kind_id() != new.kind_id() || have_node_contents_changed(state, old, new))
+}
+
+// Compare two nodes by comparing snippets of code covered by them. This is
+// supposed to be a 100% accurate, albeit potentially slower equivalency check.
+//
+// TODO: code formatters can change code in ways that don't matter but would
+// fail this check. Consider alternative approaches.
+fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
+    // TODO: compare u8 array slices here instead of parsing to string.
+    let opt_old_bytes = state
+        .node_ranges_at_last_checkpoint
+        .get(&old.id())
+        .map(|range| code_slice(state.code_at_last_checkpoint, range));
+    match opt_old_bytes {
+        None => true,
+        Some(old_bytes) => {
+            let new_bytes = code_slice(state.code_latest, &new.byte_range());
+            old_bytes != new_bytes
+        }
+    }
 }
 
 fn code_slice(code: &[u8], range: &Range<usize>) -> String {
