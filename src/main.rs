@@ -18,10 +18,10 @@ struct SourceFileState<'a> {
     // The code at the time of the last 'checkpoint' (when the code compiled).
     // When we get to a new checkpoint we should create a new SourceFileState
     // struct, hence this field is not mutable.
-    code_at_last_checkpoint: &'a [u8],
+    checkpointed_code: &'a [u8],
     // A map of tree-sitter node ids to byte ranges. This will allow us to
     // look up code snippets in the checkpointed code at later time.
-    node_ranges_at_last_checkpoint: HashMap<usize, Range<usize>>,
+    checkpointed_node_ranges: HashMap<usize, Range<usize>>,
     // Vec offers a '.splice()' operation we need to replace bits of the vector
     // in response to updates made in the editor. This is probably not super
     // efficient though, so we should look for a better datastructure here.
@@ -32,9 +32,9 @@ struct SourceFileState<'a> {
     // function that replaces part of the vector with different contents.
     //
     // TODO: look into better data structures for splice-heavy workloads.
-    code_latest: &'a mut Vec<u8>,
+    latest_code: &'a mut Vec<u8>,
     // A tree-sitter concrete syntax tree of the latest code.
-    tree: Tree,
+    latest_tree: Tree,
 }
 
 fn parse_event(serialized_event: &str) -> (PathBuf, String, InputEdit) {
@@ -86,13 +86,13 @@ where
     };
     let (_, initial_lines, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, initial_lines.as_bytes()).unwrap();
-    let node_ranges_at_last_checkpoint = byte_ranges_by_node_id(&tree, HashMap::new());
+    let checkpointed_node_ranges = byte_ranges_by_node_id(&tree, HashMap::new());
     print_tree(&tree);
     let mut state = SourceFileState {
-        tree,
-        node_ranges_at_last_checkpoint,
-        code_at_last_checkpoint: initial_lines.as_bytes(),
-        code_latest: &mut initial_lines.clone().into_bytes(),
+        latest_tree: tree,
+        checkpointed_node_ranges,
+        checkpointed_code: initial_lines.as_bytes(),
+        latest_code: &mut initial_lines.clone().into_bytes(),
     };
 
     // Subsequent parses of a file.
@@ -123,15 +123,15 @@ fn byte_ranges_by_node_id(
 
 fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) {
     println!("edit: {:?}", edit);
-    state.tree.edit(&edit);
-    print_tree(&state.tree);
+    state.latest_tree.edit(&edit);
+    print_tree(&state.latest_tree);
 
     let range = edit.start_byte..edit.old_end_byte;
-    state.code_latest.splice(range, changed_bytes);
-    let parse_result = parse(Some(&state.tree), state.code_latest);
+    state.latest_code.splice(range, changed_bytes);
+    let parse_result = parse(Some(&state.latest_tree), state.latest_code);
     if let Some(new_tree) = parse_result {
         print_tree(&new_tree);
-        let mut old_cursor = state.tree.walk();
+        let mut old_cursor = state.latest_tree.walk();
         let mut new_cursor = new_tree.walk();
         let tree_changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
         match tree_changes {
@@ -313,26 +313,26 @@ fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
 fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
     // TODO: compare u8 array slices here instead of parsing to string.
     let opt_old_bytes = state
-        .node_ranges_at_last_checkpoint
+        .checkpointed_node_ranges
         .get(&old.id())
-        .map(|range| code_slice(state.code_at_last_checkpoint, range));
+        .map(|range| code_slice(state.checkpointed_code, range));
     match opt_old_bytes {
         None => true,
         Some(old_bytes) => {
-            let new_bytes = code_slice(state.code_latest, &new.byte_range());
+            let new_bytes = code_slice(state.latest_code, &new.byte_range());
             old_bytes != new_bytes
         }
     }
 }
 
 fn new_code_slice(state: &SourceFileState, node: &Node) -> String {
-    code_slice(state.code_latest, &node.byte_range())
+    code_slice(state.latest_code, &node.byte_range())
 }
 
 fn old_code_slice(state: &SourceFileState, node: &Node) -> String {
-    match state.node_ranges_at_last_checkpoint.get(&node.id()) {
+    match state.checkpointed_node_ranges.get(&node.id()) {
         None => "...".to_string(),
-        Some(range) => code_slice(state.code_at_last_checkpoint, range),
+        Some(range) => code_slice(state.checkpointed_code, range),
     }
 }
 
