@@ -116,6 +116,7 @@ fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: Input
     }
 }
 
+// TODO: use kind ID's instead of names for pattern matching.
 fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<ElmChange> {
     match (
         attach_kinds(&changes.old_removed).as_slice(),
@@ -128,10 +129,16 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             ))
         }
         ([("upper_case_identifier", before)], [("upper_case_identifier", after)]) => {
-            Some(ElmChange::TypeChanged(
-                code_slice(state.checkpointed_code, &before.byte_range()),
-                code_slice(state.latest_code, &after.byte_range()),
-            ))
+            match before.parent().unwrap().kind() {
+                "as_clause" => Some(ElmChange::AsClauseChanged(
+                    code_slice(state.checkpointed_code, &before.byte_range()),
+                    code_slice(state.latest_code, &after.byte_range()),
+                )),
+                _ => Some(ElmChange::TypeChanged(
+                    code_slice(state.checkpointed_code, &before.byte_range()),
+                    code_slice(state.latest_code, &after.byte_range()),
+                )),
+            }
         }
         ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(code_slice(
             state.latest_code,
@@ -233,6 +240,26 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
                 None
             }
         }
+        ([("as_clause", before)], []) => Some(ElmChange::AsClauseRemoved(
+            code_slice(
+                state.checkpointed_code,
+                &before.prev_sibling().unwrap().byte_range(),
+            ),
+            code_slice(
+                state.checkpointed_code,
+                &before.named_child(0).unwrap().byte_range(),
+            ),
+        )),
+        ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
+            code_slice(
+                state.latest_code,
+                &after.prev_sibling().unwrap().byte_range(),
+            ),
+            code_slice(
+                state.latest_code,
+                &after.child_by_field_name("name").unwrap().byte_range(),
+            ),
+        )),
         (before, after) => {
             println!("NOT-MATCH BEFORE: {:?}", before);
             println!("NOT-MATCH AFTER: {:?}", after);
@@ -259,6 +286,9 @@ enum ElmChange {
     TypeAliasRemoved(String),
     QualifierAdded(String, String),
     QualifierRemoved(String, String),
+    AsClauseAdded(String, String),
+    AsClauseRemoved(String, String),
+    AsClauseChanged(String, String),
 }
 
 #[derive(Debug)]
