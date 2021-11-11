@@ -247,7 +247,7 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             ),
             code_slice(
                 state.checkpointed_code,
-                &before.named_child(0).unwrap().byte_range(),
+                &before.child_by_field_name("name").unwrap().byte_range(),
             ),
         )),
         ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
@@ -303,12 +303,27 @@ fn diff_trees<'a>(
     new: &'a mut TreeCursor,
 ) -> TreeChanges<'a> {
     loop {
-        if !goto_first_changed_sibling(state, old, new) {
-            return TreeChanges {
-                old_removed: Vec::new(),
-                new_added: Vec::new(),
-            };
-        }
+        match goto_first_changed_sibling(state, old, new) {
+            FirstChangedSibling::NoneFound => {
+                return TreeChanges {
+                    old_removed: Vec::new(),
+                    new_added: Vec::new(),
+                }
+            }
+            FirstChangedSibling::OldAtFirstAdditional => {
+                return TreeChanges {
+                    old_removed: collect_remaining_siblings(old),
+                    new_added: Vec::new(),
+                }
+            }
+            FirstChangedSibling::NewAtFirstAdditional => {
+                return TreeChanges {
+                    old_removed: Vec::new(),
+                    new_added: collect_remaining_siblings(new),
+                }
+            }
+            FirstChangedSibling::OldAndNewAtFirstChanged => {}
+        };
         let first_old_changed = old.node();
         let first_new_changed = new.node();
         let (old_removed_count, new_added_count) = count_changed_siblings(state, old, new);
@@ -345,24 +360,61 @@ fn diff_trees<'a>(
     }
 }
 
+// This type solely exists to list the potential results of calling
+// `goto_first_changed_sibling`. The comments below each show one example of
+// a set of old and new nodes that would lead to that particular value being
+// returned. The arrows indicate which nodes the TreeCursors will end up
+// pointing at.
+enum FirstChangedSibling {
+    //            v
+    // old: [ a b c ]
+    // new: [ a b c ]
+    //            ^
+    NoneFound,
+    //            v
+    // old: [ a b c d e ]
+    // new: [ a b x y ]
+    //            ^
+    OldAndNewAtFirstChanged,
+    //            v
+    // old: [ a b c d e ]
+    // new: [ a b ]
+    //          ^
+    OldAtFirstAdditional,
+    //          v
+    // old: [ a b ]
+    // new: [ a b c d e ]
+    //            ^
+    NewAtFirstAdditional,
+}
+
 // Move both cursors forward through sibbling nodes in lock step, stopping when
 // we encounter a difference between the old and new node.
 fn goto_first_changed_sibling(
     state: &SourceFileState,
     old: &mut TreeCursor,
     new: &mut TreeCursor,
-) -> bool {
+) -> FirstChangedSibling {
     loop {
         if has_node_changed(state, &old.node(), &new.node()) {
-            return true;
+            return FirstChangedSibling::OldAndNewAtFirstChanged;
         } else {
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
                 (true, true) => continue,
-                (false, false) => return false,
-                (_, _) => panic!("cursors no longer in lock-step!"),
+                (false, false) => return FirstChangedSibling::NoneFound,
+                (true, false) => return FirstChangedSibling::OldAtFirstAdditional,
+                (false, true) => return FirstChangedSibling::NewAtFirstAdditional,
             }
         }
     }
+}
+
+fn collect_remaining_siblings<'a>(cursor: &'a mut TreeCursor) -> Vec<Node<'a>> {
+    let mut acc = vec![cursor.node()];
+    while cursor.goto_next_sibling() {
+        acc.push(cursor.node());
+    }
+    acc
 }
 
 // Find how many old siblings were replaced with how many new ones. For example,
