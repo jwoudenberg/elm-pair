@@ -19,6 +19,8 @@ struct SourceFileState<'a> {
     // When we get to a new checkpoint we should create a new SourceFileState
     // struct, hence this field is not mutable.
     checkpointed_code: &'a [u8],
+    // The tree at the time of the last 'checkpoint'.
+    checkpointed_tree: Tree,
     // A map of tree-sitter node ids to byte ranges. This will allow us to
     // look up code snippets in the checkpointed code at later time.
     checkpointed_node_ranges: HashMap<usize, Range<usize>>,
@@ -87,9 +89,10 @@ where
     let tree = parse(None, initial_lines.as_bytes()).unwrap();
     let checkpointed_node_ranges = byte_ranges_by_node_id(&tree, HashMap::new());
     let mut state = SourceFileState {
-        latest_tree: tree,
+        latest_tree: tree.clone(),
         checkpointed_node_ranges,
         checkpointed_code: initial_lines.as_bytes(),
+        checkpointed_tree: tree,
         latest_code: &mut initial_lines.clone().into_bytes(),
     };
     print_checkpointed_tree(&state);
