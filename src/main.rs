@@ -101,10 +101,9 @@ where
 fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) {
     println!("edit: {:?}", edit);
     state.latest_tree.edit(&edit);
-    print_latest_tree(state);
-
     let range = edit.start_byte..edit.old_end_byte;
     state.latest_code.splice(range, changed_bytes);
+
     let parse_result = parse(Some(&state.latest_tree), state.latest_code);
     if let Some(new_tree) = parse_result {
         state.latest_tree = new_tree;
@@ -270,7 +269,10 @@ fn count_changed_siblings<'a>(
 
     // Walk backwards again until we encounter a changed node.
     loop {
-        if has_node_changed(state, &old_sibling, &new_sibling) {
+        if has_node_changed(state, &old_sibling, &new_sibling)
+            || old_siblings_removed == 0
+            || new_siblings_added == 0
+        {
             break;
         }
         match (old_sibling.prev_sibling(), new_sibling.prev_sibling()) {
