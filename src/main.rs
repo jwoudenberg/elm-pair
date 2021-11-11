@@ -359,7 +359,7 @@ fn goto_first_changed_sibling(
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
                 (true, true) => continue,
                 (false, false) => return false,
-                (_, _) => return true,
+                (_, _) => panic!("cursors no longer in lock-step!"),
             }
         }
     }
