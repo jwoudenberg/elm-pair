@@ -1,5 +1,4 @@
 use core::ops::Range;
-use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
@@ -21,9 +20,6 @@ struct SourceFileState<'a> {
     checkpointed_code: &'a [u8],
     // The tree at the time of the last 'checkpoint'.
     checkpointed_tree: Tree,
-    // A map of tree-sitter node ids to byte ranges. This will allow us to
-    // look up code snippets in the checkpointed code at later time.
-    checkpointed_node_ranges: HashMap<usize, Range<usize>>,
     // Vec offers a '.splice()' operation we need to replace bits of the vector
     // in response to updates made in the editor. This is probably not super
     // efficient though, so we should look for a better datastructure here.
@@ -87,15 +83,13 @@ where
     };
     let (_, initial_lines, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, initial_lines.as_bytes()).unwrap();
-    let checkpointed_node_ranges = byte_ranges_by_node_id(&tree, HashMap::new());
     let mut state = SourceFileState {
         latest_tree: tree.clone(),
-        checkpointed_node_ranges,
         checkpointed_code: initial_lines.as_bytes(),
         checkpointed_tree: tree,
         latest_code: &mut initial_lines.clone().into_bytes(),
     };
-    print_checkpointed_tree(&state);
+    print_latest_tree(&state);
 
     // Subsequent parses of a file.
     for line in lines {
@@ -104,35 +98,19 @@ where
     }
 }
 
-fn byte_ranges_by_node_id(
-    tree: &Tree,
-    mut acc: HashMap<usize, Range<usize>>,
-) -> HashMap<usize, Range<usize>> {
-    let mut cursor = tree.walk();
-    loop {
-        let node = cursor.node();
-        acc.insert(node.id(), node.byte_range());
-        if step_down(&mut cursor) {
-            continue;
-        } else {
-            break;
-        };
-    }
-    acc
-}
-
 fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) {
     println!("edit: {:?}", edit);
     state.latest_tree.edit(&edit);
-    print_tree(state, &state.latest_tree);
+    print_latest_tree(state);
 
     let range = edit.start_byte..edit.old_end_byte;
     state.latest_code.splice(range, changed_bytes);
     let parse_result = parse(Some(&state.latest_tree), state.latest_code);
     if let Some(new_tree) = parse_result {
-        print_tree(state, &new_tree);
-        let mut old_cursor = state.latest_tree.walk();
-        let mut new_cursor = new_tree.walk();
+        state.latest_tree = new_tree;
+        print_latest_tree(state);
+        let mut old_cursor = state.checkpointed_tree.walk();
+        let mut new_cursor = state.latest_tree.walk();
         let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
         let elm_change = interpret_change(state, &changes);
         println!("CHANGE: {:?}", elm_change);
@@ -144,9 +122,12 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
         attach_kinds(&changes.old_removed).as_slice(),
         attach_kinds(&changes.new_added).as_slice(),
     ) {
-        ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => Some(
-            ElmChange::RenamedVar(old_code_slice(state, before), new_code_slice(state, after)),
-        ),
+        ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => {
+            Some(ElmChange::RenamedVar(
+                code_slice(state.checkpointed_code, &before.byte_range()),
+                code_slice(state.latest_code, &after.byte_range()),
+            ))
+        }
         (before, after) => {
             println!("NOT-MATCH BEFORE: {:?}", before);
             println!("NOT-MATCH AFTER: {:?}", after);
@@ -290,7 +271,6 @@ fn count_changed_siblings<'a>(
     // Walk backwards again until we encounter a changed node.
     loop {
         if has_node_changed(state, &old_sibling, &new_sibling) {
-            println!("LAST_CHANGED: {:?} {:?}", old_sibling, new_sibling);
             break;
         }
         match (old_sibling.prev_sibling(), new_sibling.prev_sibling()) {
@@ -312,8 +292,7 @@ fn count_changed_siblings<'a>(
 // Check if a node has changed. We have a couple of cheap checks that can
 // confirm the node _hasn't_ changed, so we try those first.
 fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
-    old.has_changes()
-        && old.id() != new.id()
+    old.id() != new.id()
         && (old.kind_id() != new.kind_id() || have_node_contents_changed(state, old, new))
 }
 
@@ -322,42 +301,15 @@ fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
 //
 // TODO: code formatters can change code in ways that don't matter but would
 // fail this check. Consider alternative approaches.
+// TODO: compare u8 array slices here instead of parsing to string.
 fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
-    // TODO: compare u8 array slices here instead of parsing to string.
-    let opt_old_bytes = state
-        .checkpointed_node_ranges
-        .get(&old.id())
-        .map(|range| code_slice(state.checkpointed_code, range));
-    match opt_old_bytes {
-        None => true,
-        Some(old_bytes) => {
-            let new_bytes = code_slice(state.latest_code, &new.byte_range());
-            old_bytes != new_bytes
-        }
-    }
-}
-
-fn new_code_slice(state: &SourceFileState, node: &Node) -> String {
-    code_slice(state.latest_code, &node.byte_range())
-}
-
-fn old_code_slice(state: &SourceFileState, node: &Node) -> String {
-    match state.checkpointed_node_ranges.get(&node.id()) {
-        None => "...".to_string(),
-        Some(range) => code_slice(state.checkpointed_code, range),
-    }
+    let old_bytes = code_slice(state.checkpointed_code, &old.byte_range());
+    let new_bytes = code_slice(state.latest_code, &new.byte_range());
+    old_bytes != new_bytes
 }
 
 fn code_slice(code: &[u8], range: &Range<usize>) -> String {
     std::string::String::from_utf8(code[range.start..range.end].to_vec()).unwrap()
-}
-
-fn step_forward(tree: &mut tree_sitter::TreeCursor) -> bool {
-    tree.goto_next_sibling() || (tree.goto_parent() && step_forward(tree))
-}
-
-fn step_down(tree: &mut tree_sitter::TreeCursor) -> bool {
-    tree.goto_first_child() || step_forward(tree)
 }
 
 fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Option<Tree> {
@@ -368,42 +320,27 @@ fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Option<Tree> {
     parser.parse(code, prev_tree)
 }
 
-fn print_checkpointed_tree(state: &SourceFileState) {
+fn print_latest_tree(state: &SourceFileState) {
     let mut cursor = state.latest_tree.walk();
-    print_tree_helper(state, true, 0, &mut cursor);
+    print_tree_helper(state.latest_code, 0, &mut cursor);
     println!();
 }
 
-fn print_tree(state: &SourceFileState, tree: &Tree) {
-    let mut cursor = tree.walk();
-    print_tree_helper(state, false, 0, &mut cursor);
-    println!();
-}
-
-fn print_tree_helper(
-    state: &SourceFileState,
-    checkpointed: bool,
-    indent: usize,
-    cursor: &mut tree_sitter::TreeCursor,
-) {
+fn print_tree_helper(code: &[u8], indent: usize, cursor: &mut tree_sitter::TreeCursor) {
     let node = cursor.node();
     println!(
         "{}[{} {:?}] {:?}{}",
         "  ".repeat(indent),
         node.kind(),
         node.start_position().row + 1,
-        if checkpointed {
-            old_code_slice(state, &node)
-        } else {
-            new_code_slice(state, &node)
-        },
+        code_slice(code, &node.byte_range()),
         if node.has_changes() { " (changed)" } else { "" },
     );
     if cursor.goto_first_child() {
-        print_tree_helper(state, checkpointed, indent + 1, cursor);
+        print_tree_helper(code, indent + 1, cursor);
         cursor.goto_parent();
     }
     if cursor.goto_next_sibling() {
-        print_tree_helper(state, checkpointed, indent, cursor);
+        print_tree_helper(code, indent, cursor);
     }
 }
