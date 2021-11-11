@@ -122,11 +122,56 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
         attach_kinds(&changes.new_added).as_slice(),
     ) {
         ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => {
-            Some(ElmChange::RenamedVar(
+            Some(ElmChange::NameChanged(
                 code_slice(state.checkpointed_code, &before.byte_range()),
                 code_slice(state.latest_code, &after.byte_range()),
             ))
         }
+        ([("upper_case_identifier", before)], [("upper_case_identifier", after)]) => {
+            Some(ElmChange::TypeChanged(
+                code_slice(state.checkpointed_code, &before.byte_range()),
+                code_slice(state.latest_code, &after.byte_range()),
+            ))
+        }
+        ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(code_slice(
+            state.latest_code,
+            &after.byte_range(),
+        ))),
+        ([("import_clause", before)], []) => Some(ElmChange::ImportRemoved(code_slice(
+            state.checkpointed_code,
+            &before.byte_range(),
+        ))),
+        ([], [("type_declaration", after)]) => Some(ElmChange::TypeAdded(code_slice(
+            state.latest_code,
+            &after.byte_range(),
+        ))),
+        ([("type_declaration", before)], []) => Some(ElmChange::TypeRemoved(code_slice(
+            state.checkpointed_code,
+            &before.byte_range(),
+        ))),
+        ([], [("type_alias_declaration", after)]) => Some(ElmChange::TypeAliasAdded(code_slice(
+            state.latest_code,
+            &after.byte_range(),
+        ))),
+        ([("type_alias_declaration", before)], []) => Some(ElmChange::TypeAliasRemoved(
+            code_slice(state.checkpointed_code, &before.byte_range()),
+        )),
+        ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(code_slice(
+            state.latest_code,
+            &after.byte_range(),
+        ))),
+        ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(code_slice(
+            state.latest_code,
+            &after.byte_range(),
+        ))),
+        ([(",", _), ("field_type", before)], []) => Some(ElmChange::FieldRemoved(code_slice(
+            state.checkpointed_code,
+            &before.byte_range(),
+        ))),
+        ([("field_type", before), (",", _)], []) => Some(ElmChange::FieldRemoved(code_slice(
+            state.checkpointed_code,
+            &before.byte_range(),
+        ))),
         (before, after) => {
             println!("NOT-MATCH BEFORE: {:?}", before);
             println!("NOT-MATCH AFTER: {:?}", after);
@@ -141,7 +186,16 @@ fn attach_kinds<'a>(nodes: &'a [Node<'a>]) -> Vec<(&'a str, &'a Node<'a>)> {
 
 #[derive(Debug)]
 enum ElmChange {
-    RenamedVar(String, String),
+    NameChanged(String, String),
+    TypeChanged(String, String),
+    ImportAdded(String),
+    ImportRemoved(String),
+    FieldAdded(String),
+    FieldRemoved(String),
+    TypeAdded(String),
+    TypeRemoved(String),
+    TypeAliasAdded(String),
+    TypeAliasRemoved(String),
 }
 
 #[derive(Debug)]
