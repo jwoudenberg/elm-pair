@@ -15,7 +15,7 @@ fn main() {
 
 struct SourceFileState {
     // Absolute path to this source file.
-    path: PathBuf,
+    _path: PathBuf,
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
@@ -100,7 +100,7 @@ where
     let mut state = SourceFileState {
         elm_path: find_executable("elm").unwrap(),
         project_root: find_project_root(&path).unwrap().to_path_buf(),
-        path,
+        _path: path,
         latest_tree: tree.clone(),
         checkpointed_code: initial_lines.clone(),
         checkpointed_tree: tree,
@@ -112,6 +112,7 @@ where
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
         handle_event(&mut state, changed_lines, edit);
+        // TODO: also check if we want to run a compilation check now.
         if does_latest_compile(&state) {
             state = new_checkpoint(state);
         }
@@ -128,9 +129,20 @@ fn new_checkpoint(state: SourceFileState) -> SourceFileState {
     }
 }
 
-fn does_latest_compile(_state: &SourceFileState) -> bool {
-    // TODO: perform actual compilation check.
-    true
+fn does_latest_compile(state: &SourceFileState) -> bool {
+    // Write lates code to temporary file. We don't compile the original source
+    // file, because the version stored on disk is likely ahead or behind the
+    // version in the editor.
+    let mut temp_path = state.project_root.join("elm_stuff/elm-pair");
+    std::fs::create_dir_all(&temp_path).unwrap();
+    temp_path.push("Temp.elm");
+    std::fs::write(&temp_path, &state.latest_code).unwrap();
+
+    // Run Elm compiler against temporary file.
+    std::process::Command::new(&state.elm_path)
+        .args(["make", "--report", "json", temp_path.to_str().unwrap()])
+        .output()
+        .is_ok()
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
