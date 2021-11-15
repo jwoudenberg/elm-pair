@@ -1,6 +1,6 @@
 use core::ops::Range;
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 // TODO: remove current assumption that line breaks are a single byte (`\n`)
@@ -14,6 +14,12 @@ fn main() {
 }
 
 struct SourceFileState<'a> {
+    // Absolute path to this source file.
+    path: &'a Path,
+    // Root of the Elm project containing this source file.
+    project_root: &'a Path,
+    // Absolute path to the `elm` compiler.
+    elm_path: PathBuf,
     // The code at the time of the last 'checkpoint' (when the code compiled).
     // When we get to a new checkpoint we should create a new SourceFileState
     // struct, hence this field is not mutable.
@@ -81,9 +87,12 @@ where
         None => return, // We receive no events at all :(. Exit early.
         Some(line) => line,
     };
-    let (_, initial_lines, _) = parse_event(&first_line.unwrap());
+    let (path, initial_lines, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, initial_lines.as_bytes()).unwrap();
     let mut state = SourceFileState {
+        elm_path: find_executable("elm").unwrap(),
+        project_root: find_project_root(&path).unwrap(),
+        path: &path,
         latest_tree: tree.clone(),
         checkpointed_code: initial_lines.as_bytes(),
         checkpointed_tree: tree,
@@ -95,6 +104,38 @@ where
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
         handle_event(&mut state, changed_lines.into_bytes(), edit)
+    }
+}
+
+fn find_executable(name: &str) -> Option<PathBuf> {
+    let cwd = std::env::current_dir().unwrap();
+    let path = std::env::var_os("PATH").unwrap();
+    let dirs = std::env::split_paths(&path);
+    for dir in dirs {
+        let mut bin_path = cwd.join(dir);
+        bin_path.push(name);
+        if bin_path.is_file() {
+            return Some(bin_path);
+        };
+    }
+    None
+}
+
+fn find_project_root(source_file: &Path) -> Option<&Path> {
+    let mut maybe_root = source_file;
+    loop {
+        match maybe_root.parent() {
+            None => {
+                return None;
+            }
+            Some(parent) => {
+                if parent.join("elm.json").exists() {
+                    return Some(parent);
+                } else {
+                    maybe_root = parent;
+                }
+            }
+        }
     }
 }
 
