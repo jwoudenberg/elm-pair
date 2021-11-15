@@ -3,9 +3,6 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
-// TODO: remove current assumption that line breaks are a single byte (`\n`)
-// TODO: check what happens if we send inclusive end-ranges to tree-sitter, i.e. 3..3 instead of 3..4 for a single-byte change.
-
 fn main() {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
