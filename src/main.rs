@@ -13,11 +13,11 @@ fn main() {
     handle_events(&mut std::io::BufReader::new(fifo).lines());
 }
 
-struct SourceFileState<'a> {
+struct SourceFileState {
     // Absolute path to this source file.
-    path: &'a Path,
+    path: PathBuf,
     // Root of the Elm project containing this source file.
-    project_root: &'a Path,
+    project_root: PathBuf,
     // Absolute path to the `elm` compiler.
     elm_path: PathBuf,
     // The code at the time of the last 'checkpoint' (when the code compiled).
@@ -28,18 +28,16 @@ struct SourceFileState<'a> {
     // in response to updates made in the editor. This is probably not super
     // efficient though, so we should look for a better datastructure here.
     //
-    // This is the latest version of the code. It's mutable because we'll be
-    // updating it frequently, in response to edit events from the editor.
     // We're curently storing this in a Vec because it offers a '.splice()'
     // function that replaces part of the vector with different contents.
     //
     // TODO: look into better data structures for splice-heavy workloads.
-    latest_code: &'a mut Vec<u8>,
+    latest_code: Vec<u8>,
     // A tree-sitter concrete syntax tree of the latest code.
     latest_tree: Tree,
 }
 
-fn parse_event(serialized_event: &str) -> (PathBuf, String, InputEdit) {
+fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
     let (
         path,
         changed_code,
@@ -52,6 +50,18 @@ fn parse_event(serialized_event: &str) -> (PathBuf, String, InputEdit) {
         old_end_col,
         new_end_row,
         new_end_col,
+    ): (
+        PathBuf,
+        String,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
     ) = serde_json::from_str(serialized_event).unwrap();
     let start_position = tree_sitter::Point {
         row: start_row,
@@ -73,7 +83,7 @@ fn parse_event(serialized_event: &str) -> (PathBuf, String, InputEdit) {
         old_end_position,
         new_end_position,
     };
-    (path, changed_code, input_edit)
+    (path, changed_code.into_bytes(), input_edit)
 }
 
 fn handle_events<I>(lines: &mut I)
@@ -86,22 +96,22 @@ where
         Some(line) => line,
     };
     let (path, initial_lines, _) = parse_event(&first_line.unwrap());
-    let tree = parse(None, initial_lines.as_bytes()).unwrap();
+    let tree = parse(None, &initial_lines).unwrap();
     let mut state = SourceFileState {
         elm_path: find_executable("elm").unwrap(),
-        project_root: find_project_root(&path).unwrap(),
-        path: &path,
+        project_root: find_project_root(&path).unwrap().to_path_buf(),
+        path,
         latest_tree: tree.clone(),
-        checkpointed_code: initial_lines.clone().into_bytes(),
+        checkpointed_code: initial_lines.clone(),
         checkpointed_tree: tree,
-        latest_code: &mut initial_lines.into_bytes(),
+        latest_code: initial_lines,
     };
     print_latest_tree(&state);
 
     // Subsequent parses of a file.
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
-        handle_event(&mut state, changed_lines.into_bytes(), edit);
+        handle_event(&mut state, changed_lines, edit);
         if does_latest_compile(&state) {
             state = new_checkpoint(state);
         }
@@ -161,7 +171,7 @@ fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: Input
     let range = edit.start_byte..edit.old_end_byte;
     state.latest_code.splice(range, changed_bytes);
 
-    let parse_result = parse(Some(&state.latest_tree), state.latest_code);
+    let parse_result = parse(Some(&state.latest_tree), &state.latest_code);
     if let Some(new_tree) = parse_result {
         state.latest_tree = new_tree;
         print_latest_tree(state);
@@ -182,23 +192,23 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
         ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => {
             Some(ElmChange::NameChanged(
                 code_slice(&state.checkpointed_code, &before.byte_range()),
-                code_slice(state.latest_code, &after.byte_range()),
+                code_slice(&state.latest_code, &after.byte_range()),
             ))
         }
         ([("upper_case_identifier", before)], [("upper_case_identifier", after)]) => {
             match before.parent().unwrap().kind() {
                 "as_clause" => Some(ElmChange::AsClauseChanged(
                     code_slice(&state.checkpointed_code, &before.byte_range()),
-                    code_slice(state.latest_code, &after.byte_range()),
+                    code_slice(&state.latest_code, &after.byte_range()),
                 )),
                 _ => Some(ElmChange::TypeChanged(
                     code_slice(&state.checkpointed_code, &before.byte_range()),
-                    code_slice(state.latest_code, &after.byte_range()),
+                    code_slice(&state.latest_code, &after.byte_range()),
                 )),
             }
         }
         ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(code_slice(
-            state.latest_code,
+            &state.latest_code,
             &after.byte_range(),
         ))),
         ([("import_clause", before)], []) => Some(ElmChange::ImportRemoved(code_slice(
@@ -206,7 +216,7 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             &before.byte_range(),
         ))),
         ([], [("type_declaration", after)]) => Some(ElmChange::TypeAdded(code_slice(
-            state.latest_code,
+            &state.latest_code,
             &after.byte_range(),
         ))),
         ([("type_declaration", before)], []) => Some(ElmChange::TypeRemoved(code_slice(
@@ -214,19 +224,19 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             &before.byte_range(),
         ))),
         ([], [("type_alias_declaration", after)]) => Some(ElmChange::TypeAliasAdded(code_slice(
-            state.latest_code,
+            &state.latest_code,
             &after.byte_range(),
         ))),
         ([("type_alias_declaration", before)], []) => Some(ElmChange::TypeAliasRemoved(
             code_slice(&state.checkpointed_code, &before.byte_range()),
         )),
         ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(code_slice(
-            state.latest_code,
+            &state.latest_code,
             &after.byte_range(),
         ))),
 
         ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(code_slice(
-            state.latest_code,
+            &state.latest_code,
             &after.byte_range(),
         ))),
         ([(",", _), ("field_type", before)], []) => Some(ElmChange::FieldRemoved(code_slice(
@@ -242,7 +252,7 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("upper_case_identifier", after)],
         ) => {
             let name_before = code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = code_slice(state.latest_code, &after.byte_range());
+            let name_after = code_slice(&state.latest_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierRemoved(
                     name_before,
@@ -257,7 +267,7 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("lower_case_identifier", after)],
         ) => {
             let name_before = code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = code_slice(state.latest_code, &after.byte_range());
+            let name_after = code_slice(&state.latest_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierRemoved(
                     name_before,
@@ -272,11 +282,11 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", after)],
         ) => {
             let name_before = code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = code_slice(state.latest_code, &after.byte_range());
+            let name_after = code_slice(&state.latest_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierAdded(
                     name_before,
-                    code_slice(state.latest_code, &qualifier.byte_range()),
+                    code_slice(&state.latest_code, &qualifier.byte_range()),
                 ))
             } else {
                 None
@@ -287,11 +297,11 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", after)],
         ) => {
             let name_before = code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = code_slice(state.latest_code, &after.byte_range());
+            let name_after = code_slice(&state.latest_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierAdded(
                     name_before,
-                    code_slice(state.latest_code, &qualifier.byte_range()),
+                    code_slice(&state.latest_code, &qualifier.byte_range()),
                 ))
             } else {
                 None
@@ -309,11 +319,11 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
         )),
         ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
             code_slice(
-                state.latest_code,
+                &state.latest_code,
                 &after.prev_sibling().unwrap().byte_range(),
             ),
             code_slice(
-                state.latest_code,
+                &state.latest_code,
                 &after.child_by_field_name("name").unwrap().byte_range(),
             ),
         )),
@@ -562,11 +572,11 @@ fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
 // TODO: compare u8 array slices here instead of parsing to string.
 fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
     let old_bytes = code_slice(&state.checkpointed_code, &old.byte_range());
-    let new_bytes = code_slice(state.latest_code, &new.byte_range());
+    let new_bytes = code_slice(&state.latest_code, &new.byte_range());
     old_bytes != new_bytes
 }
 
-fn code_slice(code: &Vec<u8>, range: &Range<usize>) -> String {
+fn code_slice(code: &[u8], range: &Range<usize>) -> String {
     std::string::String::from_utf8(code[range.start..range.end].to_vec()).unwrap()
 }
 
@@ -581,11 +591,11 @@ fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Option<Tree> {
 
 fn print_latest_tree(state: &SourceFileState) {
     let mut cursor = state.latest_tree.walk();
-    print_tree_helper(state.latest_code, 0, &mut cursor);
+    print_tree_helper(&state.latest_code, 0, &mut cursor);
     println!();
 }
 
-fn print_tree_helper(code: &Vec<u8>, indent: usize, cursor: &mut tree_sitter::TreeCursor) {
+fn print_tree_helper(code: &[u8], indent: usize, cursor: &mut tree_sitter::TreeCursor) {
     let node = cursor.node();
     println!(
         "{}[{} {:?}] {:?}{}",
