@@ -31,19 +31,11 @@ struct CompilationThreadState {
     candidates: Mutex<SizedStack<SourceFileSnapshot>>,
 }
 
-struct SourceFileSnapshot {
-    // Absolute path to this source file.
-    _path: PathBuf,
-    // Root of the Elm project containing this source file.
-    project_root: PathBuf,
-    // Absolute path to the `elm` compiler.
-    elm_bin: PathBuf,
-    // The code in the file.
-    code: SourceCode,
-}
-
 #[derive(Clone)]
-struct SourceCode {
+struct SourceFileSnapshot {
+    // Once calculates the file_data never changes. We wrap it in an `Arc` to
+    // avoid needing to copy it.
+    file_data: Arc<FileData>,
     // Vec offers a '.splice()' operation we need to replace bits of the vector
     // in response to updates made in the editor. This is probably not super
     // efficient though, so we should look for a better datastructure here.
@@ -54,17 +46,20 @@ struct SourceCode {
     tree: Tree,
 }
 
-struct SourceFileState {
+struct FileData {
     // Absolute path to this source file.
-    path: PathBuf,
+    _path: PathBuf,
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
     elm_bin: PathBuf,
+}
+
+struct SourceFileState {
     // The code at the time of the last 'checkpoint' (when the code compiled).
-    checkpointed_code: SourceCode,
+    checkpointed_code: SourceFileSnapshot,
     // The code with latest edits applied.
-    latest_code: SourceCode,
+    latest_code: SourceFileSnapshot,
 }
 
 fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
@@ -127,11 +122,17 @@ where
     };
     let (path, bytes, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, &bytes).unwrap();
-    let code = SourceCode { tree, bytes };
-    let mut state = SourceFileState {
+    let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm").unwrap(),
         project_root: find_project_root(&path).unwrap().to_path_buf(),
-        path,
+        _path: path,
+    });
+    let code = SourceFileSnapshot {
+        tree,
+        bytes,
+        file_data,
+    };
+    let mut state = SourceFileState {
         checkpointed_code: code.clone(),
         latest_code: code,
     };
@@ -147,32 +148,16 @@ where
                 .unwrap();
 
             if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
-                state = new_checkpoint(state, snapshot);
+                state.checkpointed_code = snapshot;
             }
         }
         handle_event(&mut state, changed_lines, edit);
         // TODO: add logic to only add some candidates for compilation
-        let snapshot = SourceFileSnapshot {
-            // TODO: try to avoid cloning path, elm_bin, and project_root.
-            _path: state.path.clone(),
-            elm_bin: state.elm_bin.clone(),
-            project_root: state.project_root.clone(),
-            // We clone here to create a snahshot of the code in this state, to
-            // check for compilation success asynchronously while we continue
-            // making edits on top of the original.
-            code: state.latest_code.clone(),
-        };
+        let snapshot = state.latest_code.clone();
         {
             let mut candidates = compilation_thread_state.candidates.lock().unwrap();
             candidates.push(snapshot)
         }
-    }
-}
-
-fn new_checkpoint(state: SourceFileState, snapshot: SourceFileSnapshot) -> SourceFileState {
-    SourceFileState {
-        checkpointed_code: snapshot.code,
-        ..state
     }
 }
 
@@ -200,15 +185,15 @@ fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
-    let mut temp_path = snapshot.project_root.join("elm_stuff/elm-pair");
+    let mut temp_path = snapshot.file_data.project_root.join("elm_stuff/elm-pair");
     std::fs::create_dir_all(&temp_path).unwrap();
     temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &snapshot.code.bytes).unwrap();
+    std::fs::write(&temp_path, &snapshot.bytes).unwrap();
 
     // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&snapshot.elm_bin)
+    let output = std::process::Command::new(&snapshot.file_data.elm_bin)
         .args(["make", "--report=json", temp_path.to_str().unwrap()])
-        .current_dir(&snapshot.project_root)
+        .current_dir(&snapshot.file_data.project_root)
         .output()
         .unwrap();
 
@@ -661,7 +646,7 @@ fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -
     old_bytes != new_bytes
 }
 
-fn code_slice(code: &SourceCode, range: &Range<usize>) -> String {
+fn code_slice(code: &SourceFileSnapshot, range: &Range<usize>) -> String {
     std::string::String::from_utf8(code.bytes[range.start..range.end].to_vec()).unwrap()
 }
 
@@ -680,7 +665,11 @@ fn print_latest_tree(state: &SourceFileState) {
     println!();
 }
 
-fn print_tree_helper(code: &SourceCode, indent: usize, cursor: &mut tree_sitter::TreeCursor) {
+fn print_tree_helper(
+    code: &SourceFileSnapshot,
+    indent: usize,
+    cursor: &mut tree_sitter::TreeCursor,
+) {
     let node = cursor.node();
     println!(
         "{}[{} {:?}] {:?}{}",
