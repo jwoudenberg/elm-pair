@@ -140,7 +140,7 @@ where
         file_data,
     };
     let mut state = SourceFileState {
-        checkpointed_code: code.clone(),
+        checkpointed_code: code.clone(), // TODO: don't assume the initial code compiles.
         latest_code: code,
     };
     print_latest_tree(&state);
