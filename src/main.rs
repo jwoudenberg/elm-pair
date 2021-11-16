@@ -1,5 +1,5 @@
 use core::ops::Range;
-use std::collections::VecDeque;
+use sized_stack::SizedStack;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,7 @@ fn main() {
     let fifo = std::fs::File::open(fifo_path).unwrap();
     let compilation_thread_state = Arc::new(CompilationThreadState {
         last_compilation_success: Mutex::new(None),
-        candidates: Mutex::new(VecDeque::with_capacity(MAX_COMPILATION_CANDIDATES)),
+        candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
     });
     let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
     // TODO: figure out a way to keep tabs on thread health.
@@ -28,7 +28,7 @@ fn main() {
 
 struct CompilationThreadState {
     last_compilation_success: Mutex<Option<SourceFileSnapshot>>,
-    candidates: Mutex<VecDeque<SourceFileSnapshot>>,
+    candidates: Mutex<SizedStack<SourceFileSnapshot>>,
 }
 
 struct SourceFileSnapshot {
@@ -167,8 +167,7 @@ where
         };
         {
             let mut candidates = compilation_thread_state.candidates.lock().unwrap();
-            candidates.truncate(MAX_COMPILATION_CANDIDATES - 1);
-            candidates.push_front(snapshot)
+            candidates.push(snapshot)
         }
     }
 }
@@ -196,9 +195,9 @@ fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>)
 }
 
 fn pop_latest_candidate(
-    candidates: &Mutex<VecDeque<SourceFileSnapshot>>,
+    candidates: &Mutex<SizedStack<SourceFileSnapshot>>,
 ) -> Option<SourceFileSnapshot> {
-    candidates.lock().unwrap().pop_front()
+    candidates.lock().unwrap().pop()
 }
 
 fn does_latest_compile(state: &SourceFileSnapshot) -> bool {
@@ -701,5 +700,35 @@ fn print_tree_helper(code: &[u8], indent: usize, cursor: &mut tree_sitter::TreeC
     }
     if cursor.goto_next_sibling() {
         print_tree_helper(code, indent, cursor);
+    }
+}
+
+// A stack with a maximum size. If a push would ever make the stack grow beyond
+// its capacity, then the stack forgets its oldest element before pushing the
+// new element.
+mod sized_stack {
+    use std::collections::VecDeque;
+
+    pub struct SizedStack<T> {
+        capacity: usize,
+        items: VecDeque<T>,
+    }
+
+    impl<T> SizedStack<T> {
+        pub fn with_capacity(capacity: usize) -> SizedStack<T> {
+            SizedStack {
+                capacity,
+                items: VecDeque::with_capacity(capacity),
+            }
+        }
+
+        pub fn push(&mut self, item: T) {
+            self.items.truncate(self.capacity - 1);
+            self.items.push_front(item);
+        }
+
+        pub fn pop(&mut self) -> Option<T> {
+            self.items.pop_front()
+        }
     }
 }
