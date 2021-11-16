@@ -147,6 +147,13 @@ where
 
     // Subsequent parses of a file.
     let mut candidate_id = 0;
+    // TODO: handle case where a new diff needs to in response to a compilation
+    // success, not new data from the editor. This would help in this scenario:
+    // 1. Changes from the editor come in.
+    // 2. Compilation candidate pushed.
+    // 3. More changes from the editor come in.
+    // 4. Compilation succeeded. We should rediff against the new checkpoint,
+    //    but nothing will happen until we get more data from the editor.
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
         maybe_update_checkpoint(&mut state, &compilation_thread_state);
@@ -189,6 +196,8 @@ fn add_compilation_candidate(
 fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>) {
     let mut last_compiled_id = 0;
     loop {
+        // TODO: chill if there's nothing to do, instead of continuing checks in
+        // a tight loop.
         if let Some((id, candidate)) = pop_latest_candidate(&compilation_thread_state.candidates) {
             if id <= last_compiled_id {
                 // We've already compiled newer snapshots than this, so ignore.
