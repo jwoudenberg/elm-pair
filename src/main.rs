@@ -149,16 +149,7 @@ where
     let mut candidate_id = 0;
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
-        {
-            let mut last_compilation_success = compilation_thread_state
-                .last_compilation_success
-                .lock()
-                .unwrap();
-
-            if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
-                state.checkpointed_code = snapshot;
-            }
-        }
+        maybe_update_checkpoint(&mut state, &compilation_thread_state);
         let should_snapshot = handle_event(&mut state, changed_lines, edit);
         if should_snapshot {
             let snapshot = state.latest_code.clone();
@@ -167,6 +158,22 @@ where
                 let mut candidates = compilation_thread_state.candidates.lock().unwrap();
                 candidates.push((candidate_id, snapshot))
             }
+        }
+    }
+}
+
+fn maybe_update_checkpoint(
+    state: &mut SourceFileState,
+    compilation_thread_state: &CompilationThreadState,
+) {
+    {
+        let mut last_compilation_success = compilation_thread_state
+            .last_compilation_success
+            .lock()
+            .unwrap();
+
+        if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
+            state.checkpointed_code = snapshot;
         }
     }
 }
