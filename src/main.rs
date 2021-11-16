@@ -37,7 +37,7 @@ struct SourceFileSnapshot {
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
-    elm_path: PathBuf,
+    elm_bin: PathBuf,
     // The code in the file.
     code: SourceCode,
 }
@@ -60,7 +60,7 @@ struct SourceFileState {
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
-    elm_path: PathBuf,
+    elm_bin: PathBuf,
     // The code at the time of the last 'checkpoint' (when the code compiled).
     checkpointed_code: SourceCode,
     // The code with latest edits applied.
@@ -129,7 +129,7 @@ where
     let tree = parse(None, &bytes).unwrap();
     let code = SourceCode { tree, bytes };
     let mut state = SourceFileState {
-        elm_path: find_executable("elm").unwrap(),
+        elm_bin: find_executable("elm").unwrap(),
         project_root: find_project_root(&path).unwrap().to_path_buf(),
         path,
         checkpointed_code: code.clone(),
@@ -153,9 +153,9 @@ where
         handle_event(&mut state, changed_lines, edit);
         // TODO: add logic to only add some candidates for compilation
         let snapshot = SourceFileSnapshot {
-            // TODO: try to avoid cloning path, elm_path, and project_root.
+            // TODO: try to avoid cloning path, elm_bin, and project_root.
             _path: state.path.clone(),
-            elm_path: state.elm_path.clone(),
+            elm_bin: state.elm_bin.clone(),
             project_root: state.project_root.clone(),
             // We clone here to create a snahshot of the code in this state, to
             // check for compilation success asynchronously while we continue
@@ -206,7 +206,7 @@ fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
     std::fs::write(&temp_path, &snapshot.code.bytes).unwrap();
 
     // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&snapshot.elm_path)
+    let output = std::process::Command::new(&snapshot.elm_bin)
         .args(["make", "--report=json", temp_path.to_str().unwrap()])
         .current_dir(&snapshot.project_root)
         .output()
