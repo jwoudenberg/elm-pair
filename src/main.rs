@@ -2,7 +2,7 @@ use core::ops::Range;
 use sized_stack::SizedStack;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
@@ -13,6 +13,7 @@ fn main() {
     let fifo = std::fs::File::open(fifo_path).unwrap();
     let compilation_thread_state = Arc::new(CompilationThreadState {
         last_compilation_success: Mutex::new(None),
+        new_candidate_condvar: Condvar::new(),
         candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
     });
     let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
@@ -30,6 +31,8 @@ struct CompilationThreadState {
     // A stack of source file snapshots the compilation thread should attempt
     // to compile.
     candidates: Mutex<SizedStack<(u64, SourceFileSnapshot)>>,
+    // A condvar triggered whenever a new candidate is added to `candidates`.
+    new_candidate_condvar: Condvar,
     // The compilation thread uses this field to communicate compilation
     // successes back to the main thread. We're not using a channel for this
     // because we don't want to block either on sending or receivning
@@ -189,35 +192,46 @@ fn add_compilation_candidate(
     *candidate_id += 1;
     {
         let mut candidates = compilation_thread_state.candidates.lock().unwrap();
-        candidates.push((*candidate_id, snapshot))
+        candidates.push((*candidate_id, snapshot));
+        compilation_thread_state.new_candidate_condvar.notify_all();
     }
 }
 
 fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>) {
     let mut last_compiled_id = 0;
     loop {
-        // TODO: chill if there's nothing to do, instead of continuing checks in
-        // a tight loop.
-        if let Some((id, candidate)) = pop_latest_candidate(&compilation_thread_state.candidates) {
-            if id <= last_compiled_id {
-                // We've already compiled newer snapshots than this, so ignore.
-                continue;
-            }
+        let (id, candidate) = pop_latest_candidate(&compilation_thread_state);
+        if id <= last_compiled_id {
+            // We've already compiled newer snapshots than this, so ignore.
+            continue;
+        }
 
-            if does_latest_compile(&candidate) {
-                last_compiled_id = id;
-                let mut last_compilation_success = compilation_thread_state
-                    .last_compilation_success
-                    .lock()
-                    .unwrap();
-                *last_compilation_success = Some(candidate);
-            }
+        if does_latest_compile(&candidate) {
+            last_compiled_id = id;
+            let mut last_compilation_success = compilation_thread_state
+                .last_compilation_success
+                .lock()
+                .unwrap();
+            *last_compilation_success = Some(candidate);
         }
     }
 }
 
-fn pop_latest_candidate<T>(candidates: &Mutex<SizedStack<T>>) -> Option<T> {
-    candidates.lock().unwrap().pop()
+fn pop_latest_candidate(
+    compilation_thread_state: &CompilationThreadState,
+) -> (u64, SourceFileSnapshot) {
+    let mut candidates = compilation_thread_state.candidates.lock().unwrap();
+    loop {
+        match candidates.pop() {
+            None => {
+                candidates = compilation_thread_state
+                    .new_candidate_condvar
+                    .wait(candidates)
+                    .unwrap();
+            }
+            Some(next_candidate) => return next_candidate,
+        }
+    }
 }
 
 fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
