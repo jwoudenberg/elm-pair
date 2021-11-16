@@ -211,10 +211,13 @@ fn does_latest_compile(state: &SourceFileSnapshot) -> bool {
     std::fs::write(&temp_path, &state.code).unwrap();
 
     // Run Elm compiler against temporary file.
-    std::process::Command::new(&state.elm_path)
-        .args(["make", "--report", "json", temp_path.to_str().unwrap()])
+    let output = std::process::Command::new(&state.elm_path)
+        .args(["make", "--report=json", temp_path.to_str().unwrap()])
+        .current_dir(&state.project_root)
         .output()
-        .is_ok()
+        .unwrap();
+
+    output.status.success()
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
