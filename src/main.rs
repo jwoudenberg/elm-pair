@@ -152,12 +152,7 @@ where
         maybe_update_checkpoint(&mut state, &compilation_thread_state);
         let should_snapshot = handle_event(&mut state, changed_lines, edit);
         if should_snapshot {
-            let snapshot = state.latest_code.clone();
-            candidate_id += 1;
-            {
-                let mut candidates = compilation_thread_state.candidates.lock().unwrap();
-                candidates.push((candidate_id, snapshot))
-            }
+            add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state);
         }
     }
 }
@@ -175,6 +170,19 @@ fn maybe_update_checkpoint(
         if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
             state.checkpointed_code = snapshot;
         }
+    }
+}
+
+fn add_compilation_candidate(
+    candidate_id: &mut u64,
+    state: &SourceFileState,
+    compilation_thread_state: &CompilationThreadState,
+) {
+    let snapshot = state.latest_code.clone();
+    *candidate_id += 1;
+    {
+        let mut candidates = compilation_thread_state.candidates.lock().unwrap();
+        candidates.push((*candidate_id, snapshot))
     }
 }
 
