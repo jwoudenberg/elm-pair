@@ -185,7 +185,7 @@ fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
-    let mut temp_path = snapshot.file_data.project_root.join("elm_stuff/elm-pair");
+    let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
     std::fs::create_dir_all(&temp_path).unwrap();
     temp_path.push("Temp.elm");
     std::fs::write(&temp_path, &snapshot.bytes).unwrap();
