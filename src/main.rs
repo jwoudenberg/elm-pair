@@ -159,13 +159,14 @@ where
                 state.checkpointed_code = snapshot;
             }
         }
-        handle_event(&mut state, changed_lines, edit);
-        // TODO: add logic to only add some candidates for compilation
-        let snapshot = state.latest_code.clone();
-        candidate_id += 1;
-        {
-            let mut candidates = compilation_thread_state.candidates.lock().unwrap();
-            candidates.push((candidate_id, snapshot))
+        let should_snapshot = handle_event(&mut state, changed_lines, edit);
+        if should_snapshot {
+            let snapshot = state.latest_code.clone();
+            candidate_id += 1;
+            {
+                let mut candidates = compilation_thread_state.candidates.lock().unwrap();
+                candidates.push((candidate_id, snapshot))
+            }
         }
     }
 }
@@ -246,7 +247,7 @@ fn find_project_root(source_file: &Path) -> Option<&Path> {
     }
 }
 
-fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) {
+fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) -> bool {
     println!("edit: {:?}", edit);
     state.latest_code.tree.edit(&edit);
     let range = edit.start_byte..edit.old_end_byte;
@@ -258,9 +259,16 @@ fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: Input
         print_latest_tree(state);
         let mut old_cursor = state.checkpointed_code.tree.walk();
         let mut new_cursor = state.latest_code.tree.walk();
+        let has_error = new_cursor.node().has_error();
         let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
-        let elm_change = interpret_change(state, &changes);
-        println!("CHANGE: {:?}", elm_change);
+        let has_changes = !(changes.old_removed.is_empty() && changes.new_added.is_empty());
+        if has_changes {
+            let elm_change = interpret_change(state, &changes);
+            println!("CHANGE: {:?}", elm_change);
+        }
+        has_changes && !has_error
+    } else {
+        false
     }
 }
 
