@@ -1,18 +1,52 @@
 use core::ops::Range;
+use std::collections::VecDeque;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
+
+const MAX_COMPILATION_CANDIDATES: usize = 10;
 
 fn main() {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
-    handle_events(&mut std::io::BufReader::new(fifo).lines());
+    let compilation_thread_state = Arc::new(CompilationThreadState {
+        last_compilation_success: Mutex::new(None),
+        candidates: Mutex::new(VecDeque::with_capacity(MAX_COMPILATION_CANDIDATES)),
+    });
+    let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
+    // TODO: figure out a way to keep tabs on thread health.
+    std::thread::spawn(move || {
+        run_compilation_thread(compilation_thread_state_clone);
+    });
+    handle_events(
+        compilation_thread_state,
+        &mut std::io::BufReader::new(fifo).lines(),
+    );
+}
+
+struct CompilationThreadState {
+    last_compilation_success: Mutex<Option<SourceFileSnapshot>>,
+    candidates: Mutex<VecDeque<SourceFileSnapshot>>,
+}
+
+struct SourceFileSnapshot {
+    // Absolute path to this source file.
+    _path: PathBuf,
+    // Root of the Elm project containing this source file.
+    project_root: PathBuf,
+    // Absolute path to the `elm` compiler.
+    elm_path: PathBuf,
+    // The code at the time of the last 'checkpoint' (when the code compiled).
+    code: Vec<u8>,
+    // The tree at the time of the last 'checkpoint'.
+    tree: Tree,
 }
 
 struct SourceFileState {
     // Absolute path to this source file.
-    _path: PathBuf,
+    path: PathBuf,
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
@@ -83,7 +117,7 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
     (path, changed_code.into_bytes(), input_edit)
 }
 
-fn handle_events<I>(lines: &mut I)
+fn handle_events<I>(compilation_thread_state: Arc<CompilationThreadState>, lines: &mut I)
 where
     I: Iterator<Item = Result<String, std::io::Error>>,
 {
@@ -97,7 +131,7 @@ where
     let mut state = SourceFileState {
         elm_path: find_executable("elm").unwrap(),
         project_root: find_project_root(&path).unwrap().to_path_buf(),
-        _path: path,
+        path,
         latest_tree: tree.clone(),
         checkpointed_code: initial_lines.clone(),
         checkpointed_tree: tree,
@@ -108,32 +142,73 @@ where
     // Subsequent parses of a file.
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
+        {
+            let mut last_compilation_success = compilation_thread_state
+                .last_compilation_success
+                .lock()
+                .unwrap();
+
+            if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
+                state = new_checkpoint(state, snapshot);
+            }
+        }
         handle_event(&mut state, changed_lines, edit);
-        // TODO: also check if we want to run a compilation check now.
-        if does_latest_compile(&state) {
-            state = new_checkpoint(state);
+        // TODO: add logic to only add some candidates for compilation
+        let snapshot = SourceFileSnapshot {
+            // TODO: try to avoid cloning path, elm_path, and project_root.
+            _path: state.path.clone(),
+            elm_path: state.elm_path.clone(),
+            project_root: state.project_root.clone(),
+            // We clone here to create a snahshot of the code in this state, to
+            // check for compilation success asynchronously while we continue
+            // making edits on top of the original.
+            tree: state.latest_tree.clone(),
+            code: state.latest_code.clone(),
+        };
+        {
+            let mut candidates = compilation_thread_state.candidates.lock().unwrap();
+            candidates.truncate(MAX_COMPILATION_CANDIDATES - 1);
+            candidates.push_front(snapshot)
         }
     }
 }
 
-fn new_checkpoint(state: SourceFileState) -> SourceFileState {
+fn new_checkpoint(state: SourceFileState, snapshot: SourceFileSnapshot) -> SourceFileState {
     SourceFileState {
-        latest_tree: state.checkpointed_tree.clone(),
-        checkpointed_code: state.latest_code.clone(),
-        checkpointed_tree: state.checkpointed_tree,
-        latest_code: state.latest_code,
+        checkpointed_code: snapshot.code,
+        checkpointed_tree: snapshot.tree,
         ..state
     }
 }
 
-fn does_latest_compile(state: &SourceFileState) -> bool {
+fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>) {
+    loop {
+        if let Some(candidate) = pop_latest_candidate(&compilation_thread_state.candidates) {
+            if does_latest_compile(&candidate) {
+                let mut last_compilation_success = compilation_thread_state
+                    .last_compilation_success
+                    .lock()
+                    .unwrap();
+                *last_compilation_success = Some(candidate);
+            }
+        }
+    }
+}
+
+fn pop_latest_candidate(
+    candidates: &Mutex<VecDeque<SourceFileSnapshot>>,
+) -> Option<SourceFileSnapshot> {
+    candidates.lock().unwrap().pop_front()
+}
+
+fn does_latest_compile(state: &SourceFileSnapshot) -> bool {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
     let mut temp_path = state.project_root.join("elm_stuff/elm-pair");
     std::fs::create_dir_all(&temp_path).unwrap();
     temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &state.latest_code).unwrap();
+    std::fs::write(&temp_path, &state.code).unwrap();
 
     // Run Elm compiler against temporary file.
     std::process::Command::new(&state.elm_path)
@@ -568,6 +643,9 @@ fn count_changed_siblings<'a>(
 
 // Check if a node has changed. We have a couple of cheap checks that can
 // confirm the node _hasn't_ changed, so we try those first.
+//
+// TODO: Incorporate tree-sitter's `has_changes` in here somehow, for bettter
+// performance.
 fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
     old.id() != new.id()
         && (old.kind_id() != new.kind_id() || have_node_contents_changed(state, old, new))
