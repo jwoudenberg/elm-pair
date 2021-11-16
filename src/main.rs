@@ -38,8 +38,18 @@ struct SourceFileSnapshot {
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
     elm_path: PathBuf,
-    // The code at the time of the last 'checkpoint' (when the code compiled).
-    code: Vec<u8>,
+    // The code in the file.
+    code: SourceCode,
+}
+
+#[derive(Clone)]
+struct SourceCode {
+    // Vec offers a '.splice()' operation we need to replace bits of the vector
+    // in response to updates made in the editor. This is probably not super
+    // efficient though, so we should look for a better datastructure here.
+    //
+    // TODO: look into better data structures for splice-heavy workloads.
+    bytes: Vec<u8>,
     // The tree at the time of the last 'checkpoint'.
     tree: Tree,
 }
@@ -52,20 +62,9 @@ struct SourceFileState {
     // Absolute path to the `elm` compiler.
     elm_path: PathBuf,
     // The code at the time of the last 'checkpoint' (when the code compiled).
-    checkpointed_code: Vec<u8>,
-    // The tree at the time of the last 'checkpoint'.
-    checkpointed_tree: Tree,
-    // Vec offers a '.splice()' operation we need to replace bits of the vector
-    // in response to updates made in the editor. This is probably not super
-    // efficient though, so we should look for a better datastructure here.
-    //
-    // We're curently storing this in a Vec because it offers a '.splice()'
-    // function that replaces part of the vector with different contents.
-    //
-    // TODO: look into better data structures for splice-heavy workloads.
-    latest_code: Vec<u8>,
-    // A tree-sitter concrete syntax tree of the latest code.
-    latest_tree: Tree,
+    checkpointed_code: SourceCode,
+    // The code with latest edits applied.
+    latest_code: SourceCode,
 }
 
 fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
@@ -126,16 +125,15 @@ where
         None => return, // We receive no events at all :(. Exit early.
         Some(line) => line,
     };
-    let (path, initial_lines, _) = parse_event(&first_line.unwrap());
-    let tree = parse(None, &initial_lines).unwrap();
+    let (path, bytes, _) = parse_event(&first_line.unwrap());
+    let tree = parse(None, &bytes).unwrap();
+    let code = SourceCode { tree, bytes };
     let mut state = SourceFileState {
         elm_path: find_executable("elm").unwrap(),
         project_root: find_project_root(&path).unwrap().to_path_buf(),
         path,
-        latest_tree: tree.clone(),
-        checkpointed_code: initial_lines.clone(),
-        checkpointed_tree: tree,
-        latest_code: initial_lines,
+        checkpointed_code: code.clone(),
+        latest_code: code,
     };
     print_latest_tree(&state);
 
@@ -162,7 +160,6 @@ where
             // We clone here to create a snahshot of the code in this state, to
             // check for compilation success asynchronously while we continue
             // making edits on top of the original.
-            tree: state.latest_tree.clone(),
             code: state.latest_code.clone(),
         };
         {
@@ -175,7 +172,6 @@ where
 fn new_checkpoint(state: SourceFileState, snapshot: SourceFileSnapshot) -> SourceFileState {
     SourceFileState {
         checkpointed_code: snapshot.code,
-        checkpointed_tree: snapshot.tree,
         ..state
     }
 }
@@ -200,19 +196,19 @@ fn pop_latest_candidate(
     candidates.lock().unwrap().pop()
 }
 
-fn does_latest_compile(state: &SourceFileSnapshot) -> bool {
+fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
-    let mut temp_path = state.project_root.join("elm_stuff/elm-pair");
+    let mut temp_path = snapshot.project_root.join("elm_stuff/elm-pair");
     std::fs::create_dir_all(&temp_path).unwrap();
     temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &state.code).unwrap();
+    std::fs::write(&temp_path, &snapshot.code.bytes).unwrap();
 
     // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&state.elm_path)
+    let output = std::process::Command::new(&snapshot.elm_path)
         .args(["make", "--report=json", temp_path.to_str().unwrap()])
-        .current_dir(&state.project_root)
+        .current_dir(&snapshot.project_root)
         .output()
         .unwrap();
 
@@ -253,16 +249,16 @@ fn find_project_root(source_file: &Path) -> Option<&Path> {
 
 fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) {
     println!("edit: {:?}", edit);
-    state.latest_tree.edit(&edit);
+    state.latest_code.tree.edit(&edit);
     let range = edit.start_byte..edit.old_end_byte;
-    state.latest_code.splice(range, changed_bytes);
+    state.latest_code.bytes.splice(range, changed_bytes);
 
-    let parse_result = parse(Some(&state.latest_tree), &state.latest_code);
+    let parse_result = parse(Some(&state.latest_code.tree), &state.latest_code.bytes);
     if let Some(new_tree) = parse_result {
-        state.latest_tree = new_tree;
+        state.latest_code.tree = new_tree;
         print_latest_tree(state);
-        let mut old_cursor = state.checkpointed_tree.walk();
-        let mut new_cursor = state.latest_tree.walk();
+        let mut old_cursor = state.checkpointed_code.tree.walk();
+        let mut new_cursor = state.latest_code.tree.walk();
         let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
         let elm_change = interpret_change(state, &changes);
         println!("CHANGE: {:?}", elm_change);
@@ -665,8 +661,8 @@ fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -
     old_bytes != new_bytes
 }
 
-fn code_slice(code: &[u8], range: &Range<usize>) -> String {
-    std::string::String::from_utf8(code[range.start..range.end].to_vec()).unwrap()
+fn code_slice(code: &SourceCode, range: &Range<usize>) -> String {
+    std::string::String::from_utf8(code.bytes[range.start..range.end].to_vec()).unwrap()
 }
 
 // TODO: reuse parser.
@@ -679,12 +675,12 @@ fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Option<Tree> {
 }
 
 fn print_latest_tree(state: &SourceFileState) {
-    let mut cursor = state.latest_tree.walk();
+    let mut cursor = state.latest_code.tree.walk();
     print_tree_helper(&state.latest_code, 0, &mut cursor);
     println!();
 }
 
-fn print_tree_helper(code: &[u8], indent: usize, cursor: &mut tree_sitter::TreeCursor) {
+fn print_tree_helper(code: &SourceCode, indent: usize, cursor: &mut tree_sitter::TreeCursor) {
     let node = cursor.node();
     println!(
         "{}[{} {:?}] {:?}{}",
