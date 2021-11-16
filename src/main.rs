@@ -27,8 +27,15 @@ fn main() {
 }
 
 struct CompilationThreadState {
+    // A stack of source file snapshots the compilation thread should attempt
+    // to compile.
+    candidates: Mutex<SizedStack<(u64, SourceFileSnapshot)>>,
+    // The compilation thread uses this field to communicate compilation
+    // successes back to the main thread. We're not using a channel for this
+    // because we don't want to block either on sending or receivning
+    // compilation results. A newer compilation result should overwrite an older
+    // one.
     last_compilation_success: Mutex<Option<SourceFileSnapshot>>,
-    candidates: Mutex<SizedStack<SourceFileSnapshot>>,
 }
 
 #[derive(Clone)]
@@ -139,6 +146,7 @@ where
     print_latest_tree(&state);
 
     // Subsequent parses of a file.
+    let mut candidate_id = 0;
     for line in lines {
         let (_, changed_lines, edit) = parse_event(&line.unwrap());
         {
@@ -154,17 +162,25 @@ where
         handle_event(&mut state, changed_lines, edit);
         // TODO: add logic to only add some candidates for compilation
         let snapshot = state.latest_code.clone();
+        candidate_id += 1;
         {
             let mut candidates = compilation_thread_state.candidates.lock().unwrap();
-            candidates.push(snapshot)
+            candidates.push((candidate_id, snapshot))
         }
     }
 }
 
 fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>) {
+    let mut last_compiled_id = 0;
     loop {
-        if let Some(candidate) = pop_latest_candidate(&compilation_thread_state.candidates) {
+        if let Some((id, candidate)) = pop_latest_candidate(&compilation_thread_state.candidates) {
+            if id <= last_compiled_id {
+                // We've already compiled newer snapshots than this, so ignore.
+                continue;
+            }
+
             if does_latest_compile(&candidate) {
+                last_compiled_id = id;
                 let mut last_compilation_success = compilation_thread_state
                     .last_compilation_success
                     .lock()
@@ -175,9 +191,7 @@ fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>)
     }
 }
 
-fn pop_latest_candidate(
-    candidates: &Mutex<SizedStack<SourceFileSnapshot>>,
-) -> Option<SourceFileSnapshot> {
+fn pop_latest_candidate<T>(candidates: &Mutex<SizedStack<T>>) -> Option<T> {
     candidates.lock().unwrap().pop()
 }
 
