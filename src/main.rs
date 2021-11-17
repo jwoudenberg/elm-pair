@@ -116,6 +116,7 @@ enum Error {
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
+    MutexWasPoisoned,
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -211,7 +212,7 @@ where
     // Subsequent parses of a file.
     let mut candidate_id = 0;
     for msg in msgs {
-        maybe_update_checkpoint(&mut state, &compilation_thread_state);
+        maybe_update_checkpoint(&mut state, &compilation_thread_state)?;
         match msg {
             Msg::CompilationSucceeded => {
                 reparse_tree(&mut state)?;
@@ -230,17 +231,16 @@ where
 fn maybe_update_checkpoint(
     state: &mut SourceFileState,
     compilation_thread_state: &CompilationThreadState,
-) {
-    {
-        let mut last_compilation_success = compilation_thread_state
-            .last_compilation_success
-            .lock()
-            .unwrap();
+) -> Result<(), Error> {
+    let mut last_compilation_success = compilation_thread_state
+        .last_compilation_success
+        .lock()
+        .map_err(|_| Error::MutexWasPoisoned)?;
 
-        if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
-            state.checkpointed_code = snapshot;
-        }
+    if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
+        state.checkpointed_code = snapshot;
     }
+    Ok(())
 }
 
 fn add_compilation_candidate(
