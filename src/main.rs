@@ -127,6 +127,9 @@ enum Error {
     FifoCreationFailed(nix::errno::Errno),
     FifoOpeningFailed(std::io::Error),
     FifoLineReadingFailed(std::io::Error),
+    CompilationFailedToCreateTempDir(std::io::Error),
+    CompilationFailedToWriteCodeToTempFile(std::io::Error),
+    CompilationFailedToRunElmMake(std::io::Error),
     SendingMsgFromEditorListenerThreadFailed,
     SendingMsgFromCompilationThreadFailed,
     TreeSitterParsingFailed,
@@ -302,7 +305,7 @@ fn run_compilation_thread(
             continue;
         }
 
-        if does_latest_compile(&candidate) {
+        if does_latest_compile(&candidate)? {
             last_compiled_id = id;
             let mut last_compilation_success = compilation_thread_state
                 .last_compilation_success
@@ -354,23 +357,26 @@ fn pop_latest_candidate(
     }
 }
 
-fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
+fn does_latest_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
     let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
-    std::fs::create_dir_all(&temp_path).unwrap();
+    std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
     temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &snapshot.bytes).unwrap();
+    std::fs::write(&temp_path, &snapshot.bytes)
+        .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
 
     // Run Elm compiler against temporary file.
     let output = std::process::Command::new(&snapshot.file_data.elm_bin)
-        .args(["make", "--report=json", temp_path.to_str().unwrap()])
+        .arg("make")
+        .arg("--report=json")
+        .arg(temp_path)
         .current_dir(&snapshot.file_data.project_root)
         .output()
-        .unwrap();
+        .map_err(Error::CompilationFailedToRunElmMake)?;
 
-    output.status.success()
+    Ok(output.status.success())
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {
