@@ -238,7 +238,7 @@ where
             let elm_change = interpret_change(&changes);
             println!("CHANGE: {:?}", elm_change);
             if !state.latest_code.tree.root_node().has_error() {
-                add_compilation_candidate(&state, &compilation_thread_state)?;
+                add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
             }
         }
     }
@@ -261,10 +261,10 @@ fn maybe_update_checkpoint(
 }
 
 fn add_compilation_candidate(
-    state: &SourceFileState,
+    code: &SourceFileSnapshot,
     compilation_thread_state: &CompilationThreadState,
 ) -> Result<(), Error> {
-    let snapshot = state.latest_code.clone();
+    let snapshot = code.clone();
     {
         let mut candidates = compilation_thread_state
             .candidates
