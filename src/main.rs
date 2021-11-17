@@ -210,10 +210,10 @@ where
         maybe_update_checkpoint(&mut state, &compilation_thread_state);
         match msg {
             Msg::CompilationSucceeded => {
-                reparse_tree(&mut state);
+                reparse_tree(&mut state)?;
             }
             Msg::ReceivedEditorEvent(edit) => {
-                let should_snapshot = apply_edit(&mut state, edit);
+                let should_snapshot = apply_edit(&mut state, edit)?;
                 if should_snapshot {
                     add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state);
                 }
@@ -359,7 +359,7 @@ fn find_project_root(source_file: &Path) -> Option<&Path> {
     }
 }
 
-fn apply_edit(state: &mut SourceFileState, edit: Edit) -> bool {
+fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<bool, Error> {
     println!("edit: {:?}", edit.input_edit);
     state.latest_code.tree.edit(&edit.input_edit);
     let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
@@ -367,24 +367,20 @@ fn apply_edit(state: &mut SourceFileState, edit: Edit) -> bool {
     reparse_tree(state)
 }
 
-fn reparse_tree(state: &mut SourceFileState) -> bool {
-    let parse_result = parse(Some(&state.latest_code.tree), &state.latest_code.bytes);
-    if let Ok(new_tree) = parse_result {
-        state.latest_code.tree = new_tree;
-        print_latest_tree(state);
-        let mut old_cursor = state.checkpointed_code.tree.walk();
-        let mut new_cursor = state.latest_code.tree.walk();
-        let has_error = new_cursor.node().has_error();
-        let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
-        let has_changes = !(changes.old_removed.is_empty() && changes.new_added.is_empty());
-        if has_changes {
-            let elm_change = interpret_change(state, &changes);
-            println!("CHANGE: {:?}", elm_change);
-        }
-        has_changes && !has_error
-    } else {
-        false
+fn reparse_tree(state: &mut SourceFileState) -> Result<bool, Error> {
+    let new_tree = parse(Some(&state.latest_code.tree), &state.latest_code.bytes)?;
+    state.latest_code.tree = new_tree;
+    print_latest_tree(state);
+    let mut old_cursor = state.checkpointed_code.tree.walk();
+    let mut new_cursor = state.latest_code.tree.walk();
+    let has_error = new_cursor.node().has_error();
+    let changes = diff_trees(state, &mut old_cursor, &mut new_cursor);
+    let has_changes = !(changes.old_removed.is_empty() && changes.new_added.is_empty());
+    if has_changes {
+        let elm_change = interpret_change(state, &changes);
+        println!("CHANGE: {:?}", elm_change);
     }
+    Ok(has_changes && !has_error)
 }
 
 // TODO: use kind ID's instead of names for pattern matching.
