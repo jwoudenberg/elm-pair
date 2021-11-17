@@ -115,6 +115,7 @@ enum Error {
     DidNotFindElmBinaryOnPath,
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
+    NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -193,7 +194,7 @@ where
     let tree = parse(None, &new_bytes)?;
     let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm")?,
-        project_root: find_project_root(&file).unwrap().to_path_buf(),
+        project_root: find_project_root(&file)?.to_path_buf(),
         _path: file,
     });
     let code = SourceFileSnapshot {
@@ -344,16 +345,18 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
     Err(Error::DidNotFindElmBinaryOnPath)
 }
 
-fn find_project_root(source_file: &Path) -> Option<&Path> {
+fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
     let mut maybe_root = source_file;
     loop {
         match maybe_root.parent() {
             None => {
-                return None;
+                return Err(Error::NoElmJsonFoundInAnyAncestorDirectoryOf(
+                    source_file.to_path_buf(),
+                ));
             }
             Some(parent) => {
                 if parent.join("elm.json").exists() {
-                    return Some(parent);
+                    return Ok(parent);
                 } else {
                     maybe_root = parent;
                 }
