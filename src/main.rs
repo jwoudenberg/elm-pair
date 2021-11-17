@@ -50,7 +50,7 @@ struct CompilationThreadState {
 
 #[derive(Clone)]
 struct SourceFileSnapshot {
-    // Once calculates the file_data never changes. We wrap it in an `Arc` to
+    // Once calculated the file_data never changes. We wrap it in an `Arc` to
     // avoid needing to copy it.
     file_data: Arc<FileData>,
     // Vec offers a '.splice()' operation we need to replace bits of the vector
@@ -59,7 +59,9 @@ struct SourceFileSnapshot {
     //
     // TODO: look into better data structures for splice-heavy workloads.
     bytes: Vec<u8>,
-    // The tree at the time of the last 'checkpoint'.
+    // The tree-sitter concrete syntax tree representing the code in `bytes`.
+    // This tree by itself is not enough to recover the source code, which is
+    // why we also keep the original source code in `bytes`.
     tree: Tree,
 }
 
