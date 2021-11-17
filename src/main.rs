@@ -122,14 +122,13 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
 
 fn handle_events<I>(compilation_thread_state: Arc<CompilationThreadState>, lines: &mut I)
 where
-    I: Iterator<Item = Result<String, std::io::Error>>,
+    I: Iterator<Item = (PathBuf, Vec<u8>, InputEdit)>,
 {
     // First event returns the initial state.
-    let first_line = match lines.next() {
+    let (path, bytes, _) = match lines.next() {
         None => return, // We receive no events at all :(. Exit early.
-        Some(line) => line,
+        Some(edit) => edit,
     };
-    let (path, bytes, _) = parse_event(&first_line.unwrap());
     let tree = parse(None, &bytes).unwrap();
     let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm").unwrap(),
@@ -156,8 +155,7 @@ where
     // 3. More changes from the editor come in.
     // 4. Compilation succeeded. We should rediff against the new checkpoint,
     //    but nothing will happen until we get more data from the editor.
-    for line in lines {
-        let (_, changed_lines, edit) = parse_event(&line.unwrap());
+    for (_, changed_lines, edit) in lines {
         maybe_update_checkpoint(&mut state, &compilation_thread_state);
         let should_snapshot = handle_event(&mut state, changed_lines, edit);
         if should_snapshot {
@@ -216,13 +214,14 @@ fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>)
     }
 }
 
-fn run_editor_listener_thread(sender: SyncSender<Result<String, std::io::Error>>) {
+fn run_editor_listener_thread(sender: SyncSender<(PathBuf, Vec<u8>, InputEdit)>) {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
-        sender.send(line).unwrap();
+        let change = parse_event(&line.unwrap());
+        sender.send(change).unwrap();
     }
 }
 
