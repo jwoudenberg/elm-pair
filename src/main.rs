@@ -305,7 +305,7 @@ fn run_compilation_thread(
             continue;
         }
 
-        if does_latest_compile(&candidate)? {
+        if does_snapshot_compile(&candidate)? {
             last_compiled_id = id;
             let mut last_compilation_success = compilation_thread_state
                 .last_compilation_success
@@ -357,7 +357,7 @@ fn pop_latest_candidate(
     }
 }
 
-fn does_latest_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
+fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
