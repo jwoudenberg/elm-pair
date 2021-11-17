@@ -114,7 +114,7 @@ enum Error {
     UnexpectedFirstMessageCompilationSucceeded,
 }
 
-fn parse_event(serialized_event: &str) -> Edit {
+fn parse_editor_event(serialized_event: &str) -> Edit {
     let (
         file,
         changed_code,
@@ -284,7 +284,7 @@ fn run_editor_listener_thread(sender: SyncSender<Msg>) {
     let fifo = std::fs::File::open(fifo_path).unwrap();
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
-        let edit = parse_event(&line.unwrap());
+        let edit = parse_editor_event(&line.unwrap());
         sender.send(Msg::ReceivedEditorEvent(edit)).unwrap();
     }
 }
