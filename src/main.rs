@@ -116,7 +116,8 @@ enum Error {
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
-    MutexWasPoisoned,
+    FoundPoisonedMutexWhileUpdatingCheckpoint,
+    FoundPoisonedMutexWhileAddingCompilationCandidate,
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -220,7 +221,11 @@ where
             Msg::ReceivedEditorEvent(edit) => {
                 let should_snapshot = apply_edit(&mut state, edit)?;
                 if should_snapshot {
-                    add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state);
+                    add_compilation_candidate(
+                        &mut candidate_id,
+                        &state,
+                        &compilation_thread_state,
+                    )?;
                 }
             }
         }
@@ -235,7 +240,7 @@ fn maybe_update_checkpoint(
     let mut last_compilation_success = compilation_thread_state
         .last_compilation_success
         .lock()
-        .map_err(|_| Error::MutexWasPoisoned)?;
+        .map_err(|_| Error::FoundPoisonedMutexWhileUpdatingCheckpoint)?;
 
     if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
         state.checkpointed_code = snapshot;
@@ -247,14 +252,18 @@ fn add_compilation_candidate(
     candidate_id: &mut u64,
     state: &SourceFileState,
     compilation_thread_state: &CompilationThreadState,
-) {
+) -> Result<(), Error> {
     let snapshot = state.latest_code.clone();
     *candidate_id += 1;
     {
-        let mut candidates = compilation_thread_state.candidates.lock().unwrap();
+        let mut candidates = compilation_thread_state
+            .candidates
+            .lock()
+            .map_err(|_| Error::FoundPoisonedMutexWhileAddingCompilationCandidate)?;
         candidates.push((*candidate_id, snapshot));
         compilation_thread_state.new_candidate_condvar.notify_all();
     }
+    Ok(())
 }
 
 fn run_compilation_thread(
