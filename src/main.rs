@@ -49,7 +49,7 @@ fn run() -> Result<(), Error> {
 struct CompilationThreadState {
     // A stack of source file snapshots the compilation thread should attempt
     // to compile.
-    candidates: Mutex<SizedStack<(u64, SourceFileSnapshot)>>,
+    candidates: Mutex<SizedStack<SourceFileSnapshot>>,
     // A condvar triggered whenever a new candidate is added to `candidates`.
     new_candidate_condvar: Condvar,
     // The compilation thread uses this field to communicate compilation
@@ -75,6 +75,8 @@ struct SourceFileSnapshot {
     // This tree by itself is not enough to recover the source code, which is
     // why we also keep the original source code in `bytes`.
     tree: Tree,
+    // A number that gets incremented each time we change the source code.
+    revision: u64,
 }
 
 struct FileData {
@@ -208,6 +210,7 @@ where
         tree,
         bytes: new_bytes,
         file_data,
+        revision: 0,
     };
     let mut state = SourceFileState {
         checkpointed_code: code.clone(), // TODO: don't assume the initial code compiles.
@@ -216,7 +219,6 @@ where
     debug_print_latest_tree(&state);
 
     // Subsequent parses of a file.
-    let mut candidate_id = 0;
     for msg in msgs {
         maybe_update_checkpoint(&mut state, &compilation_thread_state)?;
         match msg {
@@ -236,7 +238,7 @@ where
             let elm_change = interpret_change(&changes);
             println!("CHANGE: {:?}", elm_change);
             if !state.latest_code.tree.root_node().has_error() {
-                add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state)?;
+                add_compilation_candidate(&state, &compilation_thread_state)?;
             }
         }
     }
@@ -259,18 +261,16 @@ fn maybe_update_checkpoint(
 }
 
 fn add_compilation_candidate(
-    candidate_id: &mut u64,
     state: &SourceFileState,
     compilation_thread_state: &CompilationThreadState,
 ) -> Result<(), Error> {
     let snapshot = state.latest_code.clone();
-    *candidate_id += 1;
     {
         let mut candidates = compilation_thread_state
             .candidates
             .lock()
             .map_err(|_| Error::FoundPoisonedMutexWhileAddingCompilationCandidate)?;
-        candidates.push((*candidate_id, snapshot));
+        candidates.push(snapshot);
         compilation_thread_state.new_candidate_condvar.notify_all();
     }
     Ok(())
@@ -291,16 +291,18 @@ fn run_compilation_thread(
     sender: &SyncSender<Msg>,
     compilation_thread_state: Arc<CompilationThreadState>,
 ) -> Result<(), Error> {
-    let mut last_compiled_id = 0;
+    let mut last_compiled_revision = None;
     loop {
-        let (id, candidate) = pop_latest_candidate(&compilation_thread_state)?;
-        if id <= last_compiled_id {
-            // We've already compiled newer snapshots than this, so ignore.
-            continue;
+        let candidate = pop_latest_candidate(&compilation_thread_state)?;
+        if let Some(revision) = last_compiled_revision {
+            if candidate.revision <= revision {
+                // We've already compiled newer snapshots than this, so ignore.
+                continue;
+            }
         }
 
         if does_snapshot_compile(&candidate)? {
-            last_compiled_id = id;
+            last_compiled_revision = Some(candidate.revision);
             let mut last_compilation_success = compilation_thread_state
                 .last_compilation_success
                 .lock()
@@ -333,7 +335,7 @@ fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
 
 fn pop_latest_candidate(
     compilation_thread_state: &CompilationThreadState,
-) -> Result<(u64, SourceFileSnapshot), Error> {
+) -> Result<SourceFileSnapshot, Error> {
     let mut candidates = compilation_thread_state
         .candidates
         .lock()
@@ -410,6 +412,7 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
 fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<(), Error> {
     println!("edit: {:?}", edit.input_edit);
     state.latest_code.tree.edit(&edit.input_edit);
+    state.latest_code.revision += 1;
     let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
     state.latest_code.bytes.splice(range, edit.new_bytes);
     reparse_tree(state)
