@@ -71,9 +71,20 @@ struct SourceFileState {
     latest_code: SourceFileSnapshot,
 }
 
-fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
+// A change made by the user reported by the editor.
+struct Edit {
+    // The file that was changed.
+    file: PathBuf,
+    // A tree-sitter InputEdit value, describing what part of the file was changed.
+    input_edit: InputEdit,
+    // Bytes representing the new contents of the file at the location described
+    // by `input_edit`.
+    new_bytes: Vec<u8>,
+}
+
+fn parse_event(serialized_event: &str) -> Edit {
     let (
-        path,
+        file,
         changed_code,
         start_byte,
         old_end_byte,
@@ -117,27 +128,33 @@ fn parse_event(serialized_event: &str) -> (PathBuf, Vec<u8>, InputEdit) {
         old_end_position,
         new_end_position,
     };
-    (path, changed_code.into_bytes(), input_edit)
+    Edit {
+        file,
+        input_edit,
+        new_bytes: changed_code.into_bytes(),
+    }
 }
 
 fn handle_events<I>(compilation_thread_state: Arc<CompilationThreadState>, lines: &mut I)
 where
-    I: Iterator<Item = (PathBuf, Vec<u8>, InputEdit)>,
+    I: Iterator<Item = Edit>,
 {
     // First event returns the initial state.
-    let (path, bytes, _) = match lines.next() {
+    let Edit {
+        file, new_bytes, ..
+    } = match lines.next() {
         None => return, // We receive no events at all :(. Exit early.
         Some(edit) => edit,
     };
-    let tree = parse(None, &bytes).unwrap();
+    let tree = parse(None, &new_bytes).unwrap();
     let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm").unwrap(),
-        project_root: find_project_root(&path).unwrap().to_path_buf(),
-        _path: path,
+        project_root: find_project_root(&file).unwrap().to_path_buf(),
+        _path: file,
     });
     let code = SourceFileSnapshot {
         tree,
-        bytes,
+        bytes: new_bytes,
         file_data,
     };
     let mut state = SourceFileState {
@@ -155,9 +172,14 @@ where
     // 3. More changes from the editor come in.
     // 4. Compilation succeeded. We should rediff against the new checkpoint,
     //    but nothing will happen until we get more data from the editor.
-    for (_, changed_lines, edit) in lines {
+    for Edit {
+        new_bytes,
+        input_edit,
+        ..
+    } in lines
+    {
         maybe_update_checkpoint(&mut state, &compilation_thread_state);
-        let should_snapshot = handle_event(&mut state, changed_lines, edit);
+        let should_snapshot = handle_event(&mut state, new_bytes, input_edit);
         if should_snapshot {
             add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state);
         }
@@ -214,14 +236,14 @@ fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>)
     }
 }
 
-fn run_editor_listener_thread(sender: SyncSender<(PathBuf, Vec<u8>, InputEdit)>) {
+fn run_editor_listener_thread(sender: SyncSender<Edit>) {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
-        let change = parse_event(&line.unwrap());
-        sender.send(change).unwrap();
+        let edit = parse_event(&line.unwrap());
+        sender.send(edit).unwrap();
     }
 }
 
