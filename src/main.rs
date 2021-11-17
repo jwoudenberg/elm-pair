@@ -121,6 +121,10 @@ enum Error {
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
     FoundPoisonedMutexWhileUpdatingCheckpoint,
     FoundPoisonedMutexWhileAddingCompilationCandidate,
+    FifoCreationFailed(nix::errno::Errno),
+    FifoOpeningFailed(std::io::Error),
+    FifoLineReadingFailed(std::io::Error),
+    SendingMsgFromEditorListenerThreadFailed,
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -311,12 +315,15 @@ fn run_compilation_thread(
 
 fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
     let fifo_path = "/tmp/elm-pair";
-    nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
-    let fifo = std::fs::File::open(fifo_path).unwrap();
+    nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU)
+        .map_err(Error::FifoCreationFailed)?;
+    let fifo = std::fs::File::open(fifo_path).map_err(Error::FifoOpeningFailed)?;
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
-        let edit = parse_editor_event(&line.unwrap());
-        sender.send(Msg::ReceivedEditorEvent(edit)).unwrap();
+        let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?);
+        sender
+            .send(Msg::ReceivedEditorEvent(edit))
+            .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
     }
     Ok(())
 }
