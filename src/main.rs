@@ -89,9 +89,7 @@ struct FileData {
 }
 
 struct SourceFileState {
-    // The code at the time of the last 'checkpoint' (when the code compiled).
-    checkpointed_code: Option<SourceFileSnapshot>,
-    // The code with latest edits applied.
+    last_compiling_version: Option<SourceFileSnapshot>,
     latest_code: SourceFileSnapshot,
 }
 
@@ -121,7 +119,7 @@ enum Error {
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
-    FoundPoisonedMutexWhileUpdatingCheckpoint,
+    FoundPoisonedMutexWhileUpdatingLastCompilingVersion,
     FoundPoisonedMutexWhileAddingCompilationCandidate,
     FoundPoisonedMutexWhileWritingLastCompilationSuccess,
     FoundPoisonedMutexWhileReadingCompilationCandidates,
@@ -214,26 +212,26 @@ where
     };
     add_compilation_candidate(&code, &compilation_thread_state)?;
     let mut state = SourceFileState {
-        checkpointed_code: None,
+        last_compiling_version: None,
         latest_code: code,
     };
     debug_print_latest_tree(&state);
 
     // Subsequent parses of a file.
     for msg in msgs {
-        maybe_update_checkpoint(&mut state, &compilation_thread_state)?;
+        refresh_last_compiling_version(&mut state, &compilation_thread_state)?;
         match msg {
             Msg::ThreadFailedWithError(err) => return Err(err),
             Msg::CompilationSucceeded => reparse_tree(&mut state)?,
             Msg::ReceivedEditorEvent(edit) => apply_edit(&mut state, edit)?,
         }
-        if let Some(checkpointed_code) = &state.checkpointed_code {
-            let mut checkpointed_cursor = checkpointed_code.tree.walk();
+        if let Some(last_compiling_version) = &state.last_compiling_version {
+            let mut last_compiling_version_cursor = last_compiling_version.tree.walk();
             let mut latest_cursor = state.latest_code.tree.walk();
             let changes = diff_trees(
-                checkpointed_code,
+                last_compiling_version,
                 &state.latest_code,
-                &mut checkpointed_cursor,
+                &mut last_compiling_version_cursor,
                 &mut latest_cursor,
             );
             if !changes.is_empty() {
@@ -248,17 +246,17 @@ where
     Ok(())
 }
 
-fn maybe_update_checkpoint(
+fn refresh_last_compiling_version(
     state: &mut SourceFileState,
     compilation_thread_state: &CompilationThreadState,
 ) -> Result<(), Error> {
     let mut last_compilation_success = compilation_thread_state
         .last_compilation_success
         .lock()
-        .map_err(|_| Error::FoundPoisonedMutexWhileUpdatingCheckpoint)?;
+        .map_err(|_| Error::FoundPoisonedMutexWhileUpdatingLastCompilingVersion)?;
 
     if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
-        state.checkpointed_code = Some(snapshot);
+        state.last_compiling_version = Some(snapshot);
     }
     Ok(())
 }
