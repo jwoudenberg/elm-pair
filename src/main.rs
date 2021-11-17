@@ -90,7 +90,7 @@ struct FileData {
 
 struct SourceFileState {
     // The code at the time of the last 'checkpoint' (when the code compiled).
-    checkpointed_code: SourceFileSnapshot,
+    checkpointed_code: Option<SourceFileSnapshot>,
     // The code with latest edits applied.
     latest_code: SourceFileSnapshot,
 }
@@ -212,8 +212,9 @@ where
         file_data,
         revision: 0,
     };
+    add_compilation_candidate(&code, &compilation_thread_state)?;
     let mut state = SourceFileState {
-        checkpointed_code: code.clone(), // TODO: don't assume the initial code compiles.
+        checkpointed_code: None,
         latest_code: code,
     };
     debug_print_latest_tree(&state);
@@ -226,19 +227,21 @@ where
             Msg::CompilationSucceeded => reparse_tree(&mut state)?,
             Msg::ReceivedEditorEvent(edit) => apply_edit(&mut state, edit)?,
         }
-        let mut checkpointed_cursor = state.checkpointed_code.tree.walk();
-        let mut latest_cursor = state.latest_code.tree.walk();
-        let changes = diff_trees(
-            &state.checkpointed_code,
-            &state.latest_code,
-            &mut checkpointed_cursor,
-            &mut latest_cursor,
-        );
-        if !changes.is_empty() {
-            let elm_change = interpret_change(&changes);
-            println!("CHANGE: {:?}", elm_change);
-            if !state.latest_code.tree.root_node().has_error() {
-                add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
+        if let Some(checkpointed_code) = &state.checkpointed_code {
+            let mut checkpointed_cursor = checkpointed_code.tree.walk();
+            let mut latest_cursor = state.latest_code.tree.walk();
+            let changes = diff_trees(
+                checkpointed_code,
+                &state.latest_code,
+                &mut checkpointed_cursor,
+                &mut latest_cursor,
+            );
+            if !changes.is_empty() {
+                let elm_change = interpret_change(&changes);
+                println!("CHANGE: {:?}", elm_change);
+                if !state.latest_code.tree.root_node().has_error() {
+                    add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
+                }
             }
         }
     }
@@ -255,7 +258,7 @@ fn maybe_update_checkpoint(
         .map_err(|_| Error::FoundPoisonedMutexWhileUpdatingCheckpoint)?;
 
     if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
-        state.checkpointed_code = snapshot;
+        state.checkpointed_code = Some(snapshot);
     }
     Ok(())
 }
