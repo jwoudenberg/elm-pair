@@ -15,10 +15,18 @@ fn main() {
         candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
     });
     let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
-    let (sender, receiver) = sync_channel(0);
+    // We're using a sync_channel of size 1 here because:
+    // - Size 0 would mean sending blocks until the receiver is requesting a new
+    //   message. This is not okay, because we want to be able to queue up a
+    //   Msg::CompilationSucceeded for after current reparsing succeeds.
+    // - Size >1 means we start buffering editor events in this program. I want
+    //   to try to stay ouf the buffering business and leave it to the OS, until
+    //   I see a benefit in doing it in this program (I don't currently).
+    let (sender, receiver) = sync_channel(1);
+    let sender_clone = sender.clone();
     // TODO: figure out a way to keep tabs on thread health.
     std::thread::spawn(move || {
-        run_compilation_thread(compilation_thread_state_clone);
+        run_compilation_thread(sender_clone, compilation_thread_state_clone);
     });
     std::thread::spawn(move || {
         run_editor_listener_thread(sender);
@@ -69,6 +77,13 @@ struct SourceFileState {
     checkpointed_code: SourceFileSnapshot,
     // The code with latest edits applied.
     latest_code: SourceFileSnapshot,
+}
+
+// The event type central to this application. The main thread of the program
+// will process these one-at-a-time.
+enum Msg {
+    ReceivedEditorEvent(Edit),
+    CompilationSucceeded,
 }
 
 // A change made by the user reported by the editor.
@@ -135,16 +150,18 @@ fn parse_event(serialized_event: &str) -> Edit {
     }
 }
 
-fn handle_events<I>(compilation_thread_state: Arc<CompilationThreadState>, lines: &mut I)
+fn handle_events<I>(compilation_thread_state: Arc<CompilationThreadState>, msgs: &mut I)
 where
-    I: Iterator<Item = Edit>,
+    I: Iterator<Item = Msg>,
 {
     // First event returns the initial state.
     let Edit {
         file, new_bytes, ..
-    } = match lines.next() {
-        None => return, // We receive no events at all :(. Exit early.
-        Some(edit) => edit,
+    } = match msgs.next() {
+        Some(Msg::ReceivedEditorEvent(edit)) => edit,
+        // Did not receive any events at all :(.
+        None => return,
+        Some(Msg::CompilationSucceeded) => return,
     };
     let tree = parse(None, &new_bytes).unwrap();
     let file_data = Arc::new(FileData {
@@ -165,23 +182,18 @@ where
 
     // Subsequent parses of a file.
     let mut candidate_id = 0;
-    // TODO: handle case where a new diff needs to in response to a compilation
-    // success, not new data from the editor. This would help in this scenario:
-    // 1. Changes from the editor come in.
-    // 2. Compilation candidate pushed.
-    // 3. More changes from the editor come in.
-    // 4. Compilation succeeded. We should rediff against the new checkpoint,
-    //    but nothing will happen until we get more data from the editor.
-    for Edit {
-        new_bytes,
-        input_edit,
-        ..
-    } in lines
-    {
+    for msg in msgs {
         maybe_update_checkpoint(&mut state, &compilation_thread_state);
-        let should_snapshot = handle_event(&mut state, new_bytes, input_edit);
-        if should_snapshot {
-            add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state);
+        match msg {
+            Msg::CompilationSucceeded => {
+                reparse_tree(&mut state);
+            }
+            Msg::ReceivedEditorEvent(edit) => {
+                let should_snapshot = apply_edit(&mut state, edit);
+                if should_snapshot {
+                    add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state);
+                }
+            }
         }
     }
 }
@@ -216,7 +228,10 @@ fn add_compilation_candidate(
     }
 }
 
-fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>) {
+fn run_compilation_thread(
+    sender: SyncSender<Msg>,
+    compilation_thread_state: Arc<CompilationThreadState>,
+) {
     let mut last_compiled_id = 0;
     loop {
         let (id, candidate) = pop_latest_candidate(&compilation_thread_state);
@@ -232,18 +247,22 @@ fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>)
                 .lock()
                 .unwrap();
             *last_compilation_success = Some(candidate);
+            // Let the main thread know it should reparse. If sending this fails
+            // we asume that's because a ReceivedEditorEvent got there first.
+            // That's okay, because those events cause reparsing too.
+            sender.try_send(Msg::CompilationSucceeded).unwrap();
         }
     }
 }
 
-fn run_editor_listener_thread(sender: SyncSender<Edit>) {
+fn run_editor_listener_thread(sender: SyncSender<Msg>) {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
         let edit = parse_event(&line.unwrap());
-        sender.send(edit).unwrap();
+        sender.send(Msg::ReceivedEditorEvent(edit)).unwrap();
     }
 }
 
@@ -315,12 +334,15 @@ fn find_project_root(source_file: &Path) -> Option<&Path> {
     }
 }
 
-fn handle_event(state: &mut SourceFileState, changed_bytes: Vec<u8>, edit: InputEdit) -> bool {
-    println!("edit: {:?}", edit);
-    state.latest_code.tree.edit(&edit);
-    let range = edit.start_byte..edit.old_end_byte;
-    state.latest_code.bytes.splice(range, changed_bytes);
+fn apply_edit(state: &mut SourceFileState, edit: Edit) -> bool {
+    println!("edit: {:?}", edit.input_edit);
+    state.latest_code.tree.edit(&edit.input_edit);
+    let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
+    state.latest_code.bytes.splice(range, edit.new_bytes);
+    reparse_tree(state)
+}
 
+fn reparse_tree(state: &mut SourceFileState) -> bool {
     let parse_result = parse(Some(&state.latest_code.tree), &state.latest_code.bytes);
     if let Some(new_tree) = parse_result {
         state.latest_code.tree = new_tree;
