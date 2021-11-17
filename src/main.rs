@@ -122,6 +122,8 @@ enum Error {
     FoundPoisonedMutexWhileUpdatingCheckpoint,
     FoundPoisonedMutexWhileAddingCompilationCandidate,
     FoundPoisonedMutexWhileWritingLastCompilationSuccess,
+    FoundPoisonedMutexWhileReadingCompilationCandidates,
+    FoundPoisonedMutexWhileWaitingForCompilationCandidates,
     FifoCreationFailed(nix::errno::Errno),
     FifoOpeningFailed(std::io::Error),
     FifoLineReadingFailed(std::io::Error),
@@ -294,7 +296,7 @@ fn run_compilation_thread(
 ) -> Result<(), Error> {
     let mut last_compiled_id = 0;
     loop {
-        let (id, candidate) = pop_latest_candidate(&compilation_thread_state);
+        let (id, candidate) = pop_latest_candidate(&compilation_thread_state)?;
         if id <= last_compiled_id {
             // We've already compiled newer snapshots than this, so ignore.
             continue;
@@ -334,17 +336,20 @@ fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
 
 fn pop_latest_candidate(
     compilation_thread_state: &CompilationThreadState,
-) -> (u64, SourceFileSnapshot) {
-    let mut candidates = compilation_thread_state.candidates.lock().unwrap();
+) -> Result<(u64, SourceFileSnapshot), Error> {
+    let mut candidates = compilation_thread_state
+        .candidates
+        .lock()
+        .map_err(|_| Error::FoundPoisonedMutexWhileReadingCompilationCandidates)?;
     loop {
         match candidates.pop() {
             None => {
                 candidates = compilation_thread_state
                     .new_candidate_condvar
                     .wait(candidates)
-                    .unwrap();
+                    .map_err(|_| Error::FoundPoisonedMutexWhileWaitingForCompilationCandidates)?;
             }
-            Some(next_candidate) => return next_candidate,
+            Some(next_candidate) => return Ok(next_candidate),
         }
     }
 }
