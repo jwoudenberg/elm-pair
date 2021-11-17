@@ -121,10 +121,12 @@ enum Error {
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
     FoundPoisonedMutexWhileUpdatingCheckpoint,
     FoundPoisonedMutexWhileAddingCompilationCandidate,
+    FoundPoisonedMutexWhileWritingLastCompilationSuccess,
     FifoCreationFailed(nix::errno::Errno),
     FifoOpeningFailed(std::io::Error),
     FifoLineReadingFailed(std::io::Error),
     SendingMsgFromEditorListenerThreadFailed,
+    SendingMsgFromCompilationThreadFailed,
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -303,12 +305,14 @@ fn run_compilation_thread(
             let mut last_compilation_success = compilation_thread_state
                 .last_compilation_success
                 .lock()
-                .unwrap();
+                .map_err(|_| Error::FoundPoisonedMutexWhileWritingLastCompilationSuccess)?;
             *last_compilation_success = Some(candidate);
             // Let the main thread know it should reparse. If sending this fails
             // we asume that's because a ReceivedEditorEvent got there first.
             // That's okay, because those events cause reparsing too.
-            sender.try_send(Msg::CompilationSucceeded).unwrap();
+            sender
+                .try_send(Msg::CompilationSucceeded)
+                .map_err(|_| Error::SendingMsgFromCompilationThreadFailed)?;
         }
     }
 }
