@@ -34,12 +34,14 @@ fn run() -> Result<(), Error> {
     //   I see a benefit in doing it in this program (I don't currently).
     let (sender, receiver) = sync_channel(1);
     let sender_clone = sender.clone();
-    // TODO: figure out a way to keep tabs on thread health.
     std::thread::spawn(move || {
-        run_compilation_thread(sender_clone, compilation_thread_state_clone);
+        report_error(
+            &sender_clone,
+            run_compilation_thread(&sender_clone, compilation_thread_state_clone),
+        );
     });
     std::thread::spawn(move || {
-        run_editor_listener_thread(sender);
+        report_error(&sender, run_editor_listener_thread(&sender));
     });
     handle_msgs(compilation_thread_state, &mut receiver.iter())
 }
@@ -94,6 +96,7 @@ struct SourceFileState {
 // The event type central to this application. The main thread of the program
 // will process these one-at-a-time.
 enum Msg {
+    ThreadFailedWithError(Error),
     ReceivedEditorEvent(Edit),
     CompilationSucceeded,
 }
@@ -187,6 +190,7 @@ where
         file, new_bytes, ..
     } = match msgs.next() {
         Some(Msg::ReceivedEditorEvent(edit)) => edit,
+        Some(Msg::ThreadFailedWithError(err)) => return Err(err),
         // Did not receive any events at all :(.
         None => return Ok(()),
         Some(Msg::CompilationSucceeded) => {
@@ -215,6 +219,7 @@ where
     for msg in msgs {
         maybe_update_checkpoint(&mut state, &compilation_thread_state)?;
         match msg {
+            Msg::ThreadFailedWithError(err) => return Err(err),
             Msg::CompilationSucceeded => {
                 reparse_tree(&mut state)?;
             }
@@ -266,10 +271,21 @@ fn add_compilation_candidate(
     Ok(())
 }
 
+fn report_error<I>(sender: &SyncSender<Msg>, result: Result<I, Error>) {
+    match result {
+        Ok(_) => {}
+        Err(err) => {
+            if let Err(send_err) = sender.send(Msg::ThreadFailedWithError(err)) {
+                panic!( "Thread failed with error, and then also wasn't able to communicate this to the main thread. Send error: {:?}",  send_err);
+            }
+        }
+    }
+}
+
 fn run_compilation_thread(
-    sender: SyncSender<Msg>,
+    sender: &SyncSender<Msg>,
     compilation_thread_state: Arc<CompilationThreadState>,
-) {
+) -> Result<(), Error> {
     let mut last_compiled_id = 0;
     loop {
         let (id, candidate) = pop_latest_candidate(&compilation_thread_state);
@@ -293,7 +309,7 @@ fn run_compilation_thread(
     }
 }
 
-fn run_editor_listener_thread(sender: SyncSender<Msg>) {
+fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     let fifo = std::fs::File::open(fifo_path).unwrap();
@@ -302,6 +318,7 @@ fn run_editor_listener_thread(sender: SyncSender<Msg>) {
         let edit = parse_editor_event(&line.unwrap());
         sender.send(Msg::ReceivedEditorEvent(edit)).unwrap();
     }
+    Ok(())
 }
 
 fn pop_latest_candidate(
