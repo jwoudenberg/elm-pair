@@ -41,7 +41,7 @@ fn run() -> Result<(), Error> {
     std::thread::spawn(move || {
         run_editor_listener_thread(sender);
     });
-    handle_events(compilation_thread_state, &mut receiver.iter())
+    handle_msgs(compilation_thread_state, &mut receiver.iter())
 }
 
 struct CompilationThreadState {
@@ -167,7 +167,7 @@ fn parse_event(serialized_event: &str) -> Edit {
     }
 }
 
-fn handle_events<I>(
+fn handle_msgs<I>(
     compilation_thread_state: Arc<CompilationThreadState>,
     msgs: &mut I,
 ) -> Result<(), Error>
