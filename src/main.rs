@@ -233,7 +233,7 @@ where
             &mut latest_cursor,
         );
         if !changes.is_empty() {
-            let elm_change = interpret_change(&state, &changes);
+            let elm_change = interpret_change(&changes);
             println!("CHANGE: {:?}", elm_change);
             if !state.latest_code.tree.root_node().has_error() {
                 add_compilation_candidate(&mut candidate_id, &state, &compilation_thread_state)?;
@@ -423,76 +423,76 @@ fn reparse_tree(state: &mut SourceFileState) -> Result<(), Error> {
 }
 
 // TODO: use kind ID's instead of names for pattern matching.
-fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<ElmChange> {
+fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
     match (
         attach_kinds(&changes.old_removed).as_slice(),
         attach_kinds(&changes.new_added).as_slice(),
     ) {
         ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => {
             Some(ElmChange::NameChanged(
-                debug_code_slice(&state.checkpointed_code, &before.byte_range()),
-                debug_code_slice(&state.latest_code, &after.byte_range()),
+                debug_code_slice(changes.old_code, &before.byte_range()),
+                debug_code_slice(changes.new_code, &after.byte_range()),
             ))
         }
         ([("upper_case_identifier", before)], [("upper_case_identifier", after)]) => {
             match before.parent()?.kind() {
                 "as_clause" => Some(ElmChange::AsClauseChanged(
-                    debug_code_slice(&state.checkpointed_code, &before.byte_range()),
-                    debug_code_slice(&state.latest_code, &after.byte_range()),
+                    debug_code_slice(changes.old_code, &before.byte_range()),
+                    debug_code_slice(changes.new_code, &after.byte_range()),
                 )),
                 _ => Some(ElmChange::TypeChanged(
-                    debug_code_slice(&state.checkpointed_code, &before.byte_range()),
-                    debug_code_slice(&state.latest_code, &after.byte_range()),
+                    debug_code_slice(changes.old_code, &before.byte_range()),
+                    debug_code_slice(changes.new_code, &after.byte_range()),
                 )),
             }
         }
         ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(debug_code_slice(
-            &state.latest_code,
+            changes.new_code,
             &after.byte_range(),
         ))),
         ([("import_clause", before)], []) => Some(ElmChange::ImportRemoved(debug_code_slice(
-            &state.checkpointed_code,
+            changes.old_code,
             &before.byte_range(),
         ))),
         ([], [("type_declaration", after)]) => Some(ElmChange::TypeAdded(debug_code_slice(
-            &state.latest_code,
+            changes.new_code,
             &after.byte_range(),
         ))),
         ([("type_declaration", before)], []) => Some(ElmChange::TypeRemoved(debug_code_slice(
-            &state.checkpointed_code,
+            changes.old_code,
             &before.byte_range(),
         ))),
         ([], [("type_alias_declaration", after)]) => Some(ElmChange::TypeAliasAdded(
-            debug_code_slice(&state.latest_code, &after.byte_range()),
+            debug_code_slice(changes.new_code, &after.byte_range()),
         )),
         ([("type_alias_declaration", before)], []) => Some(ElmChange::TypeAliasRemoved(
-            debug_code_slice(&state.checkpointed_code, &before.byte_range()),
+            debug_code_slice(changes.old_code, &before.byte_range()),
         )),
         ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(debug_code_slice(
-            &state.latest_code,
+            changes.new_code,
             &after.byte_range(),
         ))),
 
         ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(debug_code_slice(
-            &state.latest_code,
+            changes.new_code,
             &after.byte_range(),
         ))),
         ([(",", _), ("field_type", before)], []) => Some(ElmChange::FieldRemoved(
-            debug_code_slice(&state.checkpointed_code, &before.byte_range()),
+            debug_code_slice(changes.old_code, &before.byte_range()),
         )),
         ([("field_type", before), (",", _)], []) => Some(ElmChange::FieldRemoved(
-            debug_code_slice(&state.checkpointed_code, &before.byte_range()),
+            debug_code_slice(changes.old_code, &before.byte_range()),
         )),
         (
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", before)],
             [("upper_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = debug_code_slice(&state.latest_code, &after.byte_range());
+            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierRemoved(
                     name_before,
-                    debug_code_slice(&state.checkpointed_code, &qualifier.byte_range()),
+                    debug_code_slice(changes.old_code, &qualifier.byte_range()),
                 ))
             } else {
                 None
@@ -502,12 +502,12 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", before)],
             [("lower_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = debug_code_slice(&state.latest_code, &after.byte_range());
+            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierRemoved(
                     name_before,
-                    debug_code_slice(&state.checkpointed_code, &qualifier.byte_range()),
+                    debug_code_slice(changes.old_code, &qualifier.byte_range()),
                 ))
             } else {
                 None
@@ -517,12 +517,12 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("upper_case_identifier", before)],
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = debug_code_slice(&state.latest_code, &after.byte_range());
+            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierAdded(
                     name_before,
-                    debug_code_slice(&state.latest_code, &qualifier.byte_range()),
+                    debug_code_slice(changes.new_code, &qualifier.byte_range()),
                 ))
             } else {
                 None
@@ -532,31 +532,28 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             [("lower_case_identifier", before)],
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(&state.checkpointed_code, &before.byte_range());
-            let name_after = debug_code_slice(&state.latest_code, &after.byte_range());
+            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierAdded(
                     name_before,
-                    debug_code_slice(&state.latest_code, &qualifier.byte_range()),
+                    debug_code_slice(changes.new_code, &qualifier.byte_range()),
                 ))
             } else {
                 None
             }
         }
         ([("as_clause", before)], []) => Some(ElmChange::AsClauseRemoved(
+            debug_code_slice(changes.old_code, &before.prev_sibling()?.byte_range()),
             debug_code_slice(
-                &state.checkpointed_code,
-                &before.prev_sibling()?.byte_range(),
-            ),
-            debug_code_slice(
-                &state.checkpointed_code,
+                changes.old_code,
                 &before.child_by_field_name("name")?.byte_range(),
             ),
         )),
         ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
-            debug_code_slice(&state.latest_code, &after.prev_sibling()?.byte_range()),
+            debug_code_slice(changes.new_code, &after.prev_sibling()?.byte_range()),
             debug_code_slice(
-                &state.latest_code,
+                changes.new_code,
                 &after.child_by_field_name("name")?.byte_range(),
             ),
         )),
@@ -591,8 +588,9 @@ enum ElmChange {
     AsClauseChanged(String, String),
 }
 
-#[derive(Debug)]
 struct TreeChanges<'a> {
+    old_code: &'a SourceFileSnapshot,
+    new_code: &'a SourceFileSnapshot,
     old_removed: Vec<Node<'a>>,
     new_added: Vec<Node<'a>>,
 }
@@ -613,18 +611,24 @@ fn diff_trees<'a>(
         match goto_first_changed_sibling(old_code, new_code, old, new) {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
+                    old_code,
+                    new_code,
                     old_removed: Vec::new(),
                     new_added: Vec::new(),
                 }
             }
             FirstChangedSibling::OldAtFirstAdditional => {
                 return TreeChanges {
+                    old_code,
+                    new_code,
                     old_removed: collect_remaining_siblings(old),
                     new_added: Vec::new(),
                 }
             }
             FirstChangedSibling::NewAtFirstAdditional => {
                 return TreeChanges {
+                    old_code,
+                    new_code,
                     old_removed: Vec::new(),
                     new_added: collect_remaining_siblings(new),
                 }
@@ -662,6 +666,8 @@ fn diff_trees<'a>(
         }
 
         return TreeChanges {
+            old_code,
+            new_code,
             old_removed,
             new_added,
         };
