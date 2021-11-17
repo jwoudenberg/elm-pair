@@ -2,29 +2,28 @@ use core::ops::Range;
 use sized_stack::SizedStack;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
 
 fn main() {
-    let fifo_path = "/tmp/elm-pair";
-    nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
-    let fifo = std::fs::File::open(fifo_path).unwrap();
     let compilation_thread_state = Arc::new(CompilationThreadState {
         last_compilation_success: Mutex::new(None),
         new_candidate_condvar: Condvar::new(),
         candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
     });
     let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
+    let (sender, receiver) = sync_channel(0);
     // TODO: figure out a way to keep tabs on thread health.
     std::thread::spawn(move || {
         run_compilation_thread(compilation_thread_state_clone);
     });
-    handle_events(
-        compilation_thread_state,
-        &mut std::io::BufReader::new(fifo).lines(),
-    );
+    std::thread::spawn(move || {
+        run_editor_listener_thread(sender);
+    });
+    handle_events(compilation_thread_state, &mut receiver.iter());
 }
 
 struct CompilationThreadState {
@@ -214,6 +213,16 @@ fn run_compilation_thread(compilation_thread_state: Arc<CompilationThreadState>)
                 .unwrap();
             *last_compilation_success = Some(candidate);
         }
+    }
+}
+
+fn run_editor_listener_thread(sender: SyncSender<Result<String, std::io::Error>>) {
+    let fifo_path = "/tmp/elm-pair";
+    nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let fifo = std::fs::File::open(fifo_path).unwrap();
+    let buf_reader = std::io::BufReader::new(fifo).lines();
+    for line in buf_reader {
+        sender.send(line).unwrap();
     }
 }
 
