@@ -114,7 +114,6 @@ struct Edit {
 
 #[derive(Debug)]
 enum Error {
-    UnexpectedFirstMessageCompilationSucceeded,
     DidNotFindElmBinaryOnPath,
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
@@ -186,34 +185,9 @@ fn handle_msgs<I>(
 where
     I: Iterator<Item = Msg>,
 {
-    // First event returns the initial state.
-    let Edit {
-        file, new_bytes, ..
-    } = match msgs.next() {
-        Some(Msg::ReceivedEditorEvent(edit)) => edit,
-        Some(Msg::ThreadFailedWithError(err)) => return Err(err),
-        // Did not receive any events at all :(.
+    let mut state = match initial_state(&compilation_thread_state, msgs)? {
         None => return Ok(()),
-        Some(Msg::CompilationSucceeded) => {
-            return Err(Error::UnexpectedFirstMessageCompilationSucceeded)
-        }
-    };
-    let tree = parse(None, &new_bytes)?;
-    let file_data = Arc::new(FileData {
-        elm_bin: find_executable("elm")?,
-        project_root: find_project_root(&file)?.to_path_buf(),
-        _path: file,
-    });
-    let code = SourceFileSnapshot {
-        tree,
-        bytes: new_bytes,
-        file_data,
-        revision: 0,
-    };
-    add_compilation_candidate(&code, &compilation_thread_state)?;
-    let mut state = SourceFileState {
-        last_compiling_version: None,
-        latest_code: code,
+        Some(state) => state,
     };
     debug_print_latest_tree(&state);
 
@@ -237,13 +211,57 @@ where
             if !changes.is_empty() {
                 let elm_change = interpret_change(&changes);
                 println!("CHANGE: {:?}", elm_change);
-                if !state.latest_code.tree.root_node().has_error() {
-                    add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
-                }
             }
+        }
+        if !state.latest_code.tree.root_node().has_error() {
+            add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
         }
     }
     Ok(())
+}
+
+fn initial_state<I>(
+    compilation_thread_state: &Arc<CompilationThreadState>,
+    msgs: &mut I,
+) -> Result<Option<SourceFileState>, Error>
+where
+    I: Iterator<Item = Msg>,
+{
+    let mut first_edit = None;
+    for msg in msgs {
+        // First event returns the initial state.
+        match msg {
+            Msg::ReceivedEditorEvent(edit) => {
+                first_edit = Some(edit);
+                break;
+            }
+            Msg::ThreadFailedWithError(err) => return Err(err),
+            Msg::CompilationSucceeded => {}
+        };
+    }
+    let Edit {
+        file, new_bytes, ..
+    } = match first_edit {
+        None => return Ok(None),
+        Some(edit) => edit,
+    };
+    let tree = parse(None, &new_bytes)?;
+    let file_data = Arc::new(FileData {
+        elm_bin: find_executable("elm")?,
+        project_root: find_project_root(&file)?.to_path_buf(),
+        _path: file,
+    });
+    let code = SourceFileSnapshot {
+        tree,
+        bytes: new_bytes,
+        file_data,
+        revision: 0,
+    };
+    add_compilation_candidate(&code, compilation_thread_state)?;
+    Ok(Some(SourceFileState {
+        last_compiling_version: None,
+        latest_code: code,
+    }))
 }
 
 fn refresh_last_compiling_version(
