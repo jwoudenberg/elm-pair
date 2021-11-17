@@ -112,6 +112,9 @@ struct Edit {
 #[derive(Debug)]
 enum Error {
     UnexpectedFirstMessageCompilationSucceeded,
+    DidNotFindElmBinaryOnPath,
+    CouldNotReadCurrentWorkingDirectory(std::io::Error),
+    DidNotFindPathEnvVar,
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -189,7 +192,7 @@ where
     };
     let tree = parse(None, &new_bytes)?;
     let file_data = Arc::new(FileData {
-        elm_bin: find_executable("elm").unwrap(),
+        elm_bin: find_executable("elm")?,
         project_root: find_project_root(&file).unwrap().to_path_buf(),
         _path: file,
     });
@@ -327,18 +330,18 @@ fn does_latest_compile(snapshot: &SourceFileSnapshot) -> bool {
     output.status.success()
 }
 
-fn find_executable(name: &str) -> Option<PathBuf> {
-    let cwd = std::env::current_dir().unwrap();
-    let path = std::env::var_os("PATH").unwrap();
+fn find_executable(name: &str) -> Result<PathBuf, Error> {
+    let cwd = std::env::current_dir().map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
+    let path = std::env::var_os("PATH").ok_or(Error::DidNotFindPathEnvVar)?;
     let dirs = std::env::split_paths(&path);
     for dir in dirs {
         let mut bin_path = cwd.join(dir);
         bin_path.push(name);
         if bin_path.is_file() {
-            return Some(bin_path);
+            return Ok(bin_path);
         };
     }
-    None
+    Err(Error::DidNotFindElmBinaryOnPath)
 }
 
 fn find_project_root(source_file: &Path) -> Option<&Path> {
