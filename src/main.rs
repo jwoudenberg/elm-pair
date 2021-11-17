@@ -450,7 +450,7 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
             ))
         }
         ([("upper_case_identifier", before)], [("upper_case_identifier", after)]) => {
-            match before.parent().unwrap().kind() {
+            match before.parent()?.kind() {
                 "as_clause" => Some(ElmChange::AsClauseChanged(
                     code_slice(&state.checkpointed_code, &before.byte_range()),
                     code_slice(&state.latest_code, &after.byte_range()),
@@ -564,21 +564,18 @@ fn interpret_change(state: &SourceFileState, changes: &TreeChanges) -> Option<El
         ([("as_clause", before)], []) => Some(ElmChange::AsClauseRemoved(
             code_slice(
                 &state.checkpointed_code,
-                &before.prev_sibling().unwrap().byte_range(),
+                &before.prev_sibling()?.byte_range(),
             ),
             code_slice(
                 &state.checkpointed_code,
-                &before.child_by_field_name("name").unwrap().byte_range(),
+                &before.child_by_field_name("name")?.byte_range(),
             ),
         )),
         ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
+            code_slice(&state.latest_code, &after.prev_sibling()?.byte_range()),
             code_slice(
                 &state.latest_code,
-                &after.prev_sibling().unwrap().byte_range(),
-            ),
-            code_slice(
-                &state.latest_code,
-                &after.child_by_field_name("name").unwrap().byte_range(),
+                &after.child_by_field_name("name")?.byte_range(),
             ),
         )),
         (before, after) => {
