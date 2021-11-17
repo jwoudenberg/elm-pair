@@ -224,9 +224,14 @@ where
             Msg::CompilationSucceeded => reparse_tree(&mut state)?,
             Msg::ReceivedEditorEvent(edit) => apply_edit(&mut state, edit)?,
         }
-        let mut old_cursor = state.checkpointed_code.tree.walk();
-        let mut new_cursor = state.latest_code.tree.walk();
-        let changes = diff_trees(&state, &mut old_cursor, &mut new_cursor);
+        let mut checkpointed_cursor = state.checkpointed_code.tree.walk();
+        let mut latest_cursor = state.latest_code.tree.walk();
+        let changes = diff_trees(
+            &state.checkpointed_code,
+            &state.latest_code,
+            &mut checkpointed_cursor,
+            &mut latest_cursor,
+        );
         if !changes.is_empty() {
             let elm_change = interpret_change(&state, &changes);
             println!("CHANGE: {:?}", elm_change);
@@ -599,12 +604,13 @@ impl<'a> TreeChanges<'a> {
 }
 
 fn diff_trees<'a>(
-    state: &'a SourceFileState,
+    old_code: &'a SourceFileSnapshot,
+    new_code: &'a SourceFileSnapshot,
     old: &'a mut TreeCursor,
     new: &'a mut TreeCursor,
 ) -> TreeChanges<'a> {
     loop {
-        match goto_first_changed_sibling(state, old, new) {
+        match goto_first_changed_sibling(old_code, new_code, old, new) {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
                     old_removed: Vec::new(),
@@ -627,7 +633,8 @@ fn diff_trees<'a>(
         };
         let first_old_changed = old.node();
         let first_new_changed = new.node();
-        let (old_removed_count, new_added_count) = count_changed_siblings(state, old, new);
+        let (old_removed_count, new_added_count) =
+            count_changed_siblings(old_code, new_code, old, new);
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
@@ -692,12 +699,13 @@ enum FirstChangedSibling {
 // Move both cursors forward through sibbling nodes in lock step, stopping when
 // we encounter a difference between the old and new node.
 fn goto_first_changed_sibling(
-    state: &SourceFileState,
+    old_code: &SourceFileSnapshot,
+    new_code: &SourceFileSnapshot,
     old: &mut TreeCursor,
     new: &mut TreeCursor,
 ) -> FirstChangedSibling {
     loop {
-        if has_node_changed(state, &old.node(), &new.node()) {
+        if has_node_changed(old_code, new_code, &old.node(), &new.node()) {
             return FirstChangedSibling::OldAndNewAtFirstChanged;
         } else {
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
@@ -735,7 +743,8 @@ fn collect_remaining_siblings<'a>(cursor: &'a mut TreeCursor) -> Vec<Node<'a>> {
 // proof two node are the same than it is to proof they are different. By
 // walking backwards we only need to proof two nodes are different ones.
 fn count_changed_siblings<'a>(
-    state: &'a SourceFileState,
+    old_code: &'a SourceFileSnapshot,
+    new_code: &'a SourceFileSnapshot,
     old: &'a TreeCursor,
     new: &'a TreeCursor,
 ) -> (usize, usize) {
@@ -769,7 +778,7 @@ fn count_changed_siblings<'a>(
 
     // Walk backwards again until we encounter a changed node.
     loop {
-        if has_node_changed(state, &old_sibling, &new_sibling)
+        if has_node_changed(old_code, new_code, &old_sibling, &new_sibling)
             || old_siblings_removed == 0
             || new_siblings_added == 0
         {
@@ -796,9 +805,15 @@ fn count_changed_siblings<'a>(
 //
 // TODO: Incorporate tree-sitter's `has_changes` in here somehow, for bettter
 // performance.
-fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
+fn has_node_changed(
+    old_code: &SourceFileSnapshot,
+    new_code: &SourceFileSnapshot,
+    old: &Node,
+    new: &Node,
+) -> bool {
     old.id() != new.id()
-        && (old.kind_id() != new.kind_id() || have_node_contents_changed(state, old, new))
+        && (old.kind_id() != new.kind_id()
+            || have_node_contents_changed(old_code, new_code, old, new))
 }
 
 // Compare two nodes by comparing snippets of code covered by them. This is
@@ -807,9 +822,14 @@ fn has_node_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
 // TODO: code formatters can change code in ways that don't matter but would
 // fail this check. Consider alternative approaches.
 // TODO: compare u8 array slices here instead of parsing to string.
-fn have_node_contents_changed(state: &SourceFileState, old: &Node, new: &Node) -> bool {
-    let old_bytes = debug_code_slice(&state.checkpointed_code, &old.byte_range());
-    let new_bytes = debug_code_slice(&state.latest_code, &new.byte_range());
+fn have_node_contents_changed(
+    old_code: &SourceFileSnapshot,
+    new_code: &SourceFileSnapshot,
+    old: &Node,
+    new: &Node,
+) -> bool {
+    let old_bytes = debug_code_slice(old_code, &old.byte_range());
+    let new_bytes = debug_code_slice(new_code, &new.byte_range());
     old_bytes != new_bytes
 }
 
