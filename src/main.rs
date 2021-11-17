@@ -112,6 +112,8 @@ struct Edit {
 #[derive(Debug)]
 enum Error {
     UnexpectedFirstMessageCompilationSucceeded,
+    TreeSitterParsingFailed,
+    TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
 
 fn parse_editor_event(serialized_event: &str) -> Edit {
@@ -185,7 +187,7 @@ where
             return Err(Error::UnexpectedFirstMessageCompilationSucceeded)
         }
     };
-    let tree = parse(None, &new_bytes).unwrap();
+    let tree = parse(None, &new_bytes)?;
     let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm").unwrap(),
         project_root: find_project_root(&file).unwrap().to_path_buf(),
@@ -367,7 +369,7 @@ fn apply_edit(state: &mut SourceFileState, edit: Edit) -> bool {
 
 fn reparse_tree(state: &mut SourceFileState) -> bool {
     let parse_result = parse(Some(&state.latest_code.tree), &state.latest_code.bytes);
-    if let Some(new_tree) = parse_result {
+    if let Ok(new_tree) = parse_result {
         state.latest_code.tree = new_tree;
         print_latest_tree(state);
         let mut old_cursor = state.checkpointed_code.tree.walk();
@@ -786,12 +788,15 @@ fn code_slice(code: &SourceFileSnapshot, range: &Range<usize>) -> String {
 }
 
 // TODO: reuse parser.
-fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Option<Tree> {
+fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
-        .expect("Error loading elm grammer");
-    parser.parse(code, prev_tree)
+        .map_err(Error::TreeSitterSettingLanguageFailed)?;
+    match parser.parse(code, prev_tree) {
+        None => Err(Error::TreeSitterParsingFailed),
+        Some(tree) => Ok(tree),
+    }
 }
 
 fn print_latest_tree(state: &SourceFileState) {
