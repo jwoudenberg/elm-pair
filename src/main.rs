@@ -132,11 +132,12 @@ enum Error {
     CompilationFailedToRunElmMake(std::io::Error),
     SendingMsgFromEditorListenerThreadFailed,
     SendingMsgFromCompilationThreadFailed,
+    JsonParsingEditorEventFailed(serde_json::error::Error),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
 
-fn parse_editor_event(serialized_event: &str) -> Edit {
+fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
     let (
         file,
         changed_code,
@@ -149,19 +150,7 @@ fn parse_editor_event(serialized_event: &str) -> Edit {
         old_end_col,
         new_end_row,
         new_end_col,
-    ): (
-        PathBuf,
-        String,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-        usize,
-    ) = serde_json::from_str(serialized_event).unwrap();
+    ) = serde_json::from_str(serialized_event).map_err(Error::JsonParsingEditorEventFailed)?;
     let start_position = tree_sitter::Point {
         row: start_row,
         column: start_col,
@@ -182,11 +171,12 @@ fn parse_editor_event(serialized_event: &str) -> Edit {
         old_end_position,
         new_end_position,
     };
-    Edit {
+    let changed_code: String = changed_code; // Add type-annotation for changed_code.
+    Ok(Edit {
         file,
         input_edit,
         new_bytes: changed_code.into_bytes(),
-    }
+    })
 }
 
 fn handle_msgs<I>(
@@ -329,7 +319,7 @@ fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
     let fifo = std::fs::File::open(fifo_path).map_err(Error::FifoOpeningFailed)?;
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
-        let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?);
+        let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?)?;
         sender
             .send(Msg::ReceivedEditorEvent(edit))
             .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
