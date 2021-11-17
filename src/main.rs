@@ -9,6 +9,16 @@ use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 const MAX_COMPILATION_CANDIDATES: usize = 10;
 
 fn main() {
+    std::process::exit(match run() {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("error: {:?}", err);
+            1
+        }
+    });
+}
+
+fn run() -> Result<(), Error> {
     let compilation_thread_state = Arc::new(CompilationThreadState {
         last_compilation_success: Mutex::new(None),
         new_candidate_condvar: Condvar::new(),
@@ -31,7 +41,7 @@ fn main() {
     std::thread::spawn(move || {
         run_editor_listener_thread(sender);
     });
-    handle_events(compilation_thread_state, &mut receiver.iter());
+    handle_events(compilation_thread_state, &mut receiver.iter())
 }
 
 struct CompilationThreadState {
@@ -99,6 +109,11 @@ struct Edit {
     new_bytes: Vec<u8>,
 }
 
+#[derive(Debug)]
+enum Error {
+    UnexpectedFirstMessageCompilationSucceeded,
+}
+
 fn parse_event(serialized_event: &str) -> Edit {
     let (
         file,
@@ -152,7 +167,10 @@ fn parse_event(serialized_event: &str) -> Edit {
     }
 }
 
-fn handle_events<I>(compilation_thread_state: Arc<CompilationThreadState>, msgs: &mut I)
+fn handle_events<I>(
+    compilation_thread_state: Arc<CompilationThreadState>,
+    msgs: &mut I,
+) -> Result<(), Error>
 where
     I: Iterator<Item = Msg>,
 {
@@ -162,8 +180,10 @@ where
     } = match msgs.next() {
         Some(Msg::ReceivedEditorEvent(edit)) => edit,
         // Did not receive any events at all :(.
-        None => return,
-        Some(Msg::CompilationSucceeded) => return,
+        None => return Ok(()),
+        Some(Msg::CompilationSucceeded) => {
+            return Err(Error::UnexpectedFirstMessageCompilationSucceeded)
+        }
     };
     let tree = parse(None, &new_bytes).unwrap();
     let file_data = Arc::new(FileData {
@@ -198,6 +218,7 @@ where
             }
         }
     }
+    Ok(())
 }
 
 fn maybe_update_checkpoint(
