@@ -1099,6 +1099,7 @@ mod simulation {
         }
 
         fn move_cursor(mut self, line: u64, word: &str) -> Result<Self, Error> {
+            self.current_position = 0;
             let mut reversed_bytes: Vec<u8> =
                 self.current_bytes.clone().into_iter().rev().collect();
             if line == 0 {

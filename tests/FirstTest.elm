@@ -15,4 +15,11 @@ fullName { kind, wattage } = "A " ++ Str.fromInt wattage ++ "W " ++ kind ++ " bu
 -- MOVE CURSOR TO LINE 7 wattage
 -- DELETE wattage
 -- INSERT watts
+-- MOVE CURSOR TO LINE 11 wattage
+-- DELETE wattage
+-- INSERT watts
+-- MOVE CURSOR TO LINE 11 wattage
+-- DELETE wattage
+-- INSERT watts
+-- COMPILATION SUCCEEDS
 -- END SIMULATION
