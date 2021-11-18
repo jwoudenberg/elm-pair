@@ -8,7 +8,7 @@ use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
 
-fn main() {
+pub fn main() {
     std::process::exit(match run() {
         Ok(()) => 0,
         Err(err) => {
@@ -19,11 +19,7 @@ fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    let compilation_thread_state = Arc::new(CompilationThreadState {
-        last_compilation_success: Mutex::new(None),
-        new_candidate_condvar: Condvar::new(),
-        candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
-    });
+    let compilation_thread_state = Arc::new(CompilationThreadState::new());
     let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
     // We're using a sync_channel of size 1 here because:
     // - Size 0 would mean sending blocks until the receiver is requesting a new
@@ -58,6 +54,16 @@ struct CompilationThreadState {
     // compilation results. A newer compilation result should overwrite an older
     // one.
     last_compilation_success: Mutex<Option<SourceFileSnapshot>>,
+}
+
+impl CompilationThreadState {
+    fn new() -> CompilationThreadState {
+        CompilationThreadState {
+            last_compilation_success: Mutex::new(None),
+            new_candidate_condvar: Condvar::new(),
+            candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -933,5 +939,255 @@ mod sized_stack {
         pub fn pop(&mut self) -> Option<T> {
             self.items.pop_front()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::simulation::run_simulation_test;
+    use std::path::Path;
+
+    #[test]
+    fn first_test() {
+        run_simulation_test(Path::new("./tests/FirstTest.elm"));
+    }
+}
+
+// A module to support tests of the diffing logic by running simulations against
+// it.
+#[cfg(test)]
+mod simulation {
+    use crate::{CompilationThreadState, Edit, Msg};
+    use std::collections::VecDeque;
+    use std::io::BufRead;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use tree_sitter::{InputEdit, Point};
+
+    pub fn run_simulation_test(path: &Path) {
+        if let Err(err) = run_simulation_test_helper(path) {
+            panic!("simulation failed with: {:?}", err);
+        }
+    }
+
+    fn run_simulation_test_helper(path: &Path) -> Result<(), Error> {
+        let mut simulation = Simulation::from_file(path)?;
+        crate::handle_msgs(simulation.compilation_thread_state.clone(), &mut simulation)
+            .map_err(Error::RunningSimulationFailed)?;
+        Ok(())
+    }
+
+    struct Simulation {
+        compilation_thread_state: Arc<CompilationThreadState>,
+        msgs: VecDeque<Msg>,
+    }
+
+    impl Iterator for Simulation {
+        type Item = Msg;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.msgs.pop_front().map(|msg| {
+                if let Msg::CompilationSucceeded = msg {
+                    let last_snapshot = {
+                        self.compilation_thread_state
+                            .candidates
+                            .lock()
+                            .unwrap()
+                            .pop()
+                            .unwrap()
+                    };
+                    let mut last_compilation_success = self
+                        .compilation_thread_state
+                        .last_compilation_success
+                        .lock()
+                        .unwrap();
+                    *last_compilation_success = Some(last_snapshot);
+                }
+                msg
+            })
+        }
+    }
+
+    impl Simulation {
+        fn from_file(path: &Path) -> Result<Simulation, Error> {
+            let file = std::fs::File::open(path).map_err(Error::FromFileOpenFailed)?;
+            let mut lines = std::io::BufReader::new(file)
+                .lines()
+                .map(|line| line.map_err(Error::FromFileReadingLineFailed));
+            let (code, simulation_script_padding) = find_start_simulation_script(&mut lines)?;
+            let mut builder = SimulationBuilder::new(path.to_path_buf(), code);
+            loop {
+                let line = match lines.next() {
+                    None => return Err(Error::FileEndCameBeforeSimulationEnd),
+                    Some(line) => line?
+                        .get(simulation_script_padding..)
+                        .ok_or(Error::SimulationInstructionsDontHaveConsistentPadding)?
+                        .to_string(),
+                };
+                match line.split(' ').collect::<Vec<&str>>().as_slice() {
+                    ["END", "SIMULATION"] => break,
+                    ["MOVE", "CURSOR", "TO", "LINE", line_str, strs @ ..] => {
+                        let line = line_str
+                            .parse()
+                            .map_err(|_| Error::CannotParseLineNumber(line.to_string()))?;
+                        builder = builder.move_cursor(line, &strs.join(" "))?
+                    }
+                    ["INSERT", strs @ ..] => builder = builder.insert(&strs.join(" ")),
+                    ["DELETE", strs @ ..] => builder = builder.delete(&strs.join(" "))?,
+                    ["COMPILATION", "SUCCEEDS"] => builder = builder.compilation_succeeds(),
+                    _ => return Err(Error::CannotParseSimulationLine(line)),
+                };
+            }
+            Ok(builder.finish())
+        }
+    }
+
+    fn find_start_simulation_script<I>(lines: &mut I) -> Result<(Vec<u8>, usize), Error>
+    where
+        I: Iterator<Item = Result<String, Error>>,
+    {
+        let mut code: Vec<u8> = Vec::new();
+        loop {
+            let line = match lines.next() {
+                None => return Err(Error::FromFileFailedNoStartSimulationFound),
+                Some(Err(err)) => return Err(err),
+                Some(Ok(line)) => line,
+            };
+            if let Some(padding) = line.strip_suffix("START SIMULATION") {
+                break Ok((code, padding.len()));
+            } else {
+                code.push(10 /* \n */);
+                code.append(&mut line.into_bytes());
+            }
+        }
+    }
+
+    struct SimulationBuilder {
+        file: PathBuf,
+        current_bytes: Vec<u8>,
+        current_position: usize,
+        msgs: VecDeque<Msg>,
+    }
+
+    impl SimulationBuilder {
+        fn new(file: PathBuf, initial_bytes: Vec<u8>) -> SimulationBuilder {
+            let init_msg = Msg::ReceivedEditorEvent(Edit {
+                file: file.clone(),
+                new_bytes: initial_bytes.clone(),
+                input_edit: InputEdit {
+                    start_byte: 0,
+                    old_end_byte: 0,
+                    new_end_byte: 0,
+                    start_position: Point { row: 0, column: 0 },
+                    old_end_position: Point { row: 0, column: 0 },
+                    new_end_position: Point { row: 0, column: 0 },
+                },
+            });
+            let mut msgs = VecDeque::new();
+            msgs.push_front(init_msg);
+            SimulationBuilder {
+                file,
+                current_position: 0,
+                current_bytes: initial_bytes,
+                msgs,
+            }
+        }
+
+        fn move_cursor(mut self, line: u64, word: &str) -> Result<Self, Error> {
+            let mut reversed_bytes: Vec<u8> =
+                self.current_bytes.clone().into_iter().rev().collect();
+            if line == 0 {
+                return Err(Error::MoveCursorFailedLineZeroNotAllowed);
+            }
+            let mut lines_to_go = line;
+            while lines_to_go > 0 {
+                self.current_position += 1;
+                match reversed_bytes.pop() {
+                    None => return Err(Error::MoveCursorFailedNotEnoughLines),
+                    Some(10 /* \n */) => lines_to_go -= 1,
+                    Some(_) => {}
+                }
+            }
+            let reversed_word_bytes: Vec<u8> = word.bytes().rev().collect();
+            while !reversed_bytes.ends_with(&reversed_word_bytes) {
+                self.current_position += 1;
+                match reversed_bytes.pop() {
+                    None => return Err(Error::MoveCursorDidNotFindWordOnLine),
+                    Some(10 /* \n */) => return Err(Error::MoveCursorDidNotFindWordOnLine),
+                    Some(_) => {}
+                }
+            }
+            Ok(self)
+        }
+
+        fn insert(mut self, str: &str) -> Self {
+            let bytes = str.bytes();
+            let range = self.current_position..self.current_position;
+            self.current_bytes.splice(range.clone(), bytes.clone());
+            self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
+                file: self.file.clone(),
+                new_bytes: Vec::new(),
+                input_edit: InputEdit {
+                    start_byte: range.start,
+                    old_end_byte: range.start,
+                    new_end_byte: range.end,
+                    start_position: Point { row: 0, column: 0 },
+                    old_end_position: Point { row: 0, column: 0 },
+                    new_end_position: Point { row: 0, column: 0 },
+                },
+            }));
+            self
+        }
+
+        fn delete(mut self, str: &str) -> Result<Self, Error> {
+            let bytes = str.as_bytes();
+            let range = self.current_position..(self.current_position + bytes.len());
+            if self.current_bytes.get(range.clone()) == Some(bytes) {
+                self.current_bytes.splice(range.clone(), []);
+                self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
+                    file: self.file.clone(),
+                    new_bytes: Vec::new(),
+                    input_edit: InputEdit {
+                        start_byte: range.start,
+                        old_end_byte: range.end,
+                        new_end_byte: range.start,
+                        start_position: Point { row: 0, column: 0 },
+                        old_end_position: Point { row: 0, column: 0 },
+                        new_end_position: Point { row: 0, column: 0 },
+                    },
+                }));
+                Ok(self)
+            } else {
+                Err(Error::DeleteFailedNoSuchStrAtCursor)
+            }
+        }
+
+        fn compilation_succeeds(mut self) -> Self {
+            self.msgs.push_back(Msg::CompilationSucceeded);
+            self
+        }
+
+        fn finish(self) -> Simulation {
+            Simulation {
+                compilation_thread_state: Arc::new(CompilationThreadState::new()),
+                msgs: self.msgs,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    enum Error {
+        RunningSimulationFailed(crate::Error),
+        FromFileFailedNoStartSimulationFound,
+        CannotParseSimulationLine(String),
+        CannotParseLineNumber(String),
+        FileEndCameBeforeSimulationEnd,
+        SimulationInstructionsDontHaveConsistentPadding,
+        FromFileOpenFailed(std::io::Error),
+        FromFileReadingLineFailed(std::io::Error),
+        MoveCursorFailedLineZeroNotAllowed,
+        MoveCursorFailedNotEnoughLines,
+        MoveCursorDidNotFindWordOnLine,
+        DeleteFailedNoSuchStrAtCursor,
     }
 }
