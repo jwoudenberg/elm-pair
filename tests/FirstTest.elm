@@ -1,11 +1,18 @@
-module FirstTest exposing ()
+module Bulb exposing (Bulb, fullName)
 
-increment : Int -> Int
-increment n = n + 1
+import String as Str
+
+type alias Bulb =
+  { kind : String
+  , wattage : Int
+  }
+
+fullName : Bulb -> String
+fullName { kind, wattage } = "A " ++ Str.fromInt wattage ++ "W " ++ kind ++ " bulb"
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 4 n =
--- DELETE n = n
--- INSERT m = m
 -- COMPILATION SUCCEEDS
+-- MOVE CURSOR TO LINE 7 wattage
+-- DELETE wattage
+-- INSERT watts
 -- END SIMULATION
