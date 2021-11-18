@@ -986,6 +986,11 @@ mod simulation {
         type Item = Msg;
 
         fn next(&mut self) -> Option<Self::Item> {
+            // Bunch of .unwrap()'s here. We're bound by the iterator contract
+            // here, and it's preventing us from communicating errors upwards.
+            // We could return `None` instead of panicing, but that would hide
+            // problems. We could not use an interator, which might be nicer.
+            // Since this is test code let's let it slide for now.
             self.msgs.pop_front().map(|msg| {
                 if let Msg::CompilationSucceeded = msg {
                     let last_snapshot = {
