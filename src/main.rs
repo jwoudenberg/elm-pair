@@ -438,7 +438,6 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
 }
 
 fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<(), Error> {
-    println!("edit: {:?}", edit.input_edit);
     state.latest_code.tree.edit(&edit.input_edit);
     state.latest_code.revision += 1;
     let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
