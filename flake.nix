@@ -13,6 +13,7 @@
         };
         devShell = pkgs.mkShell {
           buildInputs = [
+            pkgs.libiconv
             pkgs.luaformatter
             pkgs.lua53Packages.luacheck
             pkgs.cargo
