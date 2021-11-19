@@ -194,82 +194,86 @@ where
     I: Iterator<Item = Msg>,
     F: FnMut(Option<ElmChange>),
 {
-    let mut state = match initial_state(msgs)? {
-        None => return Ok(()),
-        Some(state) => {
-            add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
-            state
-        }
-    };
-
-    // Subsequent parses of a file.
+    let mut opt_state = None;
     for msg in msgs {
-        refresh_last_compiling_version(&mut state, &compilation_thread_state)?;
-        match msg {
-            Msg::ThreadFailedWithError(err) => return Err(err),
-            Msg::CompilationSucceeded => reparse_tree(&mut state)?,
-            Msg::ReceivedEditorEvent(edit) => apply_edit(&mut state, edit)?,
+        if let Some(state) = &mut opt_state {
+            refresh_last_compiling_version(state, &compilation_thread_state)?;
         }
-        if let Some(last_compiling_version) = &state.last_compiling_version {
-            let mut last_compiling_version_cursor = last_compiling_version.tree.walk();
-            let mut latest_cursor = state.latest_code.tree.walk();
-            let changes = diff_trees(
-                last_compiling_version,
-                &state.latest_code,
-                &mut last_compiling_version_cursor,
-                &mut latest_cursor,
-            );
+
+        if let Some(changes) = handle_msg(&mut opt_state, msg)? {
             let mut elm_change = None;
             if !changes.is_empty() {
                 elm_change = interpret_change(&changes);
             }
             on_change(elm_change);
         }
-        if !state.latest_code.tree.root_node().has_error() {
-            add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
+
+        if let Some(state) = &mut opt_state {
+            if !state.latest_code.tree.root_node().has_error() {
+                add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
+            }
         }
     }
     Ok(())
 }
 
-fn initial_state<I>(msgs: &mut I) -> Result<Option<SourceFileState>, Error>
-where
-    I: Iterator<Item = Msg>,
-{
-    let mut first_edit = None;
-    for msg in msgs {
-        // First event returns the initial state.
-        match msg {
-            Msg::ReceivedEditorEvent(edit) => {
-                first_edit = Some(edit);
-                break;
-            }
-            Msg::ThreadFailedWithError(err) => return Err(err),
-            Msg::CompilationSucceeded => {}
-        };
+fn handle_msg(
+    opt_state: &mut Option<SourceFileState>,
+    msg: Msg,
+) -> Result<Option<TreeChanges>, Error> {
+    match opt_state {
+        None => {
+            handle_first_msg_for_file(opt_state, msg)?;
+            Ok(None)
+        }
+        Some(state) => handle_later_msg_for_file(state, msg),
     }
-    let Edit {
-        file, new_bytes, ..
-    } = match first_edit {
-        None => return Ok(None),
-        Some(edit) => edit,
+}
+
+fn handle_first_msg_for_file(state: &mut Option<SourceFileState>, msg: Msg) -> Result<(), Error> {
+    match msg {
+        Msg::ThreadFailedWithError(err) => Err(err),
+        Msg::CompilationSucceeded => Ok(()),
+        Msg::ReceivedEditorEvent(Edit {
+            file, new_bytes, ..
+        }) => {
+            let tree = parse(None, &new_bytes)?;
+            let file_data = Arc::new(FileData {
+                elm_bin: find_executable("elm")?,
+                project_root: find_project_root(&file)?.to_path_buf(),
+                _path: file,
+            });
+            let code = SourceFileSnapshot {
+                tree,
+                bytes: new_bytes,
+                file_data,
+                revision: 0,
+            };
+            *state = Some(SourceFileState {
+                last_compiling_version: None,
+                latest_code: code,
+            });
+            Ok(())
+        }
+    }
+}
+
+fn handle_later_msg_for_file(
+    state: &mut SourceFileState,
+    msg: Msg,
+) -> Result<Option<TreeChanges>, Error> {
+    match msg {
+        Msg::ThreadFailedWithError(err) => return Err(err),
+        Msg::CompilationSucceeded => reparse_tree(state)?,
+        Msg::ReceivedEditorEvent(edit) => apply_edit(state, edit)?,
     };
-    let tree = parse(None, &new_bytes)?;
-    let file_data = Arc::new(FileData {
-        elm_bin: find_executable("elm")?,
-        project_root: find_project_root(&file)?.to_path_buf(),
-        _path: file,
-    });
-    let code = SourceFileSnapshot {
-        tree,
-        bytes: new_bytes,
-        file_data,
-        revision: 0,
+    let changes = match &state.last_compiling_version {
+        Some(last_compiling_version) => {
+            Some(diff_trees(last_compiling_version, &state.latest_code))
+        }
+        None => None,
     };
-    Ok(Some(SourceFileState {
-        last_compiling_version: None,
-        latest_code: code,
-    }))
+    Ok(changes)
 }
 
 fn refresh_last_compiling_version(
@@ -632,11 +636,11 @@ impl<'a> TreeChanges<'a> {
 fn diff_trees<'a>(
     old_code: &'a SourceFileSnapshot,
     new_code: &'a SourceFileSnapshot,
-    old: &'a mut TreeCursor,
-    new: &'a mut TreeCursor,
 ) -> TreeChanges<'a> {
+    let mut old = old_code.tree.walk();
+    let mut new = new_code.tree.walk();
     loop {
-        match goto_first_changed_sibling(old_code, new_code, old, new) {
+        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new) {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
                     old_code,
@@ -666,7 +670,7 @@ fn diff_trees<'a>(
         let first_old_changed = old.node();
         let first_new_changed = new.node();
         let (old_removed_count, new_added_count) =
-            count_changed_siblings(old_code, new_code, old, new);
+            count_changed_siblings(old_code, new_code, &old, &new);
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
@@ -752,7 +756,7 @@ fn goto_first_changed_sibling(
     }
 }
 
-fn collect_remaining_siblings<'a>(cursor: &'a mut TreeCursor) -> Vec<Node<'a>> {
+fn collect_remaining_siblings(mut cursor: TreeCursor) -> Vec<Node> {
     let mut acc = vec![cursor.node()];
     while cursor.goto_next_sibling() {
         acc.push(cursor.node());
