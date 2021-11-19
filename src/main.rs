@@ -586,9 +586,9 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
                 &after.child_by_field_name("name")?.byte_range(),
             ),
         )),
-        (before, after) => {
-            println!("NOT-MATCH BEFORE: {:?}", before);
-            println!("NOT-MATCH AFTER: {:?}", after);
+        (_before, _after) => {
+            // println!("NOT-MATCH BEFORE: {:?}", _before);
+            // println!("NOT-MATCH AFTER: {:?}", _after);
             None
         }
     }
