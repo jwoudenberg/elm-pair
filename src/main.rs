@@ -196,84 +196,75 @@ where
 {
     let mut opt_state = None;
     for msg in msgs {
-        if let Some(state) = &mut opt_state {
-            refresh_last_compiling_version(state, &compilation_thread_state)?;
-        }
-
-        if let Some(changes) = handle_msg(&mut opt_state, msg)? {
-            let mut elm_change = None;
-            if !changes.is_empty() {
-                elm_change = interpret_change(&changes);
-            }
-            on_change(elm_change);
-        }
-
-        if let Some(state) = &mut opt_state {
-            if !state.latest_code.tree.root_node().has_error() {
-                add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
-            }
-        }
+        let elm_change = handle_msg(&compilation_thread_state, &mut opt_state, msg)?;
+        on_change(elm_change);
     }
     Ok(())
 }
 
 fn handle_msg(
+    compilation_thread_state: &Arc<CompilationThreadState>,
     opt_state: &mut Option<SourceFileState>,
     msg: Msg,
-) -> Result<Option<TreeChanges>, Error> {
-    match opt_state {
-        None => {
-            handle_first_msg_for_file(opt_state, msg)?;
-            Ok(None)
-        }
-        Some(state) => handle_later_msg_for_file(state, msg),
-    }
-}
-
-fn handle_first_msg_for_file(state: &mut Option<SourceFileState>, msg: Msg) -> Result<(), Error> {
-    match msg {
-        Msg::ThreadFailedWithError(err) => Err(err),
-        Msg::CompilationSucceeded => Ok(()),
-        Msg::ReceivedEditorEvent(Edit {
-            file, new_bytes, ..
-        }) => {
-            let tree = parse(None, &new_bytes)?;
-            let file_data = Arc::new(FileData {
-                elm_bin: find_executable("elm")?,
-                project_root: find_project_root(&file)?.to_path_buf(),
-                _path: file,
-            });
-            let code = SourceFileSnapshot {
-                tree,
-                bytes: new_bytes,
-                file_data,
-                revision: 0,
-            };
-            *state = Some(SourceFileState {
-                last_compiling_version: None,
-                latest_code: code,
-            });
-            Ok(())
-        }
-    }
-}
-
-fn handle_later_msg_for_file(
-    state: &mut SourceFileState,
-    msg: Msg,
-) -> Result<Option<TreeChanges>, Error> {
+) -> Result<Option<ElmChange>, Error> {
+    // Edit the old tree-sitter tree, or create it if we don't have one yet for
+    // this file.
     match msg {
         Msg::ThreadFailedWithError(err) => return Err(err),
-        Msg::CompilationSucceeded => reparse_tree(state)?,
-        Msg::ReceivedEditorEvent(edit) => apply_edit(state, edit)?,
+        Msg::CompilationSucceeded => {}
+        Msg::ReceivedEditorEvent(edit) => match opt_state {
+            None => get_initial_state_from_first_edit(opt_state, edit)?,
+            Some(state) => apply_edit(state, edit)?,
+        },
+    }
+
+    // If we haven't received an init message from the editor for this file yet
+    // there's nothing we can do. Maybe the next message is the one...
+    let state = match opt_state {
+        None => return Ok(None),
+        Some(state) => state,
     };
-    let changes = match &state.last_compiling_version {
-        Some(last_compiling_version) => {
-            Some(diff_trees(last_compiling_version, &state.latest_code))
-        }
-        None => None,
+
+    // Update the tree-sitter syntax three. Note: this is a separate step from
+    // editing the old tree. See the tree-sitter docs on parsing for more info.
+    reparse_tree(state)?;
+    if !state.latest_code.tree.root_node().has_error() {
+        add_compilation_candidate(&state.latest_code, compilation_thread_state)?;
+    }
+
+    refresh_last_compiling_version(state, compilation_thread_state)?;
+    let tree_changes = match &state.last_compiling_version {
+        None => return Ok(None),
+        Some(last_compiling_version) => diff_trees(last_compiling_version, &state.latest_code),
     };
-    Ok(changes)
+
+    let elm_change = interpret_change(&tree_changes);
+    Ok(elm_change)
+}
+
+fn get_initial_state_from_first_edit(
+    state: &mut Option<SourceFileState>,
+    Edit {
+        file, new_bytes, ..
+    }: Edit,
+) -> Result<(), Error> {
+    let tree = parse(None, &new_bytes)?;
+    let file_data = Arc::new(FileData {
+        elm_bin: find_executable("elm")?,
+        project_root: find_project_root(&file)?.to_path_buf(),
+        _path: file,
+    });
+    let code = SourceFileSnapshot {
+        tree,
+        bytes: new_bytes,
+        file_data,
+        revision: 0,
+    };
+    *state = Some(SourceFileState {
+        last_compiling_version: None,
+        latest_code: code,
+    });
+    Ok(())
 }
 
 fn refresh_last_compiling_version(
@@ -445,7 +436,7 @@ fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<(), Error> {
     state.latest_code.revision += 1;
     let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
     state.latest_code.bytes.splice(range, edit.new_bytes);
-    reparse_tree(state)
+    Ok(())
 }
 
 fn reparse_tree(state: &mut SourceFileState) -> Result<(), Error> {
@@ -625,12 +616,6 @@ struct TreeChanges<'a> {
     new_code: &'a SourceFileSnapshot,
     old_removed: Vec<Node<'a>>,
     new_added: Vec<Node<'a>>,
-}
-
-impl<'a> TreeChanges<'a> {
-    fn is_empty(&self) -> bool {
-        self.old_removed.is_empty() && self.new_added.is_empty()
-    }
 }
 
 fn diff_trees<'a>(
