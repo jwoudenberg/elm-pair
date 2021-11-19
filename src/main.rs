@@ -39,7 +39,8 @@ fn run() -> Result<(), Error> {
     std::thread::spawn(move || {
         report_error(&sender, run_editor_listener_thread(&sender));
     });
-    handle_msgs(compilation_thread_state, &mut receiver.iter())
+    let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
+    handle_msgs(compilation_thread_state, &mut receiver.iter(), log_change)
 }
 
 struct CompilationThreadState {
@@ -184,12 +185,14 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
     })
 }
 
-fn handle_msgs<I>(
+fn handle_msgs<I, F>(
     compilation_thread_state: Arc<CompilationThreadState>,
     msgs: &mut I,
+    mut on_change: F,
 ) -> Result<(), Error>
 where
     I: Iterator<Item = Msg>,
+    F: FnMut(ElmChange),
 {
     let mut state = match initial_state(&compilation_thread_state, msgs)? {
         None => return Ok(()),
@@ -215,8 +218,9 @@ where
                 &mut latest_cursor,
             );
             if !changes.is_empty() {
-                let elm_change = interpret_change(&changes);
-                println!("CHANGE: {:?}", elm_change);
+                if let Some(elm_change) = interpret_change(&changes) {
+                    on_change(elm_change);
+                }
             }
         }
         if !state.latest_code.tree.root_node().has_error() {
@@ -1001,7 +1005,7 @@ mod included_answer_test {
 #[cfg(test)]
 mod simulation {
     use crate::included_answer_test::assert_eq_answer_in;
-    use crate::{CompilationThreadState, Edit, Msg};
+    use crate::{CompilationThreadState, Edit, ElmChange, Msg};
     use std::collections::VecDeque;
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
@@ -1015,11 +1019,17 @@ mod simulation {
         }
     }
 
-    fn run_simulation_test_helper(path: &Path) -> Result<(), Error> {
+    fn run_simulation_test_helper(path: &Path) -> Result<Option<ElmChange>, Error> {
         let mut simulation = Simulation::from_file(path)?;
-        crate::handle_msgs(simulation.compilation_thread_state.clone(), &mut simulation)
-            .map_err(Error::RunningSimulationFailed)?;
-        Ok(())
+        let mut elm_change = None;
+        let store_elm_change = |change| elm_change = Some(change);
+        crate::handle_msgs(
+            simulation.compilation_thread_state.clone(),
+            &mut simulation,
+            store_elm_change,
+        )
+        .map_err(Error::RunningSimulationFailed)?;
+        Ok(elm_change)
     }
 
     struct Simulation {
