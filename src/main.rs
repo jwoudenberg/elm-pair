@@ -192,7 +192,7 @@ fn handle_msgs<I, F>(
 ) -> Result<(), Error>
 where
     I: Iterator<Item = Msg>,
-    F: FnMut(ElmChange),
+    F: FnMut(Option<ElmChange>),
 {
     let mut state = match initial_state(&compilation_thread_state, msgs)? {
         None => return Ok(()),
@@ -216,11 +216,11 @@ where
                 &mut last_compiling_version_cursor,
                 &mut latest_cursor,
             );
+            let mut elm_change = None;
             if !changes.is_empty() {
-                if let Some(elm_change) = interpret_change(&changes) {
-                    on_change(elm_change);
-                }
+                elm_change = interpret_change(&changes);
             }
+            on_change(elm_change);
         }
         if !state.latest_code.tree.root_node().has_error() {
             add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
@@ -964,6 +964,13 @@ mod tests {
     fn interprets_field_name_change() {
         run_simulation_test(Path::new("./tests/FieldNameChange.elm"));
     }
+
+    #[test]
+    fn no_interpretation_when_back_at_compiling_state() {
+        run_simulation_test(Path::new(
+            "./tests/NoInterpretationWhenBackAtCompilingState.elm",
+        ));
+    }
 }
 
 // A helper for defining tests where the test input and expected output are
@@ -1031,7 +1038,7 @@ mod simulation {
     fn run_simulation_test_helper(path: &Path) -> Result<Option<ElmChange>, Error> {
         let mut simulation = Simulation::from_file(path)?;
         let mut elm_change = None;
-        let store_elm_change = |change| elm_change = Some(change);
+        let store_elm_change = |change| elm_change = change;
         crate::handle_msgs(
             simulation.compilation_thread_state.clone(),
             &mut simulation,
