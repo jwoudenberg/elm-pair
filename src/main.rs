@@ -198,7 +198,6 @@ where
         None => return Ok(()),
         Some(state) => state,
     };
-    debug_print_latest_tree(&state);
 
     // Subsequent parses of a file.
     for msg in msgs {
@@ -450,7 +449,6 @@ fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<(), Error> {
 fn reparse_tree(state: &mut SourceFileState) -> Result<(), Error> {
     let new_tree = parse(Some(&state.latest_code.tree), &state.latest_code.bytes)?;
     state.latest_code.tree = new_tree;
-    debug_print_latest_tree(state);
     Ok(())
 }
 
@@ -887,9 +885,20 @@ fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Result<Tree, Error> {
     }
 }
 
-fn debug_print_latest_tree(state: &SourceFileState) {
-    let mut cursor = state.latest_code.tree.walk();
-    debug_print_tree_helper(&state.latest_code, 0, &mut cursor);
+// TODO: remove debug helper when it's no longer needed.
+#[allow(dead_code)]
+fn debug_print_code(code: &SourceFileSnapshot) {
+    println!(
+        "CODE:\n{}",
+        std::string::String::from_utf8(code.bytes.to_vec()).unwrap()
+    );
+}
+
+// TODO: remove debug helper when it's no longer needed.
+#[allow(dead_code)]
+fn debug_print_latest_tree(code: &SourceFileSnapshot) {
+    let mut cursor = code.tree.walk();
+    debug_print_tree_helper(code, 0, &mut cursor);
     println!();
 }
 
@@ -952,8 +961,8 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn first_test() {
-        run_simulation_test(Path::new("./tests/FirstTest.elm"));
+    fn interprets_field_name_change() {
+        run_simulation_test(Path::new("./tests/FieldNameChange.elm"));
     }
 }
 
@@ -1185,9 +1194,10 @@ mod simulation {
             let bytes = str.bytes();
             let range = self.current_position..self.current_position;
             self.current_bytes.splice(range.clone(), bytes.clone());
+            self.current_position += bytes.len();
             self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
                 file: self.file.clone(),
-                new_bytes: Vec::new(),
+                new_bytes: str.as_bytes().to_vec(),
                 input_edit: InputEdit {
                     start_byte: range.start,
                     old_end_byte: range.start,
