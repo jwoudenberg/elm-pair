@@ -194,9 +194,12 @@ where
     I: Iterator<Item = Msg>,
     F: FnMut(Option<ElmChange>),
 {
-    let mut state = match initial_state(&compilation_thread_state, msgs)? {
+    let mut state = match initial_state(msgs)? {
         None => return Ok(()),
-        Some(state) => state,
+        Some(state) => {
+            add_compilation_candidate(&state.latest_code, &compilation_thread_state)?;
+            state
+        }
     };
 
     // Subsequent parses of a file.
@@ -229,10 +232,7 @@ where
     Ok(())
 }
 
-fn initial_state<I>(
-    compilation_thread_state: &Arc<CompilationThreadState>,
-    msgs: &mut I,
-) -> Result<Option<SourceFileState>, Error>
+fn initial_state<I>(msgs: &mut I) -> Result<Option<SourceFileState>, Error>
 where
     I: Iterator<Item = Msg>,
 {
@@ -266,7 +266,6 @@ where
         file_data,
         revision: 0,
     };
-    add_compilation_candidate(&code, compilation_thread_state)?;
     Ok(Some(SourceFileState {
         last_compiling_version: None,
         latest_code: code,
