@@ -23,3 +23,7 @@ fullName { kind, wattage } = "A " ++ Str.fromInt wattage ++ "W " ++ kind ++ " bu
 -- INSERT watts
 -- COMPILATION SUCCEEDS
 -- END SIMULATION
+
+
+-- === expected output below ===
+-- ()
