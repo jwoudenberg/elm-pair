@@ -481,9 +481,8 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
                 &after.child_by_field_name("name")?.byte_range(),
             ),
         )),
-        (_before, _after) => {
-            // println!("NOT-MATCH BEFORE: {:?}", _before);
-            // println!("NOT-MATCH AFTER: {:?}", _after);
+        _ => {
+            // debug_print_tree_changes(changes);
             None
         }
     }
@@ -784,10 +783,23 @@ fn debug_print_code(code: &SourceFileSnapshot) {
 
 // TODO: remove debug helper when it's no longer needed.
 #[allow(dead_code)]
-fn debug_print_latest_tree(code: &SourceFileSnapshot) {
+fn debug_print_tree(code: &SourceFileSnapshot) {
     let mut cursor = code.tree.walk();
     debug_print_tree_helper(code, 0, &mut cursor);
     println!();
+}
+
+// TODO: remove debug helper when it's no longer needed.
+#[allow(dead_code)]
+fn debug_print_tree_changes(changes: &TreeChanges) {
+    println!("REMOVED NODES:");
+    for node in &changes.old_removed {
+        debug_print_node(changes.old_code, 2, node);
+    }
+    println!("ADDED NODES:");
+    for node in &changes.new_added {
+        debug_print_node(changes.new_code, 2, node);
+    }
 }
 
 fn debug_print_tree_helper(
@@ -796,6 +808,17 @@ fn debug_print_tree_helper(
     cursor: &mut tree_sitter::TreeCursor,
 ) {
     let node = cursor.node();
+    debug_print_node(code, indent, &node);
+    if cursor.goto_first_child() {
+        debug_print_tree_helper(code, indent + 1, cursor);
+        cursor.goto_parent();
+    }
+    if cursor.goto_next_sibling() {
+        debug_print_tree_helper(code, indent, cursor);
+    }
+}
+
+fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
     println!(
         "{}[{} {:?}] {:?}{}",
         "  ".repeat(indent),
@@ -804,13 +827,6 @@ fn debug_print_tree_helper(
         debug_code_slice(code, &node.byte_range()),
         if node.has_changes() { " (changed)" } else { "" },
     );
-    if cursor.goto_first_child() {
-        debug_print_tree_helper(code, indent + 1, cursor);
-        cursor.goto_parent();
-    }
-    if cursor.goto_next_sibling() {
-        debug_print_tree_helper(code, indent, cursor);
-    }
 }
 
 // A stack with a maximum size. If a push would ever make the stack grow beyond
