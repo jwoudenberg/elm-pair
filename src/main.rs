@@ -402,11 +402,14 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
         ([("type_alias_declaration", before)], []) => Some(ElmChange::TypeAliasRemoved(
             debug_code_slice(changes.old_code, &before.byte_range()),
         )),
+        ([], [("field_type", after)]) => Some(ElmChange::FieldAdded(debug_code_slice(
+            changes.new_code,
+            &after.byte_range(),
+        ))),
         ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(debug_code_slice(
             changes.new_code,
             &after.byte_range(),
         ))),
-
         ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(debug_code_slice(
             changes.new_code,
             &after.byte_range(),
@@ -492,7 +495,7 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             ),
         )),
         _ => {
-            // debug_print_tree_changes(changes);
+            debug_print_tree_changes(changes);
             None
         }
     }
@@ -1003,6 +1006,7 @@ mod tests {
     simulation_test!(interprets_field_name_change);
     simulation_test!(interprets_new_record_field);
     simulation_test!(interprets_new_first_record_field);
+    simulation_test!(interprets_new_initial_record_field);
     simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
 
