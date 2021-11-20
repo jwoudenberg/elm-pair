@@ -39,6 +39,7 @@ fn run() -> Result<(), Error> {
     });
     let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
     handle_msgs(requester, &mut receiver.iter(), log_change)
+    // TODO: Exit cleanly when we reach this point.
 }
 
 #[derive(Clone)]
