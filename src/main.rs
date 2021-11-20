@@ -1007,13 +1007,13 @@ mod validation {
 mod tests {
     use crate::simulation::simulation_test;
 
-    simulation_test!(interprets_field_name_change);
-    simulation_test!(interprets_new_record_field);
-    simulation_test!(interprets_new_first_record_field);
-    simulation_test!(interprets_new_initial_record_field);
-    simulation_test!(interprets_drop_record_field);
-    simulation_test!(interprets_drop_first_record_field);
-    simulation_test!(interprets_drop_final_record_field);
+    simulation_test!(change_record_field_name);
+    simulation_test!(add_field_to_record);
+    simulation_test!(add_field_to_front_of_record);
+    simulation_test!(add_field_to_empty_record);
+    simulation_test!(remove_field_from_record);
+    simulation_test!(remove_only_field_from_record);
+    simulation_test!(remove_field_from_front_of_record);
     simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
 
