@@ -56,6 +56,14 @@ struct SourceFileSnapshot {
     // This tree by itself is not enough to recover the source code, which is
     // why we also keep the original source code in `bytes`.
     tree: Tree,
+    // A number that gets incremented for each change to this snapshot.
+    revision: usize,
+}
+
+impl crate::validation::Revision for SourceFileSnapshot {
+    fn revision(&self) -> usize {
+        self.revision
+    }
 }
 
 struct FileData {
@@ -181,7 +189,7 @@ fn handle_msg(
         Msg::CompilationSucceeded => {}
         Msg::ReceivedEditorEvent(edit) => match opt_state {
             None => get_initial_state_from_first_edit(opt_state, edit)?,
-            Some(state) => apply_edit(state, edit)?,
+            Some(state) => apply_edit(state, edit),
         },
     }
 
@@ -225,6 +233,7 @@ fn get_initial_state_from_first_edit(
         tree,
         bytes: new_bytes,
         file_data,
+        revision: 0,
     };
     *state = Some(SourceFileState {
         last_compiling_version: None,
@@ -333,11 +342,11 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
     }
 }
 
-fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<(), Error> {
+fn apply_edit(state: &mut SourceFileState, edit: Edit) {
     state.latest_code.tree.edit(&edit.input_edit);
     let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
     state.latest_code.bytes.splice(range, edit.new_bytes);
-    Ok(())
+    state.latest_code.revision += 1;
 }
 
 fn reparse_tree(state: &mut SourceFileState) -> Result<(), Error> {
@@ -871,14 +880,19 @@ mod validation {
 
     pub struct Requester<T> {
         shared_state: Arc<SharedState<T>>,
-        last_id: usize,
+        last_submitted_revision: Option<usize>,
     }
 
-    impl<T> Requester<T> {
+    impl<T> Requester<T>
+    where
+        T: Revision,
+    {
         pub fn request_validation(&mut self, request: T) {
+            if !is_new_revision(&mut self.last_submitted_revision, &request) {
+                return;
+            }
             let mut requests = lock(&self.shared_state.requests);
-            self.last_id += 1;
-            requests.push((self.last_id, request));
+            requests.push(request);
             self.shared_state.new_request_condvar.notify_all();
         }
 
@@ -892,11 +906,14 @@ mod validation {
 
     pub struct Validator<T> {
         shared_state: Arc<SharedState<T>>,
-        last_validated_id: usize,
+        last_validated_revision: Option<usize>,
     }
 
     impl<T> Validator<T> {
-        pub fn next(&mut self) -> T {
+        pub fn next(&mut self) -> T
+        where
+            T: Revision,
+        {
             let mut requests = lock(&self.shared_state.requests);
             loop {
                 match requests.pop() {
@@ -907,9 +924,8 @@ mod validation {
                             .wait(requests)
                             .unwrap(); // See comment on `lock` function below.
                     }
-                    Some((id, next_request)) => {
-                        if id > self.last_validated_id {
-                            self.last_validated_id = id;
+                    Some(next_request) => {
+                        if is_new_revision(&mut self.last_validated_revision, &next_request) {
                             return next_request;
                         } else {
                             continue;
@@ -927,11 +943,15 @@ mod validation {
 
     struct SharedState<T> {
         // A stack of requests for the responder to handle.
-        requests: Mutex<SizedStack<(usize, T)>>,
+        requests: Mutex<SizedStack<T>>,
         // A condvar triggered whenever a new request arrives.
         new_request_condvar: Condvar,
         // The last calculated response.
         last_validated: Mutex<Option<T>>,
+    }
+
+    pub trait Revision {
+        fn revision(&self) -> usize;
     }
 
     pub fn channel<T>(max_inflight_requests: usize) -> (Requester<T>, Validator<T>) {
@@ -942,11 +962,11 @@ mod validation {
         });
         let requester = Requester {
             shared_state: shared_state.clone(),
-            last_id: 0,
+            last_submitted_revision: None,
         };
         let compiler = Validator {
             shared_state,
-            last_validated_id: 0,
+            last_validated_revision: None,
         };
         (requester, compiler)
     }
@@ -958,6 +978,21 @@ mod validation {
         // showball by calling `unwrap()` here is fine.
         mutex.lock().unwrap()
     }
+
+    fn is_new_revision<T>(last_checked_revision: &mut Option<usize>, t: &T) -> bool
+    where
+        T: Revision,
+    {
+        let revision = t.revision();
+        let is_new = match last_checked_revision {
+            None => true,
+            Some(old) => revision > *old,
+        };
+        if is_new {
+            *last_checked_revision = Some(revision);
+        }
+        is_new
+    }
 }
 
 #[cfg(test)]
@@ -965,6 +1000,8 @@ mod tests {
     use crate::simulation::simulation_test;
 
     simulation_test!(interprets_field_name_change);
+    simulation_test!(interprets_new_record_field);
+    simulation_test!(interprets_new_first_record_field);
     simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
 
@@ -1213,7 +1250,7 @@ mod simulation {
                 input_edit: InputEdit {
                     start_byte: range.start,
                     old_end_byte: range.start,
-                    new_end_byte: range.end,
+                    new_end_byte: self.current_position,
                     start_position: Point { row: 0, column: 0 },
                     old_end_position: Point { row: 0, column: 0 },
                     new_end_position: Point { row: 0, column: 0 },
