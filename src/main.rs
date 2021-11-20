@@ -946,20 +946,10 @@ mod validation {
 
 #[cfg(test)]
 mod tests {
-    use crate::simulation::run_simulation_test;
-    use std::path::Path;
+    use crate::simulation::simulation_test;
 
-    #[test]
-    fn interprets_field_name_change() {
-        run_simulation_test(Path::new("./tests/FieldNameChange.elm"));
-    }
-
-    #[test]
-    fn no_interpretation_when_back_at_compiling_state() {
-        run_simulation_test(Path::new(
-            "./tests/NoInterpretationWhenBackAtCompilingState.elm",
-        ));
-    }
+    simulation_test!(interprets_field_name_change);
+    simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
 
 // A helper for defining tests where the test input and expected output are
@@ -1015,6 +1005,29 @@ mod simulation {
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
     use tree_sitter::{InputEdit, Point};
+
+    #[macro_export]
+    macro_rules! simulation_test {
+        ($name:ident) => {
+            #[test]
+            fn $name() {
+                let mut path = std::path::PathBuf::new();
+                path.push("./tests");
+                let module_name = stringify!($name)
+                    .split("_")
+                    .map(|word| {
+                        let (first, rest) = word.split_at(1);
+                        first.to_uppercase() + rest
+                    })
+                    .collect::<Vec<String>>()
+                    .join("");
+                path.push(module_name + ".elm");
+                println!("Run simulation {:?}", &path);
+                crate::simulation::run_simulation_test(&path);
+            }
+        };
+    }
+    pub use simulation_test;
 
     pub fn run_simulation_test(path: &Path) {
         match run_simulation_test_helper(path) {
