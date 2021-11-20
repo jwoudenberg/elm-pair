@@ -414,6 +414,10 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             changes.new_code,
             &after.byte_range(),
         ))),
+        ([("field_type", before)], []) => Some(ElmChange::FieldRemoved(debug_code_slice(
+            changes.old_code,
+            &before.byte_range(),
+        ))),
         ([(",", _), ("field_type", before)], []) => Some(ElmChange::FieldRemoved(
             debug_code_slice(changes.old_code, &before.byte_range()),
         )),
@@ -1007,6 +1011,9 @@ mod tests {
     simulation_test!(interprets_new_record_field);
     simulation_test!(interprets_new_first_record_field);
     simulation_test!(interprets_new_initial_record_field);
+    simulation_test!(interprets_drop_record_field);
+    simulation_test!(interprets_drop_first_record_field);
+    simulation_test!(interprets_drop_final_record_field);
     simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
 
