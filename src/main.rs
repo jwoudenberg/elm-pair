@@ -1078,14 +1078,7 @@ mod simulation {
             fn $name() {
                 let mut path = std::path::PathBuf::new();
                 path.push("./tests");
-                let module_name = stringify!($name)
-                    .split("_")
-                    .map(|word| {
-                        let (first, rest) = word.split_at(1);
-                        first.to_uppercase() + rest
-                    })
-                    .collect::<Vec<String>>()
-                    .join("");
+                let module_name = crate::simulation::snake_to_camel(stringify!($name));
                 path.push(module_name + ".elm");
                 println!("Run simulation {:?}", &path);
                 crate::simulation::run_simulation_test(&path);
@@ -1309,6 +1302,16 @@ mod simulation {
                 },
             }
         }
+    }
+
+    pub fn snake_to_camel(str: &str) -> String {
+        str.split('_')
+            .map(|word| {
+                let (first, rest) = word.split_at(1);
+                first.to_uppercase() + rest
+            })
+            .collect::<Vec<String>>()
+            .join("")
     }
 
     #[derive(Debug)]
