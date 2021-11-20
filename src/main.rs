@@ -1,9 +1,8 @@
 use core::ops::Range;
-use sized_stack::SizedStack;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
@@ -19,8 +18,7 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    let compilation_thread_state = Arc::new(CompilationThreadState::new());
-    let compilation_thread_state_clone = Arc::clone(&compilation_thread_state);
+    let (requester, processor) = validation::channel(MAX_COMPILATION_CANDIDATES);
     // We're using a sync_channel of size 1 here because:
     // - Size 0 would mean sending blocks until the receiver is requesting a new
     //   message. This is not okay, because we want to be able to queue up a
@@ -33,38 +31,14 @@ fn run() -> Result<(), Error> {
     std::thread::spawn(move || {
         report_error(
             &sender_clone,
-            run_compilation_thread(&sender_clone, compilation_thread_state_clone),
+            run_compilation_thread(&sender_clone, processor),
         );
     });
     std::thread::spawn(move || {
         report_error(&sender, run_editor_listener_thread(&sender));
     });
     let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
-    handle_msgs(compilation_thread_state, &mut receiver.iter(), log_change)
-}
-
-struct CompilationThreadState {
-    // A stack of source file snapshots the compilation thread should attempt
-    // to compile.
-    candidates: Mutex<SizedStack<SourceFileSnapshot>>,
-    // A condvar triggered whenever a new candidate is added to `candidates`.
-    new_candidate_condvar: Condvar,
-    // The compilation thread uses this field to communicate compilation
-    // successes back to the main thread. We're not using a channel for this
-    // because we don't want to block either on sending or receivning
-    // compilation results. A newer compilation result should overwrite an older
-    // one.
-    last_compilation_success: Mutex<Option<SourceFileSnapshot>>,
-}
-
-impl CompilationThreadState {
-    fn new() -> CompilationThreadState {
-        CompilationThreadState {
-            last_compilation_success: Mutex::new(None),
-            new_candidate_condvar: Condvar::new(),
-            candidates: Mutex::new(SizedStack::with_capacity(MAX_COMPILATION_CANDIDATES)),
-        }
-    }
+    handle_msgs(requester, &mut receiver.iter(), log_change)
 }
 
 #[derive(Clone)]
@@ -82,8 +56,6 @@ struct SourceFileSnapshot {
     // This tree by itself is not enough to recover the source code, which is
     // why we also keep the original source code in `bytes`.
     tree: Tree,
-    // A number that gets incremented each time we change the source code.
-    revision: u64,
 }
 
 struct FileData {
@@ -125,11 +97,6 @@ enum Error {
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
-    FoundPoisonedMutexWhileUpdatingLastCompilingVersion,
-    FoundPoisonedMutexWhileAddingCompilationCandidate,
-    FoundPoisonedMutexWhileWritingLastCompilationSuccess,
-    FoundPoisonedMutexWhileReadingCompilationCandidates,
-    FoundPoisonedMutexWhileWaitingForCompilationCandidates,
     FifoCreationFailed(nix::errno::Errno),
     FifoOpeningFailed(std::io::Error),
     FifoLineReadingFailed(std::io::Error),
@@ -186,7 +153,7 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
 }
 
 fn handle_msgs<I, F>(
-    compilation_thread_state: Arc<CompilationThreadState>,
+    mut validator: validation::Requester<SourceFileSnapshot>,
     msgs: &mut I,
     mut on_change: F,
 ) -> Result<(), Error>
@@ -196,14 +163,14 @@ where
 {
     let mut opt_state = None;
     for msg in msgs {
-        let elm_change = handle_msg(&compilation_thread_state, &mut opt_state, msg)?;
+        let elm_change = handle_msg(&mut validator, &mut opt_state, msg)?;
         on_change(elm_change);
     }
     Ok(())
 }
 
 fn handle_msg(
-    compilation_thread_state: &Arc<CompilationThreadState>,
+    validator: &mut validation::Requester<SourceFileSnapshot>,
     opt_state: &mut Option<SourceFileState>,
     msg: Msg,
 ) -> Result<Option<ElmChange>, Error> {
@@ -229,10 +196,10 @@ fn handle_msg(
     // editing the old tree. See the tree-sitter docs on parsing for more info.
     reparse_tree(state)?;
     if !state.latest_code.tree.root_node().has_error() {
-        add_compilation_candidate(&state.latest_code, compilation_thread_state)?;
+        validator.request_validation(state.latest_code.clone());
     }
 
-    refresh_last_compiling_version(state, compilation_thread_state)?;
+    validator.update_last_valid(&mut state.last_compiling_version);
     let tree_changes = match &state.last_compiling_version {
         None => return Ok(None),
         Some(last_compiling_version) => diff_trees(last_compiling_version, &state.latest_code),
@@ -258,43 +225,11 @@ fn get_initial_state_from_first_edit(
         tree,
         bytes: new_bytes,
         file_data,
-        revision: 0,
     };
     *state = Some(SourceFileState {
         last_compiling_version: None,
         latest_code: code,
     });
-    Ok(())
-}
-
-fn refresh_last_compiling_version(
-    state: &mut SourceFileState,
-    compilation_thread_state: &CompilationThreadState,
-) -> Result<(), Error> {
-    let mut last_compilation_success = compilation_thread_state
-        .last_compilation_success
-        .lock()
-        .map_err(|_| Error::FoundPoisonedMutexWhileUpdatingLastCompilingVersion)?;
-
-    if let Some(snapshot) = std::mem::replace(&mut *last_compilation_success, None) {
-        state.last_compiling_version = Some(snapshot);
-    }
-    Ok(())
-}
-
-fn add_compilation_candidate(
-    code: &SourceFileSnapshot,
-    compilation_thread_state: &CompilationThreadState,
-) -> Result<(), Error> {
-    let snapshot = code.clone();
-    {
-        let mut candidates = compilation_thread_state
-            .candidates
-            .lock()
-            .map_err(|_| Error::FoundPoisonedMutexWhileAddingCompilationCandidate)?;
-        candidates.push(snapshot);
-        compilation_thread_state.new_candidate_condvar.notify_all();
-    }
     Ok(())
 }
 
@@ -311,25 +246,12 @@ fn report_error<I>(sender: &SyncSender<Msg>, result: Result<I, Error>) {
 
 fn run_compilation_thread(
     sender: &SyncSender<Msg>,
-    compilation_thread_state: Arc<CompilationThreadState>,
+    mut validation_processor: validation::Validator<SourceFileSnapshot>,
 ) -> Result<(), Error> {
-    let mut last_compiled_revision = None;
     loop {
-        let candidate = pop_latest_candidate(&compilation_thread_state)?;
-        if let Some(revision) = last_compiled_revision {
-            if candidate.revision <= revision {
-                // We've already compiled newer snapshots than this, so ignore.
-                continue;
-            }
-        }
-
+        let candidate = validation_processor.next();
         if does_snapshot_compile(&candidate)? {
-            last_compiled_revision = Some(candidate.revision);
-            let mut last_compilation_success = compilation_thread_state
-                .last_compilation_success
-                .lock()
-                .map_err(|_| Error::FoundPoisonedMutexWhileWritingLastCompilationSuccess)?;
-            *last_compilation_success = Some(candidate);
+            validation_processor.mark_valid(candidate);
             // Let the main thread know it should reparse. If sending this fails
             // we asume that's because a ReceivedEditorEvent got there first.
             // That's okay, because those events cause reparsing too.
@@ -353,26 +275,6 @@ fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
             .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
     }
     Ok(())
-}
-
-fn pop_latest_candidate(
-    compilation_thread_state: &CompilationThreadState,
-) -> Result<SourceFileSnapshot, Error> {
-    let mut candidates = compilation_thread_state
-        .candidates
-        .lock()
-        .map_err(|_| Error::FoundPoisonedMutexWhileReadingCompilationCandidates)?;
-    loop {
-        match candidates.pop() {
-            None => {
-                candidates = compilation_thread_state
-                    .new_candidate_condvar
-                    .wait(candidates)
-                    .map_err(|_| Error::FoundPoisonedMutexWhileWaitingForCompilationCandidates)?;
-            }
-            Some(next_candidate) => return Ok(next_candidate),
-        }
-    }
 }
 
 fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
@@ -433,7 +335,6 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
 
 fn apply_edit(state: &mut SourceFileState, edit: Edit) -> Result<(), Error> {
     state.latest_code.tree.edit(&edit.input_edit);
-    state.latest_code.revision += 1;
     let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
     state.latest_code.bytes.splice(range, edit.new_bytes);
     Ok(())
@@ -942,6 +843,107 @@ mod sized_stack {
     }
 }
 
+// A concurency primitive for coordinating between a validator thread and a
+// thread requesting validations.
+// - There's a maximum amount of inflight validation requests. If we push an
+//   additional request once at the limit, the oldest request is forgotten.
+// - We only store the last valid value. If we validate another value before the
+//   last one is read that old value is discarded.
+mod validation {
+    use crate::sized_stack::SizedStack;
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+    pub struct Requester<T> {
+        shared_state: Arc<SharedState<T>>,
+        last_id: usize,
+    }
+
+    impl<T> Requester<T> {
+        pub fn request_validation(&mut self, request: T) {
+            let mut requests = lock(&self.shared_state.requests);
+            self.last_id += 1;
+            requests.push((self.last_id, request));
+            self.shared_state.new_request_condvar.notify_all();
+        }
+
+        pub fn update_last_valid(&self, response_var: &mut Option<T>) {
+            let mut last_validated = lock(&self.shared_state.last_validated);
+            if let Some(response) = std::mem::replace(&mut *last_validated, None) {
+                *response_var = Some(response);
+            }
+        }
+    }
+
+    pub struct Validator<T> {
+        shared_state: Arc<SharedState<T>>,
+        last_validated_id: usize,
+    }
+
+    impl<T> Validator<T> {
+        pub fn next(&mut self) -> T {
+            let mut requests = lock(&self.shared_state.requests);
+            loop {
+                match requests.pop() {
+                    None => {
+                        requests = self
+                            .shared_state
+                            .new_request_condvar
+                            .wait(requests)
+                            .unwrap(); // See comment on `lock` function below.
+                    }
+                    Some((id, next_request)) => {
+                        if id > self.last_validated_id {
+                            self.last_validated_id = id;
+                            return next_request;
+                        } else {
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        pub fn mark_valid(&mut self, valid: T) {
+            let mut last_validated = lock(&self.shared_state.last_validated);
+            *last_validated = Some(valid);
+        }
+    }
+
+    struct SharedState<T> {
+        // A stack of requests for the responder to handle.
+        requests: Mutex<SizedStack<(usize, T)>>,
+        // A condvar triggered whenever a new request arrives.
+        new_request_condvar: Condvar,
+        // The last calculated response.
+        last_validated: Mutex<Option<T>>,
+    }
+
+    pub fn channel<T>(max_inflight_requests: usize) -> (Requester<T>, Validator<T>) {
+        let shared_state = Arc::new(SharedState {
+            requests: Mutex::new(SizedStack::with_capacity(max_inflight_requests)),
+            new_request_condvar: Condvar::new(),
+            last_validated: Mutex::new(None),
+        });
+        let requester = Requester {
+            shared_state: shared_state.clone(),
+            last_id: 0,
+        };
+        let compiler = Validator {
+            shared_state,
+            last_validated_id: 0,
+        };
+        (requester, compiler)
+    }
+
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
+        // `mutex.lock()` only fails if the lock is 'poisoned', meaning another
+        // thread panicked while accessing it. In this program we have no intent
+        // to recover from panicked threads, so letting the original problem
+        // showball by calling `unwrap()` here is fine.
+        mutex.lock().unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::simulation::run_simulation_test;
@@ -1008,11 +1010,10 @@ mod included_answer_test {
 #[cfg(test)]
 mod simulation {
     use crate::included_answer_test::assert_eq_answer_in;
-    use crate::{CompilationThreadState, Edit, ElmChange, Msg};
+    use crate::{Edit, ElmChange, Msg, SourceFileSnapshot};
     use std::collections::VecDeque;
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use tree_sitter::{InputEdit, Point};
 
     pub fn run_simulation_test(path: &Path) {
@@ -1027,8 +1028,8 @@ mod simulation {
         let mut elm_change = None;
         let store_elm_change = |change| elm_change = change;
         crate::handle_msgs(
-            simulation.compilation_thread_state.clone(),
-            &mut simulation,
+            simulation.validation_requester,
+            &mut simulation.iterator,
             store_elm_change,
         )
         .map_err(Error::RunningSimulationFailed)?;
@@ -1036,39 +1037,8 @@ mod simulation {
     }
 
     struct Simulation {
-        compilation_thread_state: Arc<CompilationThreadState>,
-        msgs: VecDeque<Msg>,
-    }
-
-    impl Iterator for Simulation {
-        type Item = Msg;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            // Bunch of .unwrap()'s here. We're bound by the iterator contract
-            // here, and it's preventing us from communicating errors upwards.
-            // We could return `None` instead of panicing, but that would hide
-            // problems. We could not use an interator, which might be nicer.
-            // Since this is test code let's let it slide for now.
-            self.msgs.pop_front().map(|msg| {
-                if let Msg::CompilationSucceeded = msg {
-                    let last_snapshot = {
-                        self.compilation_thread_state
-                            .candidates
-                            .lock()
-                            .unwrap()
-                            .pop()
-                            .unwrap()
-                    };
-                    let mut last_compilation_success = self
-                        .compilation_thread_state
-                        .last_compilation_success
-                        .lock()
-                        .unwrap();
-                    *last_compilation_success = Some(last_snapshot);
-                }
-                msg
-            })
-        }
+        validation_requester: crate::validation::Requester<SourceFileSnapshot>,
+        iterator: SimulationIterator,
     }
 
     impl Simulation {
@@ -1102,6 +1072,25 @@ mod simulation {
                 };
             }
             Ok(builder.finish())
+        }
+    }
+
+    struct SimulationIterator {
+        validation_processor: crate::validation::Validator<SourceFileSnapshot>,
+        msgs: VecDeque<Msg>,
+    }
+
+    impl Iterator for SimulationIterator {
+        type Item = Msg;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.msgs.pop_front().map(|msg| {
+                if let Msg::CompilationSucceeded = msg {
+                    let last_snapshot = self.validation_processor.next();
+                    self.validation_processor.mark_valid(last_snapshot);
+                }
+                msg
+            })
         }
     }
 
@@ -1233,9 +1222,13 @@ mod simulation {
         }
 
         fn finish(self) -> Simulation {
+            let (validation_requester, validation_processor) = crate::validation::channel(1);
             Simulation {
-                compilation_thread_state: Arc::new(CompilationThreadState::new()),
-                msgs: self.msgs,
+                validation_requester,
+                iterator: SimulationIterator {
+                    validation_processor,
+                    msgs: self.msgs,
+                },
             }
         }
     }
