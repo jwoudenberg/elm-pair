@@ -1020,6 +1020,28 @@ mod tests {
     simulation_test!(remove_field_from_record);
     simulation_test!(remove_only_field_from_record);
     simulation_test!(remove_field_from_front_of_record);
+    simulation_test!(add_import);
+    simulation_test!(remove_import);
+    simulation_test!(add_as_clause_to_import);
+    simulation_test!(remove_as_clause_from_import);
+    simulation_test!(change_as_clause_on_import);
+    simulation_test!(change_argument_name_at_definition_site);
+    simulation_test!(change_argument_name_at_usage_site);
+    simulation_test!(change_let_binding_name_at_definition_site);
+    simulation_test!(change_let_binding_name_at_usage_site);
+    simulation_test!(change_function_name_in_type_definition);
+    simulation_test!(change_function_name_at_definition_site);
+    simulation_test!(change_function_name_at_usage_site);
+    simulation_test!(change_type_name_at_definition_site);
+    simulation_test!(change_type_name_at_usage_site);
+    simulation_test!(add_type_definition);
+    simulation_test!(remove_type_definition);
+    simulation_test!(add_type_alias_definition);
+    simulation_test!(remove_type_alias_definition);
+    simulation_test!(add_module_qualifier_to_variable);
+    simulation_test!(remove_module_qualifier_from_variable);
+    simulation_test!(add_module_qualifier_to_type);
+    simulation_test!(remove_module_qualifier_from_type);
     simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
 
