@@ -39,7 +39,6 @@ fn run() -> Result<(), Error> {
     });
     let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
     handle_msgs(requester, &mut receiver.iter(), log_change)
-    // TODO: Exit cleanly when we reach this point.
 }
 
 #[derive(Clone)]
@@ -85,6 +84,7 @@ struct SourceFileState {
 // will process these one-at-a-time.
 enum Msg {
     ThreadFailedWithError(Error),
+    ShutdownRequested,
     ReceivedEditorEvent(Edit),
     CompilationSucceeded,
 }
@@ -172,6 +172,9 @@ where
 {
     let mut opt_state = None;
     for msg in msgs {
+        if let Msg::ShutdownRequested = msg {
+            break;
+        };
         let elm_change = handle_msg(&mut validator, &mut opt_state, msg)?;
         on_change(elm_change);
     }
@@ -187,6 +190,7 @@ fn handle_msg(
     // this file.
     match msg {
         Msg::ThreadFailedWithError(err) => return Err(err),
+        Msg::ShutdownRequested => return Ok(None),
         Msg::CompilationSucceeded => {}
         Msg::ReceivedEditorEvent(edit) => match opt_state {
             None => get_initial_state_from_first_edit(opt_state, edit)?,
@@ -284,7 +288,9 @@ fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
             .send(Msg::ReceivedEditorEvent(edit))
             .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
     }
-    Ok(())
+    sender
+        .send(Msg::ShutdownRequested)
+        .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)
 }
 
 fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
