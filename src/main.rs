@@ -20,7 +20,6 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    let (requester, processor) = validation::channel(MAX_COMPILATION_CANDIDATES);
     // We're using a sync_channel of size 1 here because:
     // - Size 0 would mean sending blocks until the receiver is requesting a new
     //   message. This is not okay, because we want to be able to queue up a
@@ -29,20 +28,13 @@ fn run() -> Result<(), Error> {
     //   to try to stay ouf the buffering business and leave it to the OS, until
     //   I see a benefit in doing it in this program (I don't currently).
     let (sender, receiver) = sync_channel(1);
-    let sender_clone = sender.clone();
     let thread_error = Arc::new(MVar::new());
-    let thread_error_clone1 = thread_error.clone();
-    let thread_error_clone2 = thread_error.clone();
-    std::thread::spawn(move || {
-        report_error(
-            thread_error_clone1,
-            run_compilation_thread(&sender_clone, processor),
-        );
-    });
+    let thread_error_clone = thread_error.clone();
+    let requester = compilation_thread::run(thread_error.clone(), sender.clone());
     std::thread::spawn(move || {
         let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
         report_error(
-            thread_error_clone2,
+            thread_error_clone,
             run_change_analysis_thread(requester, &mut receiver.iter(), log_change),
         );
     });
@@ -154,7 +146,7 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
 }
 
 fn run_change_analysis_thread<I, F>(
-    mut validator: validation::Requester,
+    mut validator: compilation_thread::Requester,
     msgs: &mut I,
     mut on_change: F,
 ) -> Result<(), Error>
@@ -178,7 +170,7 @@ where
 }
 
 fn handle_msg(
-    validator: &mut validation::Requester,
+    validator: &mut compilation_thread::Requester,
     latest_code: &mut Option<SourceFileSnapshot>,
     msg: Msg,
 ) -> Result<(), Error> {
@@ -248,24 +240,6 @@ fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
     }
 }
 
-fn run_compilation_thread(
-    sender: &SyncSender<Msg>,
-    mut validation_processor: validation::Validator,
-) -> Result<(), Error> {
-    loop {
-        let candidate = validation_processor.next();
-        if does_snapshot_compile(&candidate)? {
-            validation_processor.mark_valid(candidate);
-            // Let the main thread know it should reparse. If sending this fails
-            // we asume that's because a ReceivedEditorEvent got there first.
-            // That's okay, because those events cause reparsing too.
-            sender
-                .try_send(Msg::CompilationSucceeded)
-                .map_err(|_| Error::SendingMsgFromCompilationThreadFailed)?;
-        }
-    }
-}
-
 fn run_editor_listener_thread(
     thread_error: Arc<MVar<Error>>,
     sender: &SyncSender<Msg>,
@@ -285,28 +259,6 @@ fn run_editor_listener_thread(
             .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
     }
     Ok(())
-}
-
-fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
-    // Write lates code to temporary file. We don't compile the original source
-    // file, because the version stored on disk is likely ahead or behind the
-    // version in the editor.
-    let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
-    std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
-    temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
-        .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
-
-    // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&snapshot.file_data.elm_bin)
-        .arg("make")
-        .arg("--report=json")
-        .arg(temp_path)
-        .current_dir(&snapshot.file_data.project_root)
-        .output()
-        .map_err(Error::CompilationFailedToRunElmMake)?;
-
-    Ok(output.status.success())
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {
@@ -936,10 +888,11 @@ mod sized_stack {
 //   additional request once at the limit, the oldest request is forgotten.
 // - We only store the last valid value. If we validate another value before the
 //   last one is read that old value is discarded.
-mod validation {
+mod compilation_thread {
     use crate::mvar::MVar;
     use crate::sized_stack::SizedStack;
-    use crate::{lock, SourceFileSnapshot};
+    use crate::{lock, Error, Msg, SourceFileSnapshot};
+    use std::sync::mpsc::SyncSender;
     use std::sync::{Arc, Condvar, Mutex};
 
     pub struct Requester {
@@ -1035,6 +988,54 @@ mod validation {
             *last_checked_revision = Some(code.revision);
         }
         is_new
+    }
+
+    pub(crate) fn run(error_var: Arc<MVar<Error>>, sender: SyncSender<Msg>) -> Requester {
+        let (requester, processor) = channel(crate::MAX_COMPILATION_CANDIDATES);
+        std::thread::spawn(move || {
+            crate::report_error(error_var, run_in_thread(&sender, processor));
+        });
+        requester
+    }
+
+    fn run_in_thread(
+        sender: &SyncSender<Msg>,
+        mut validation_processor: Validator,
+    ) -> Result<(), Error> {
+        loop {
+            let candidate = validation_processor.next();
+            if does_snapshot_compile(&candidate)? {
+                validation_processor.mark_valid(candidate);
+                // Let the main thread know it should reparse. If sending this fails
+                // we asume that's because a ReceivedEditorEvent got there first.
+                // That's okay, because those events cause reparsing too.
+                sender
+                    .try_send(Msg::CompilationSucceeded)
+                    .map_err(|_| Error::SendingMsgFromCompilationThreadFailed)?;
+            }
+        }
+    }
+
+    fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
+        // Write lates code to temporary file. We don't compile the original source
+        // file, because the version stored on disk is likely ahead or behind the
+        // version in the editor.
+        let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
+        std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
+        temp_path.push("Temp.elm");
+        std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
+            .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
+
+        // Run Elm compiler against temporary file.
+        let output = std::process::Command::new(&snapshot.file_data.elm_bin)
+            .arg("make")
+            .arg("--report=json")
+            .arg(temp_path)
+            .current_dir(&snapshot.file_data.project_root)
+            .output()
+            .map_err(Error::CompilationFailedToRunElmMake)?;
+
+        Ok(output.status.success())
     }
 }
 
@@ -1165,7 +1166,7 @@ mod simulation {
     }
 
     struct Simulation {
-        validation_requester: crate::validation::Requester,
+        validation_requester: crate::compilation_thread::Requester,
         iterator: SimulationIterator,
     }
 
@@ -1204,7 +1205,7 @@ mod simulation {
     }
 
     struct SimulationIterator {
-        validation_processor: crate::validation::Validator,
+        validation_processor: crate::compilation_thread::Validator,
         msgs: VecDeque<Msg>,
     }
 
@@ -1350,7 +1351,8 @@ mod simulation {
         }
 
         fn finish(self) -> Simulation {
-            let (validation_requester, validation_processor) = crate::validation::channel(1);
+            let (validation_requester, validation_processor) =
+                crate::compilation_thread::channel(1);
             Simulation {
                 validation_requester,
                 iterator: SimulationIterator {
