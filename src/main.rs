@@ -30,14 +30,14 @@ fn run() -> Result<(), Error> {
     let (sender, receiver) = sync_channel(1);
     let thread_error = Arc::new(MVar::new());
     let thread_error_clone = thread_error.clone();
-    let (mut requester, last_compiling_version) =
+    let (mut compilation_candidates, last_compiling_version) =
         compilation_thread::run(thread_error.clone(), sender.clone());
     std::thread::spawn(move || {
         let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
         report_error(
             thread_error_clone,
             run_change_analysis_thread(
-                |snapshot| requester.request_validation(snapshot),
+                |snapshot| compilation_candidates.push(snapshot),
                 &last_compiling_version,
                 &mut receiver.iter(),
                 log_change,
@@ -911,12 +911,28 @@ mod sized_stack {
     }
 }
 
-// A concurency primitive for coordinating between a validator thread and a
-// thread requesting validations.
-// - There's a maximum amount of inflight validation requests. If we push an
-//   additional request once at the limit, the oldest request is forgotten.
-// - We only store the last valid value. If we validate another value before the
-//   last one is read that old value is discarded.
+fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
+    // Write lates code to temporary file. We don't compile the original source
+    // file, because the version stored on disk is likely ahead or behind the
+    // version in the editor.
+    let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
+    std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
+    temp_path.push("Temp.elm");
+    std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
+        .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
+
+    // Run Elm compiler against temporary file.
+    let output = std::process::Command::new(&snapshot.file_data.elm_bin)
+        .arg("make")
+        .arg("--report=json")
+        .arg(temp_path)
+        .current_dir(&snapshot.file_data.project_root)
+        .output()
+        .map_err(Error::CompilationFailedToRunElmMake)?;
+
+    Ok(output.status.success())
+}
+
 mod compilation_thread {
     use crate::mvar::MVar;
     use crate::sized_stack::SizedStack;
@@ -924,47 +940,45 @@ mod compilation_thread {
     use std::sync::mpsc::SyncSender;
     use std::sync::Arc;
 
-    pub struct Requester {
-        compilation_candidates: Arc<SizedStack<SourceFileSnapshot>>,
+    pub struct CompilationCandidates {
+        candidates: Arc<SizedStack<SourceFileSnapshot>>,
         last_submitted_revision: Option<usize>,
     }
 
-    impl Requester {
-        pub(crate) fn request_validation(&mut self, snapshot: SourceFileSnapshot) {
+    impl CompilationCandidates {
+        pub(crate) fn push(&mut self, snapshot: SourceFileSnapshot) {
             if !is_new_revision(&mut self.last_submitted_revision, &snapshot) {
                 return;
             }
-            self.compilation_candidates.push(snapshot);
+            self.candidates.push(snapshot);
         }
     }
 
-    struct Validator {
-        compilation_candidates: Arc<SizedStack<SourceFileSnapshot>>,
-        last_validated_revision: Option<usize>,
-    }
-
-    impl Validator {
-        fn next(&mut self) -> SourceFileSnapshot {
-            loop {
-                let snapshot = self.compilation_candidates.pop();
-                if is_new_revision(&mut self.last_validated_revision, &snapshot) {
-                    return snapshot;
-                }
+    fn run_compilation_loop<F>(
+        candidates: Arc<SizedStack<SourceFileSnapshot>>,
+        sender: SyncSender<Msg>,
+        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
+        compiles: F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(&SourceFileSnapshot) -> Result<bool, Error>,
+    {
+        let mut last_validated_revision = None;
+        loop {
+            let snapshot = candidates.pop();
+            if !is_new_revision(&mut last_validated_revision, &snapshot) {
+                continue;
+            }
+            if compiles(&snapshot)? {
+                last_compiling_version.write(snapshot);
+                // Let the main thread know it should reparse. If sending this fails
+                // we asume that's because a ReceivedEditorEvent got there first.
+                // That's okay, because those events cause reparsing too.
+                sender
+                    .try_send(Msg::CompilationSucceeded)
+                    .map_err(|_| Error::SendingMsgFromCompilationThreadFailed)?;
             }
         }
-    }
-
-    fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
-        let compilation_candidates = Arc::new(SizedStack::with_capacity(max_inflight_requests));
-        let requester = Requester {
-            compilation_candidates: compilation_candidates.clone(),
-            last_submitted_revision: None,
-        };
-        let compiler = Validator {
-            compilation_candidates,
-            last_validated_revision: None,
-        };
-        (requester, compiler)
     }
 
     fn is_new_revision(
@@ -984,58 +998,26 @@ mod compilation_thread {
     pub(crate) fn run(
         error_var: Arc<MVar<Error>>,
         sender: SyncSender<Msg>,
-    ) -> (Requester, Arc<MVar<SourceFileSnapshot>>) {
-        let (requester, processor) = channel(crate::MAX_COMPILATION_CANDIDATES);
+    ) -> (CompilationCandidates, Arc<MVar<SourceFileSnapshot>>) {
+        let candidates = Arc::new(SizedStack::with_capacity(crate::MAX_COMPILATION_CANDIDATES));
+        let compilation_candidates = CompilationCandidates {
+            candidates: candidates.clone(),
+            last_submitted_revision: None,
+        };
         let last_compiling_version = Arc::new(MVar::new());
         let last_compiling_version_clone = last_compiling_version.clone();
         std::thread::spawn(move || {
             crate::report_error(
                 error_var,
-                run_in_thread(&sender, last_compiling_version_clone, processor),
+                run_compilation_loop(
+                    candidates,
+                    sender,
+                    last_compiling_version,
+                    crate::does_snapshot_compile,
+                ),
             );
         });
-        (requester, last_compiling_version)
-    }
-
-    fn run_in_thread(
-        sender: &SyncSender<Msg>,
-        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
-        mut validation_processor: Validator,
-    ) -> Result<(), Error> {
-        loop {
-            let candidate = validation_processor.next();
-            if does_snapshot_compile(&candidate)? {
-                last_compiling_version.write(candidate);
-                // Let the main thread know it should reparse. If sending this fails
-                // we asume that's because a ReceivedEditorEvent got there first.
-                // That's okay, because those events cause reparsing too.
-                sender
-                    .try_send(Msg::CompilationSucceeded)
-                    .map_err(|_| Error::SendingMsgFromCompilationThreadFailed)?;
-            }
-        }
-    }
-
-    fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
-        // Write lates code to temporary file. We don't compile the original source
-        // file, because the version stored on disk is likely ahead or behind the
-        // version in the editor.
-        let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
-        std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
-        temp_path.push("Temp.elm");
-        std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
-            .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
-
-        // Run Elm compiler against temporary file.
-        let output = std::process::Command::new(&snapshot.file_data.elm_bin)
-            .arg("make")
-            .arg("--report=json")
-            .arg(temp_path)
-            .current_dir(&snapshot.file_data.project_root)
-            .output()
-            .map_err(Error::CompilationFailedToRunElmMake)?;
-
-        Ok(output.status.success())
+        (compilation_candidates, last_compiling_version_clone)
     }
 }
 
