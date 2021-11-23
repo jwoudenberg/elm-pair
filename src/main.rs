@@ -3,7 +3,7 @@ use ropey::Rope;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
@@ -240,7 +240,7 @@ fn report_error<I>(thread_error: Arc<Mutex<Option<Error>>>, result: Result<I, Er
     match result {
         Ok(_) => {}
         Err(err) => {
-            let mut error = thread_error.lock().unwrap();
+            let mut error = lock(thread_error.as_ref());
             *error = Some(err);
         }
     }
@@ -284,7 +284,7 @@ fn run_editor_listener_thread(
 }
 
 fn check_for_thread_error(thread_error: &Arc<Mutex<Option<Error>>>) -> Result<(), Error> {
-    let mut opt_error = thread_error.lock().unwrap();
+    let mut opt_error = lock(thread_error);
     if let Some(error) = std::mem::replace(&mut *opt_error, None) {
         return Err(error);
     }
@@ -797,6 +797,14 @@ fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
+    // `mutex.lock()` only fails if the lock is 'poisoned', meaning another
+    // thread panicked while accessing it. In this program we have no intent
+    // to recover from panicked threads, so letting the original problem
+    // showball by calling `unwrap()` here is fine.
+    mutex.lock().unwrap()
+}
+
 // TODO: remove debug helper when it's no longer needed.
 #[allow(dead_code)]
 fn debug_print_code(code: &SourceFileSnapshot) {
@@ -889,8 +897,8 @@ mod sized_stack {
 //   last one is read that old value is discarded.
 mod validation {
     use crate::sized_stack::SizedStack;
-    use crate::SourceFileSnapshot;
-    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+    use crate::{lock, SourceFileSnapshot};
+    use std::sync::{Arc, Condvar, Mutex};
 
     pub struct Requester {
         shared_state: Arc<SharedState>,
@@ -973,14 +981,6 @@ mod validation {
             last_validated_revision: None,
         };
         (requester, compiler)
-    }
-
-    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
-        // `mutex.lock()` only fails if the lock is 'poisoned', meaning another
-        // thread panicked while accessing it. In this program we have no intent
-        // to recover from panicked threads, so letting the original problem
-        // showball by calling `unwrap()` here is fine.
-        mutex.lock().unwrap()
     }
 
     fn is_new_revision(
