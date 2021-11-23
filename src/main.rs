@@ -3,7 +3,7 @@ use ropey::Rope;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
@@ -29,17 +29,23 @@ fn run() -> Result<(), Error> {
     //   I see a benefit in doing it in this program (I don't currently).
     let (sender, receiver) = sync_channel(1);
     let sender_clone = sender.clone();
+    let thread_error = Arc::new(Mutex::new(None));
+    let thread_error_clone1 = thread_error.clone();
+    let thread_error_clone2 = thread_error.clone();
     std::thread::spawn(move || {
         report_error(
-            &sender_clone,
+            thread_error_clone1,
             run_compilation_thread(&sender_clone, processor),
         );
     });
     std::thread::spawn(move || {
-        report_error(&sender, run_editor_listener_thread(&sender));
+        let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
+        report_error(
+            thread_error_clone2,
+            run_change_analysis_thread(requester, &mut receiver.iter(), log_change),
+        );
     });
-    let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
-    handle_msgs(requester, &mut receiver.iter(), log_change)
+    run_editor_listener_thread(thread_error, &sender)
 }
 
 #[derive(Clone)]
@@ -77,8 +83,6 @@ struct FileData {
 // The event type central to this application. The main thread of the program
 // will process these one-at-a-time.
 enum Msg {
-    ThreadFailedWithError(Error),
-    ShutdownRequested,
     ReceivedEditorEvent(Edit),
     CompilationSucceeded,
 }
@@ -154,7 +158,7 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
     })
 }
 
-fn handle_msgs<I, F>(
+fn run_change_analysis_thread<I, F>(
     mut validator: validation::Requester<SourceFileSnapshot>,
     msgs: &mut I,
     mut on_change: F,
@@ -166,9 +170,6 @@ where
     let mut latest_code = None;
     let mut last_compiling_version = None;
     for msg in msgs {
-        if let Msg::ShutdownRequested = msg {
-            break;
-        };
         handle_msg(&mut validator, &mut latest_code, msg)?;
         validator.update_last_valid(&mut last_compiling_version);
         if let (Some(latest_code), Some(last_compiling_version)) =
@@ -189,8 +190,6 @@ fn handle_msg(
     // Edit the old tree-sitter tree, or create it if we don't have one yet for
     // this file.
     match msg {
-        Msg::ThreadFailedWithError(err) => return Err(err),
-        Msg::ShutdownRequested => return Ok(()),
         Msg::CompilationSucceeded => {}
         Msg::ReceivedEditorEvent(edit) => match latest_code {
             None => get_initial_snapshot_from_first_edit(latest_code, edit)?,
@@ -243,13 +242,12 @@ fn get_initial_snapshot_from_first_edit(
     Ok(())
 }
 
-fn report_error<I>(sender: &SyncSender<Msg>, result: Result<I, Error>) {
+fn report_error<I>(thread_error: Arc<Mutex<Option<Error>>>, result: Result<I, Error>) {
     match result {
         Ok(_) => {}
         Err(err) => {
-            if let Err(send_err) = sender.send(Msg::ThreadFailedWithError(err)) {
-                panic!( "Thread failed with error, and then also wasn't able to communicate this to the main thread. Send error: {:?}",  send_err);
-            }
+            let mut error = thread_error.lock().unwrap();
+            *error = Some(err);
         }
     }
 }
@@ -272,21 +270,31 @@ fn run_compilation_thread(
     }
 }
 
-fn run_editor_listener_thread(sender: &SyncSender<Msg>) -> Result<(), Error> {
+fn run_editor_listener_thread(
+    thread_error: Arc<Mutex<Option<Error>>>,
+    sender: &SyncSender<Msg>,
+) -> Result<(), Error> {
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU)
         .map_err(Error::FifoCreationFailed)?;
     let fifo = std::fs::File::open(fifo_path).map_err(Error::FifoOpeningFailed)?;
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
+        check_for_thread_error(&thread_error)?;
         let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?)?;
         sender
             .send(Msg::ReceivedEditorEvent(edit))
             .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
     }
-    sender
-        .send(Msg::ShutdownRequested)
-        .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)
+    Ok(())
+}
+
+fn check_for_thread_error(thread_error: &Arc<Mutex<Option<Error>>>) -> Result<(), Error> {
+    let mut opt_error = thread_error.lock().unwrap();
+    if let Some(error) = std::mem::replace(&mut *opt_error, None) {
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
@@ -1123,7 +1131,7 @@ mod simulation {
         let mut simulation = Simulation::from_file(path)?;
         let mut elm_change = None;
         let store_elm_change = |change| elm_change = change;
-        crate::handle_msgs(
+        crate::run_change_analysis_thread(
             simulation.validation_requester,
             &mut simulation.iterator,
             store_elm_change,
