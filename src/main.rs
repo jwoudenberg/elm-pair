@@ -74,11 +74,6 @@ struct FileData {
     elm_bin: PathBuf,
 }
 
-struct SourceFileState {
-    last_compiling_version: Option<SourceFileSnapshot>,
-    latest_code: SourceFileSnapshot,
-}
-
 // The event type central to this application. The main thread of the program
 // will process these one-at-a-time.
 enum Msg {
@@ -168,12 +163,18 @@ where
     I: Iterator<Item = Msg>,
     F: FnMut(Option<ElmChange>),
 {
-    let mut opt_state = None;
+    let mut latest_code = None;
+    let mut last_compiling_version = None;
     for msg in msgs {
         if let Msg::ShutdownRequested = msg {
             break;
         };
-        let elm_change = handle_msg(&mut validator, &mut opt_state, msg)?;
+        let elm_change = handle_msg(
+            &mut validator,
+            &mut latest_code,
+            &mut last_compiling_version,
+            msg,
+        )?;
         on_change(elm_change);
     }
     Ok(())
@@ -181,7 +182,8 @@ where
 
 fn handle_msg(
     validator: &mut validation::Requester<SourceFileSnapshot>,
-    opt_state: &mut Option<SourceFileState>,
+    latest_code: &mut Option<SourceFileSnapshot>,
+    last_compiling_version: &mut Option<SourceFileSnapshot>,
     msg: Msg,
 ) -> Result<Option<ElmChange>, Error> {
     // Edit the old tree-sitter tree, or create it if we don't have one yet for
@@ -190,38 +192,36 @@ fn handle_msg(
         Msg::ThreadFailedWithError(err) => return Err(err),
         Msg::ShutdownRequested => return Ok(None),
         Msg::CompilationSucceeded => {}
-        Msg::ReceivedEditorEvent(edit) => match opt_state {
-            None => get_initial_state_from_first_edit(opt_state, edit)?,
-            Some(state) => apply_edit(state, edit),
+        Msg::ReceivedEditorEvent(edit) => match latest_code {
+            None => get_initial_snapshot_from_first_edit(latest_code, edit)?,
+            Some(code) => apply_edit(code, edit),
         },
     }
 
-    // If we haven't received an init message from the editor for this file yet
-    // there's nothing we can do. Maybe the next message is the one...
-    let state = match opt_state {
+    let latest_code = match latest_code {
         None => return Ok(None),
-        Some(state) => state,
+        Some(code) => code,
     };
 
     // Update the tree-sitter syntax three. Note: this is a separate step from
     // editing the old tree. See the tree-sitter docs on parsing for more info.
-    reparse_tree(state)?;
-    if !state.latest_code.tree.root_node().has_error() {
-        validator.request_validation(state.latest_code.clone());
+    reparse_tree(latest_code)?;
+    if !latest_code.tree.root_node().has_error() {
+        validator.request_validation(latest_code.clone());
     }
 
-    validator.update_last_valid(&mut state.last_compiling_version);
-    let tree_changes = match &state.last_compiling_version {
+    validator.update_last_valid(last_compiling_version);
+    let tree_changes = match &last_compiling_version {
         None => return Ok(None),
-        Some(last_compiling_version) => diff_trees(last_compiling_version, &state.latest_code),
+        Some(last_compiling_version) => diff_trees(last_compiling_version, latest_code),
     };
 
     let elm_change = interpret_change(&tree_changes);
     Ok(elm_change)
 }
 
-fn get_initial_state_from_first_edit(
-    state: &mut Option<SourceFileState>,
+fn get_initial_snapshot_from_first_edit(
+    code: &mut Option<SourceFileSnapshot>,
     Edit {
         file, new_bytes, ..
     }: Edit,
@@ -233,15 +233,11 @@ fn get_initial_state_from_first_edit(
         project_root: find_project_root(&file)?.to_path_buf(),
         _path: file,
     });
-    let code = SourceFileSnapshot {
+    *code = Some(SourceFileSnapshot {
         tree,
         bytes,
         file_data,
         revision: 0,
-    };
-    *state = Some(SourceFileState {
-        last_compiling_version: None,
-        latest_code: code,
     });
     Ok(())
 }
@@ -348,19 +344,19 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
     }
 }
 
-fn apply_edit(state: &mut SourceFileState, edit: Edit) {
-    state.latest_code.tree.edit(&edit.input_edit);
-    let bytes = &mut state.latest_code.bytes;
+fn apply_edit(code: &mut SourceFileSnapshot, edit: Edit) {
+    code.tree.edit(&edit.input_edit);
+    let bytes = &mut code.bytes;
     let start = bytes.byte_to_char(edit.input_edit.start_byte);
     let end = bytes.byte_to_char(edit.input_edit.old_end_byte);
     bytes.remove(start..end);
     bytes.insert(start, &edit.new_bytes);
-    state.latest_code.revision += 1;
+    code.revision += 1;
 }
 
-fn reparse_tree(state: &mut SourceFileState) -> Result<(), Error> {
-    let new_tree = parse(Some(&state.latest_code.tree), &state.latest_code.bytes)?;
-    state.latest_code.tree = new_tree;
+fn reparse_tree(code: &mut SourceFileSnapshot) -> Result<(), Error> {
+    let new_tree = parse(Some(&code.tree), &code.bytes)?;
+    code.tree = new_tree;
     Ok(())
 }
 
