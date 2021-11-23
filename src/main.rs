@@ -167,7 +167,7 @@ where
         handle_msg(&mut validator, &mut latest_code, msg)?;
         validator.update_last_valid(&mut last_compiling_version);
         if let (Some(latest_code), Some(last_compiling_version)) =
-            (&mut latest_code, &mut last_compiling_version)
+            (&latest_code, &last_compiling_version)
         {
             let elm_change = analyze_changes(latest_code, last_compiling_version)?;
             on_change(elm_change);
@@ -206,8 +206,8 @@ fn handle_msg(
 }
 
 fn analyze_changes(
-    latest_code: &mut SourceFileSnapshot,
-    last_compiling_version: &mut SourceFileSnapshot,
+    latest_code: &SourceFileSnapshot,
+    last_compiling_version: &SourceFileSnapshot,
 ) -> Result<Option<ElmChange>, Error> {
     let tree_changes = diff_trees(last_compiling_version, latest_code);
     let elm_change = interpret_change(&tree_changes);
