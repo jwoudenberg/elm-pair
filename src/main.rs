@@ -30,12 +30,18 @@ fn run() -> Result<(), Error> {
     let (sender, receiver) = sync_channel(1);
     let thread_error = Arc::new(MVar::new());
     let thread_error_clone = thread_error.clone();
-    let requester = compilation_thread::run(thread_error.clone(), sender.clone());
+    let (requester, last_compiling_version) =
+        compilation_thread::run(thread_error.clone(), sender.clone());
     std::thread::spawn(move || {
         let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
         report_error(
             thread_error_clone,
-            run_change_analysis_thread(requester, &mut receiver.iter(), log_change),
+            run_change_analysis_thread(
+                requester,
+                &last_compiling_version,
+                &mut receiver.iter(),
+                log_change,
+            ),
         );
     });
     run_editor_listener_thread(thread_error, &sender)
@@ -147,6 +153,7 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
 
 fn run_change_analysis_thread<I, F>(
     mut validator: compilation_thread::Requester,
+    last_compiling_version_var: &MVar<SourceFileSnapshot>,
     msgs: &mut I,
     mut on_change: F,
 ) -> Result<(), Error>
@@ -158,7 +165,9 @@ where
     let mut last_compiling_version = None;
     for msg in msgs {
         handle_msg(&mut validator, &mut latest_code, msg)?;
-        validator.update_last_valid(&mut last_compiling_version);
+        if let Some(passed_compilation) = last_compiling_version_var.try_take() {
+            last_compiling_version = Some(passed_compilation);
+        }
         if let (Some(latest_code), Some(last_compiling_version)) =
             (&latest_code, &last_compiling_version)
         {
@@ -909,12 +918,6 @@ mod compilation_thread {
             requests.push(request);
             self.shared_state.new_request_condvar.notify_all();
         }
-
-        pub(crate) fn update_last_valid(&self, response_var: &mut Option<SourceFileSnapshot>) {
-            if let Some(new_last_valid) = self.shared_state.last_validated.try_take() {
-                *response_var = Some(new_last_valid);
-            }
-        }
     }
 
     pub struct Validator {
@@ -944,10 +947,6 @@ mod compilation_thread {
                 }
             }
         }
-
-        pub(crate) fn mark_valid(&mut self, valid: SourceFileSnapshot) {
-            self.shared_state.last_validated.write(valid);
-        }
     }
 
     struct SharedState {
@@ -955,15 +954,12 @@ mod compilation_thread {
         requests: Mutex<SizedStack<SourceFileSnapshot>>,
         // A condvar triggered whenever a new request arrives.
         new_request_condvar: Condvar,
-        // The last calculated response.
-        last_validated: MVar<SourceFileSnapshot>,
     }
 
     pub fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
         let shared_state = Arc::new(SharedState {
             requests: Mutex::new(SizedStack::with_capacity(max_inflight_requests)),
             new_request_condvar: Condvar::new(),
-            last_validated: MVar::new(),
         });
         let requester = Requester {
             shared_state: shared_state.clone(),
@@ -990,22 +986,31 @@ mod compilation_thread {
         is_new
     }
 
-    pub(crate) fn run(error_var: Arc<MVar<Error>>, sender: SyncSender<Msg>) -> Requester {
+    pub(crate) fn run(
+        error_var: Arc<MVar<Error>>,
+        sender: SyncSender<Msg>,
+    ) -> (Requester, Arc<MVar<SourceFileSnapshot>>) {
         let (requester, processor) = channel(crate::MAX_COMPILATION_CANDIDATES);
+        let last_compiling_version = Arc::new(MVar::new());
+        let last_compiling_version_clone = last_compiling_version.clone();
         std::thread::spawn(move || {
-            crate::report_error(error_var, run_in_thread(&sender, processor));
+            crate::report_error(
+                error_var,
+                run_in_thread(&sender, last_compiling_version_clone, processor),
+            );
         });
-        requester
+        (requester, last_compiling_version)
     }
 
     fn run_in_thread(
         sender: &SyncSender<Msg>,
+        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
         mut validation_processor: Validator,
     ) -> Result<(), Error> {
         loop {
             let candidate = validation_processor.next();
             if does_snapshot_compile(&candidate)? {
-                validation_processor.mark_valid(candidate);
+                last_compiling_version.write(candidate);
                 // Let the main thread know it should reparse. If sending this fails
                 // we asume that's because a ReceivedEditorEvent got there first.
                 // That's okay, because those events cause reparsing too.
@@ -1123,10 +1128,11 @@ mod included_answer_test {
 #[cfg(test)]
 mod simulation {
     use crate::included_answer_test::assert_eq_answer_in;
-    use crate::{Edit, ElmChange, Msg};
+    use crate::{Edit, ElmChange, MVar, Msg, SourceFileSnapshot};
     use std::collections::VecDeque;
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use tree_sitter::{InputEdit, Point};
 
     #[macro_export]
@@ -1158,6 +1164,7 @@ mod simulation {
         let store_elm_change = |change| elm_change = change;
         crate::run_change_analysis_thread(
             simulation.validation_requester,
+            &simulation.last_compiling_version,
             &mut simulation.iterator,
             store_elm_change,
         )
@@ -1167,6 +1174,7 @@ mod simulation {
 
     struct Simulation {
         validation_requester: crate::compilation_thread::Requester,
+        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
         iterator: SimulationIterator,
     }
 
@@ -1206,6 +1214,7 @@ mod simulation {
 
     struct SimulationIterator {
         validation_processor: crate::compilation_thread::Validator,
+        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
         msgs: VecDeque<Msg>,
     }
 
@@ -1216,7 +1225,7 @@ mod simulation {
             self.msgs.pop_front().map(|msg| {
                 if let Msg::CompilationSucceeded = msg {
                     let last_snapshot = self.validation_processor.next();
-                    self.validation_processor.mark_valid(last_snapshot);
+                    self.last_compiling_version.write(last_snapshot);
                 }
                 msg
             })
@@ -1353,9 +1362,12 @@ mod simulation {
         fn finish(self) -> Simulation {
             let (validation_requester, validation_processor) =
                 crate::compilation_thread::channel(1);
+            let last_compiling_version = Arc::new(MVar::new());
             Simulation {
+                last_compiling_version: last_compiling_version.clone(),
                 validation_requester,
                 iterator: SimulationIterator {
+                    last_compiling_version,
                     validation_processor,
                     msgs: self.msgs,
                 },
