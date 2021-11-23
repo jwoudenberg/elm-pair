@@ -65,12 +65,6 @@ struct SourceFileSnapshot {
     revision: usize,
 }
 
-impl crate::validation::Revision for SourceFileSnapshot {
-    fn revision(&self) -> usize {
-        self.revision
-    }
-}
-
 struct FileData {
     // Absolute path to this source file.
     _path: PathBuf,
@@ -159,7 +153,7 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
 }
 
 fn run_change_analysis_thread<I, F>(
-    mut validator: validation::Requester<SourceFileSnapshot>,
+    mut validator: validation::Requester,
     msgs: &mut I,
     mut on_change: F,
 ) -> Result<(), Error>
@@ -183,7 +177,7 @@ where
 }
 
 fn handle_msg(
-    validator: &mut validation::Requester<SourceFileSnapshot>,
+    validator: &mut validation::Requester,
     latest_code: &mut Option<SourceFileSnapshot>,
     msg: Msg,
 ) -> Result<(), Error> {
@@ -254,7 +248,7 @@ fn report_error<I>(thread_error: Arc<Mutex<Option<Error>>>, result: Result<I, Er
 
 fn run_compilation_thread(
     sender: &SyncSender<Msg>,
-    mut validation_processor: validation::Validator<SourceFileSnapshot>,
+    mut validation_processor: validation::Validator,
 ) -> Result<(), Error> {
     loop {
         let candidate = validation_processor.next();
@@ -895,18 +889,16 @@ mod sized_stack {
 //   last one is read that old value is discarded.
 mod validation {
     use crate::sized_stack::SizedStack;
+    use crate::SourceFileSnapshot;
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-    pub struct Requester<T> {
-        shared_state: Arc<SharedState<T>>,
+    pub struct Requester {
+        shared_state: Arc<SharedState>,
         last_submitted_revision: Option<usize>,
     }
 
-    impl<T> Requester<T>
-    where
-        T: Revision,
-    {
-        pub fn request_validation(&mut self, request: T) {
+    impl Requester {
+        pub(crate) fn request_validation(&mut self, request: SourceFileSnapshot) {
             if !is_new_revision(&mut self.last_submitted_revision, &request) {
                 return;
             }
@@ -915,7 +907,7 @@ mod validation {
             self.shared_state.new_request_condvar.notify_all();
         }
 
-        pub fn update_last_valid(&self, response_var: &mut Option<T>) {
+        pub(crate) fn update_last_valid(&self, response_var: &mut Option<SourceFileSnapshot>) {
             let mut last_validated = lock(&self.shared_state.last_validated);
             if let Some(response) = std::mem::replace(&mut *last_validated, None) {
                 *response_var = Some(response);
@@ -923,16 +915,13 @@ mod validation {
         }
     }
 
-    pub struct Validator<T> {
-        shared_state: Arc<SharedState<T>>,
+    pub struct Validator {
+        shared_state: Arc<SharedState>,
         last_validated_revision: Option<usize>,
     }
 
-    impl<T> Validator<T> {
-        pub fn next(&mut self) -> T
-        where
-            T: Revision,
-        {
+    impl Validator {
+        pub(crate) fn next(&mut self) -> SourceFileSnapshot {
             let mut requests = lock(&self.shared_state.requests);
             loop {
                 match requests.pop() {
@@ -954,26 +943,22 @@ mod validation {
             }
         }
 
-        pub fn mark_valid(&mut self, valid: T) {
+        pub(crate) fn mark_valid(&mut self, valid: SourceFileSnapshot) {
             let mut last_validated = lock(&self.shared_state.last_validated);
             *last_validated = Some(valid);
         }
     }
 
-    struct SharedState<T> {
+    struct SharedState {
         // A stack of requests for the responder to handle.
-        requests: Mutex<SizedStack<T>>,
+        requests: Mutex<SizedStack<SourceFileSnapshot>>,
         // A condvar triggered whenever a new request arrives.
         new_request_condvar: Condvar,
         // The last calculated response.
-        last_validated: Mutex<Option<T>>,
+        last_validated: Mutex<Option<SourceFileSnapshot>>,
     }
 
-    pub trait Revision {
-        fn revision(&self) -> usize;
-    }
-
-    pub fn channel<T>(max_inflight_requests: usize) -> (Requester<T>, Validator<T>) {
+    pub fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
         let shared_state = Arc::new(SharedState {
             requests: Mutex::new(SizedStack::with_capacity(max_inflight_requests)),
             new_request_condvar: Condvar::new(),
@@ -998,17 +983,16 @@ mod validation {
         mutex.lock().unwrap()
     }
 
-    fn is_new_revision<T>(last_checked_revision: &mut Option<usize>, t: &T) -> bool
-    where
-        T: Revision,
-    {
-        let revision = t.revision();
+    fn is_new_revision(
+        last_checked_revision: &mut Option<usize>,
+        code: &SourceFileSnapshot,
+    ) -> bool {
         let is_new = match last_checked_revision {
             None => true,
-            Some(old) => revision > *old,
+            Some(old) => code.revision > *old,
         };
         if is_new {
-            *last_checked_revision = Some(revision);
+            *last_checked_revision = Some(code.revision);
         }
         is_new
     }
@@ -1098,7 +1082,7 @@ mod included_answer_test {
 #[cfg(test)]
 mod simulation {
     use crate::included_answer_test::assert_eq_answer_in;
-    use crate::{Edit, ElmChange, Msg, SourceFileSnapshot};
+    use crate::{Edit, ElmChange, Msg};
     use std::collections::VecDeque;
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
@@ -1141,7 +1125,7 @@ mod simulation {
     }
 
     struct Simulation {
-        validation_requester: crate::validation::Requester<SourceFileSnapshot>,
+        validation_requester: crate::validation::Requester,
         iterator: SimulationIterator,
     }
 
@@ -1180,7 +1164,7 @@ mod simulation {
     }
 
     struct SimulationIterator {
-        validation_processor: crate::validation::Validator<SourceFileSnapshot>,
+        validation_processor: crate::validation::Validator,
         msgs: VecDeque<Msg>,
     }
 
