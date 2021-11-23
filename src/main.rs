@@ -1,4 +1,5 @@
 use core::ops::Range;
+use ropey::Rope;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -46,12 +47,10 @@ struct SourceFileSnapshot {
     // Once calculated the file_data never changes. We wrap it in an `Arc` to
     // avoid needing to copy it.
     file_data: Arc<FileData>,
-    // Vec offers a '.splice()' operation we need to replace bits of the vector
-    // in response to updates made in the editor. This is probably not super
-    // efficient though, so we should look for a better datastructure here.
-    //
-    // TODO: look into better data structures for splice-heavy workloads.
-    bytes: Vec<u8>,
+    // The full contents of the file, stored in a Rope datastructure. This
+    // datastructure offers cheap modifications in random locations, and cheap
+    // cloning (both of which we'll do a lot).
+    bytes: Rope,
     // The tree-sitter concrete syntax tree representing the code in `bytes`.
     // This tree by itself is not enough to recover the source code, which is
     // why we also keep the original source code in `bytes`.
@@ -97,7 +96,7 @@ struct Edit {
     input_edit: InputEdit,
     // Bytes representing the new contents of the file at the location described
     // by `input_edit`.
-    new_bytes: Vec<u8>,
+    new_bytes: String,
 }
 
 #[derive(Debug)]
@@ -122,7 +121,7 @@ enum Error {
 fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
     let (
         file,
-        changed_code,
+        new_bytes,
         start_byte,
         old_end_byte,
         new_end_byte,
@@ -153,11 +152,10 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
         old_end_position,
         new_end_position,
     };
-    let changed_code: String = changed_code; // Add type-annotation for changed_code.
     Ok(Edit {
         file,
         input_edit,
-        new_bytes: changed_code.into_bytes(),
+        new_bytes,
     })
 }
 
@@ -228,7 +226,8 @@ fn get_initial_state_from_first_edit(
         file, new_bytes, ..
     }: Edit,
 ) -> Result<(), Error> {
-    let tree = parse(None, &new_bytes)?;
+    let bytes = Rope::from_str(&new_bytes);
+    let tree = parse(None, &bytes)?;
     let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm")?,
         project_root: find_project_root(&file)?.to_path_buf(),
@@ -236,7 +235,7 @@ fn get_initial_state_from_first_edit(
     });
     let code = SourceFileSnapshot {
         tree,
-        bytes: new_bytes,
+        bytes,
         file_data,
         revision: 0,
     };
@@ -300,7 +299,7 @@ fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
     let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
     std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
     temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &snapshot.bytes)
+    std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
         .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
 
     // Run Elm compiler against temporary file.
@@ -351,8 +350,11 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
 
 fn apply_edit(state: &mut SourceFileState, edit: Edit) {
     state.latest_code.tree.edit(&edit.input_edit);
-    let range = edit.input_edit.start_byte..edit.input_edit.old_end_byte;
-    state.latest_code.bytes.splice(range, edit.new_bytes);
+    let bytes = &mut state.latest_code.bytes;
+    let start = bytes.byte_to_char(edit.input_edit.start_byte);
+    let end = bytes.byte_to_char(edit.input_edit.old_end_byte);
+    bytes.remove(start..end);
+    bytes.insert(start, &edit.new_bytes);
     state.latest_code.revision += 1;
 }
 
@@ -767,7 +769,6 @@ fn has_node_changed(
 //
 // TODO: code formatters can change code in ways that don't matter but would
 // fail this check. Consider alternative approaches.
-// TODO: compare u8 array slices here instead of parsing to string.
 fn have_node_contents_changed(
     old_code: &SourceFileSnapshot,
     new_code: &SourceFileSnapshot,
@@ -780,16 +781,18 @@ fn have_node_contents_changed(
 }
 
 fn debug_code_slice(code: &SourceFileSnapshot, range: &Range<usize>) -> String {
-    std::string::String::from_utf8(code.bytes[range.start..range.end].to_vec()).unwrap()
+    let start = code.bytes.byte_to_char(range.start);
+    let end = code.bytes.byte_to_char(range.end);
+    code.bytes.slice(start..end).to_string()
 }
 
 // TODO: reuse parser.
-fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Result<Tree, Error> {
+fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
         .map_err(Error::TreeSitterSettingLanguageFailed)?;
-    match parser.parse(code, prev_tree) {
+    match parser.parse(code.bytes().collect::<Vec<u8>>(), prev_tree) {
         None => Err(Error::TreeSitterParsingFailed),
         Some(tree) => Ok(tree),
     }
@@ -798,10 +801,7 @@ fn parse(prev_tree: Option<&Tree>, code: &[u8]) -> Result<Tree, Error> {
 // TODO: remove debug helper when it's no longer needed.
 #[allow(dead_code)]
 fn debug_print_code(code: &SourceFileSnapshot) {
-    println!(
-        "CODE:\n{}",
-        std::string::String::from_utf8(code.bytes.to_vec()).unwrap()
-    );
+    println!("CODE:\n{}", code.bytes.to_string());
 }
 
 // TODO: remove debug helper when it's no longer needed.
@@ -1224,7 +1224,7 @@ mod simulation {
         fn new(file: PathBuf, initial_bytes: Vec<u8>) -> SimulationBuilder {
             let init_msg = Msg::ReceivedEditorEvent(Edit {
                 file: file.clone(),
-                new_bytes: initial_bytes.clone(),
+                new_bytes: std::string::String::from_utf8(initial_bytes.clone()).unwrap(),
                 input_edit: InputEdit {
                     start_byte: 0,
                     old_end_byte: 0,
@@ -1279,7 +1279,7 @@ mod simulation {
             self.current_position += bytes.len();
             self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
                 file: self.file.clone(),
-                new_bytes: str.as_bytes().to_vec(),
+                new_bytes: str.to_owned(),
                 input_edit: InputEdit {
                     start_byte: range.start,
                     old_end_byte: range.start,
@@ -1299,7 +1299,7 @@ mod simulation {
                 self.current_bytes.splice(range.clone(), []);
                 self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
                     file: self.file.clone(),
-                    new_bytes: Vec::new(),
+                    new_bytes: String::new(),
                     input_edit: InputEdit {
                         start_byte: range.start,
                         old_end_byte: range.end,
