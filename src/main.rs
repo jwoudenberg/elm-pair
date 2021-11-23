@@ -1,4 +1,5 @@
 use core::ops::Range;
+use mvar::MVar;
 use ropey::Rope;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ fn run() -> Result<(), Error> {
     //   I see a benefit in doing it in this program (I don't currently).
     let (sender, receiver) = sync_channel(1);
     let sender_clone = sender.clone();
-    let thread_error = Arc::new(Mutex::new(None));
+    let thread_error = Arc::new(MVar::new());
     let thread_error_clone1 = thread_error.clone();
     let thread_error_clone2 = thread_error.clone();
     std::thread::spawn(move || {
@@ -236,12 +237,13 @@ fn get_initial_snapshot_from_first_edit(
     Ok(())
 }
 
-fn report_error<I>(thread_error: Arc<Mutex<Option<Error>>>, result: Result<I, Error>) {
+fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
     match result {
         Ok(_) => {}
         Err(err) => {
-            let mut error = lock(thread_error.as_ref());
-            *error = Some(err);
+            // If there's already an error in there, leave it. The first error
+            // is probably reported is probably the closest to the problem.
+            thread_error.try_put(err);
         }
     }
 }
@@ -265,7 +267,7 @@ fn run_compilation_thread(
 }
 
 fn run_editor_listener_thread(
-    thread_error: Arc<Mutex<Option<Error>>>,
+    thread_error: Arc<MVar<Error>>,
     sender: &SyncSender<Msg>,
 ) -> Result<(), Error> {
     let fifo_path = "/tmp/elm-pair";
@@ -274,19 +276,13 @@ fn run_editor_listener_thread(
     let fifo = std::fs::File::open(fifo_path).map_err(Error::FifoOpeningFailed)?;
     let buf_reader = std::io::BufReader::new(fifo).lines();
     for line in buf_reader {
-        check_for_thread_error(&thread_error)?;
+        if let Some(error) = thread_error.try_take() {
+            return Err(error);
+        }
         let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?)?;
         sender
             .send(Msg::ReceivedEditorEvent(edit))
             .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
-    }
-    Ok(())
-}
-
-fn check_for_thread_error(thread_error: &Arc<Mutex<Option<Error>>>) -> Result<(), Error> {
-    let mut opt_error = lock(thread_error);
-    if let Some(error) = std::mem::replace(&mut *opt_error, None) {
-        return Err(error);
     }
     Ok(())
 }
@@ -859,6 +855,51 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
     );
 }
 
+// A thread sync structure similar to Haskell's MVar. A variable, potentially
+// empty, that can be shared across threads. Does not support blocking
+// operations like Haskell's MVar though.
+mod mvar {
+    use crate::lock;
+    use std::sync::Mutex;
+
+    pub struct MVar<T> {
+        val: Mutex<Option<T>>,
+    }
+
+    impl<T> MVar<T> {
+        // Create a new empty MVar.
+        pub fn new() -> MVar<T> {
+            MVar {
+                val: Mutex::new(None),
+            }
+        }
+
+        // Write a value to the MVar, possibly overwriting a previous value.
+        pub fn write(&self, new: T) {
+            let mut val = lock(&self.val);
+            *val = Some(new);
+        }
+
+        // Write a value to an empty MVar. Returns true if the write succeeded,
+        // or false if there already was a value in the MVar.
+        pub fn try_put(&self, new: T) -> bool {
+            let mut val = lock(&self.val);
+            match val.as_ref() {
+                None => {
+                    *val = Some(new);
+                    true
+                }
+                Some(_) => false,
+            }
+        }
+
+        // Take the value from an MVar if it has one, leaving the MVar empty.
+        pub fn try_take(&self) -> Option<T> {
+            lock(&self.val).take()
+        }
+    }
+}
+
 // A stack with a maximum size. If a push would ever make the stack grow beyond
 // its capacity, then the stack forgets its oldest element before pushing the
 // new element.
@@ -896,6 +937,7 @@ mod sized_stack {
 // - We only store the last valid value. If we validate another value before the
 //   last one is read that old value is discarded.
 mod validation {
+    use crate::mvar::MVar;
     use crate::sized_stack::SizedStack;
     use crate::{lock, SourceFileSnapshot};
     use std::sync::{Arc, Condvar, Mutex};
@@ -916,9 +958,8 @@ mod validation {
         }
 
         pub(crate) fn update_last_valid(&self, response_var: &mut Option<SourceFileSnapshot>) {
-            let mut last_validated = lock(&self.shared_state.last_validated);
-            if let Some(response) = std::mem::replace(&mut *last_validated, None) {
-                *response_var = Some(response);
+            if let Some(new_last_valid) = self.shared_state.last_validated.try_take() {
+                *response_var = Some(new_last_valid);
             }
         }
     }
@@ -952,8 +993,7 @@ mod validation {
         }
 
         pub(crate) fn mark_valid(&mut self, valid: SourceFileSnapshot) {
-            let mut last_validated = lock(&self.shared_state.last_validated);
-            *last_validated = Some(valid);
+            self.shared_state.last_validated.write(valid);
         }
     }
 
@@ -963,14 +1003,14 @@ mod validation {
         // A condvar triggered whenever a new request arrives.
         new_request_condvar: Condvar,
         // The last calculated response.
-        last_validated: Mutex<Option<SourceFileSnapshot>>,
+        last_validated: MVar<SourceFileSnapshot>,
     }
 
     pub fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
         let shared_state = Arc::new(SharedState {
             requests: Mutex::new(SizedStack::with_capacity(max_inflight_requests)),
             new_request_condvar: Condvar::new(),
-            last_validated: Mutex::new(None),
+            last_validated: MVar::new(),
         });
         let requester = Requester {
             shared_state: shared_state.clone(),
