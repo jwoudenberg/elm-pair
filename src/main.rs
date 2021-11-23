@@ -169,13 +169,14 @@ where
         if let Msg::ShutdownRequested = msg {
             break;
         };
-        let elm_change = handle_msg(
-            &mut validator,
-            &mut latest_code,
-            &mut last_compiling_version,
-            msg,
-        )?;
-        on_change(elm_change);
+        handle_msg(&mut validator, &mut latest_code, msg)?;
+        validator.update_last_valid(&mut last_compiling_version);
+        if let (Some(latest_code), Some(last_compiling_version)) =
+            (&mut latest_code, &mut last_compiling_version)
+        {
+            let elm_change = analyze_changes(latest_code, last_compiling_version)?;
+            on_change(elm_change);
+        }
     }
     Ok(())
 }
@@ -183,14 +184,13 @@ where
 fn handle_msg(
     validator: &mut validation::Requester<SourceFileSnapshot>,
     latest_code: &mut Option<SourceFileSnapshot>,
-    last_compiling_version: &mut Option<SourceFileSnapshot>,
     msg: Msg,
-) -> Result<Option<ElmChange>, Error> {
+) -> Result<(), Error> {
     // Edit the old tree-sitter tree, or create it if we don't have one yet for
     // this file.
     match msg {
         Msg::ThreadFailedWithError(err) => return Err(err),
-        Msg::ShutdownRequested => return Ok(None),
+        Msg::ShutdownRequested => return Ok(()),
         Msg::CompilationSucceeded => {}
         Msg::ReceivedEditorEvent(edit) => match latest_code {
             None => get_initial_snapshot_from_first_edit(latest_code, edit)?,
@@ -199,7 +199,7 @@ fn handle_msg(
     }
 
     let latest_code = match latest_code {
-        None => return Ok(None),
+        None => return Ok(()),
         Some(code) => code,
     };
 
@@ -209,13 +209,14 @@ fn handle_msg(
     if !latest_code.tree.root_node().has_error() {
         validator.request_validation(latest_code.clone());
     }
+    Ok(())
+}
 
-    validator.update_last_valid(last_compiling_version);
-    let tree_changes = match &last_compiling_version {
-        None => return Ok(None),
-        Some(last_compiling_version) => diff_trees(last_compiling_version, latest_code),
-    };
-
+fn analyze_changes(
+    latest_code: &mut SourceFileSnapshot,
+    last_compiling_version: &mut SourceFileSnapshot,
+) -> Result<Option<ElmChange>, Error> {
+    let tree_changes = diff_trees(last_compiling_version, latest_code);
     let elm_change = interpret_change(&tree_changes);
     Ok(elm_change)
 }
