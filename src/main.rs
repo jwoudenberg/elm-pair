@@ -865,32 +865,48 @@ mod mvar {
     }
 }
 
-// A stack with a maximum size. If a push would ever make the stack grow beyond
-// its capacity, then the stack forgets its oldest element before pushing the
-// new element.
+// A stack (last in, first out) with a maximum size. If a push would ever make
+// the stack grow beyond its capacity, then the stack forgets its oldest element
+// before pushing the new element.
 mod sized_stack {
     use std::collections::VecDeque;
+    use std::sync::{Condvar, Mutex};
 
     pub struct SizedStack<T> {
         capacity: usize,
-        items: VecDeque<T>,
+        items: Mutex<VecDeque<T>>,
+        new_item_condvar: Condvar,
     }
 
     impl<T> SizedStack<T> {
         pub fn with_capacity(capacity: usize) -> SizedStack<T> {
             SizedStack {
                 capacity,
-                items: VecDeque::with_capacity(capacity),
+                items: Mutex::new(VecDeque::with_capacity(capacity)),
+                new_item_condvar: Condvar::new(),
             }
         }
 
-        pub fn push(&mut self, item: T) {
-            self.items.truncate(self.capacity - 1);
-            self.items.push_front(item);
+        // Push an item on the stack.
+        pub fn push(&self, item: T) {
+            let mut items = crate::lock(&self.items);
+            items.truncate(self.capacity - 1);
+            items.push_front(item);
+            self.new_item_condvar.notify_all();
         }
 
-        pub fn pop(&mut self) -> Option<T> {
-            self.items.pop_front()
+        // Pop an item of the stack. This function blocks until an item becomes
+        // available.
+        pub fn pop(&self) -> T {
+            let mut items = crate::lock(&self.items);
+            loop {
+                match items.pop_front() {
+                    None => {
+                        items = self.new_item_condvar.wait(items).unwrap();
+                    }
+                    Some(item) => return item,
+                }
+            }
         }
     }
 }
@@ -904,73 +920,48 @@ mod sized_stack {
 mod compilation_thread {
     use crate::mvar::MVar;
     use crate::sized_stack::SizedStack;
-    use crate::{lock, Error, Msg, SourceFileSnapshot};
+    use crate::{Error, Msg, SourceFileSnapshot};
     use std::sync::mpsc::SyncSender;
-    use std::sync::{Arc, Condvar, Mutex};
+    use std::sync::Arc;
 
     pub struct Requester {
-        shared_state: Arc<SharedState>,
+        compilation_candidates: Arc<SizedStack<SourceFileSnapshot>>,
         last_submitted_revision: Option<usize>,
     }
 
     impl Requester {
-        pub(crate) fn request_validation(&mut self, request: SourceFileSnapshot) {
-            if !is_new_revision(&mut self.last_submitted_revision, &request) {
+        pub(crate) fn request_validation(&mut self, snapshot: SourceFileSnapshot) {
+            if !is_new_revision(&mut self.last_submitted_revision, &snapshot) {
                 return;
             }
-            let mut requests = lock(&self.shared_state.requests);
-            requests.push(request);
-            self.shared_state.new_request_condvar.notify_all();
+            self.compilation_candidates.push(snapshot);
         }
     }
 
     struct Validator {
-        shared_state: Arc<SharedState>,
+        compilation_candidates: Arc<SizedStack<SourceFileSnapshot>>,
         last_validated_revision: Option<usize>,
     }
 
     impl Validator {
         fn next(&mut self) -> SourceFileSnapshot {
-            let mut requests = lock(&self.shared_state.requests);
             loop {
-                match requests.pop() {
-                    None => {
-                        requests = self
-                            .shared_state
-                            .new_request_condvar
-                            .wait(requests)
-                            .unwrap(); // See comment on `lock` function below.
-                    }
-                    Some(next_request) => {
-                        if is_new_revision(&mut self.last_validated_revision, &next_request) {
-                            return next_request;
-                        } else {
-                            continue;
-                        }
-                    }
+                let snapshot = self.compilation_candidates.pop();
+                if is_new_revision(&mut self.last_validated_revision, &snapshot) {
+                    return snapshot;
                 }
             }
         }
     }
 
-    struct SharedState {
-        // A stack of requests for the responder to handle.
-        requests: Mutex<SizedStack<SourceFileSnapshot>>,
-        // A condvar triggered whenever a new request arrives.
-        new_request_condvar: Condvar,
-    }
-
     fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
-        let shared_state = Arc::new(SharedState {
-            requests: Mutex::new(SizedStack::with_capacity(max_inflight_requests)),
-            new_request_condvar: Condvar::new(),
-        });
+        let compilation_candidates = Arc::new(SizedStack::with_capacity(max_inflight_requests));
         let requester = Requester {
-            shared_state: shared_state.clone(),
+            compilation_candidates: compilation_candidates.clone(),
             last_submitted_revision: None,
         };
         let compiler = Validator {
-            shared_state,
+            compilation_candidates,
             last_validated_revision: None,
         };
         (requester, compiler)
