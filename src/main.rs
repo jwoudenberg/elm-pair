@@ -30,14 +30,14 @@ fn run() -> Result<(), Error> {
     let (sender, receiver) = sync_channel(1);
     let thread_error = Arc::new(MVar::new());
     let thread_error_clone = thread_error.clone();
-    let (requester, last_compiling_version) =
+    let (mut requester, last_compiling_version) =
         compilation_thread::run(thread_error.clone(), sender.clone());
     std::thread::spawn(move || {
         let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
         report_error(
             thread_error_clone,
             run_change_analysis_thread(
-                requester,
+                |snapshot| requester.request_validation(snapshot),
                 &last_compiling_version,
                 &mut receiver.iter(),
                 log_change,
@@ -151,8 +151,8 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
     })
 }
 
-fn run_change_analysis_thread<I, F>(
-    mut validator: compilation_thread::Requester,
+fn run_change_analysis_thread<I, F, R>(
+    mut request_compilation: R,
     last_compiling_version_var: &MVar<SourceFileSnapshot>,
     msgs: &mut I,
     mut on_change: F,
@@ -160,11 +160,12 @@ fn run_change_analysis_thread<I, F>(
 where
     I: Iterator<Item = Msg>,
     F: FnMut(Option<ElmChange>),
+    R: FnMut(SourceFileSnapshot),
 {
     let mut latest_code = None;
     let mut last_compiling_version = None;
     for msg in msgs {
-        handle_msg(&mut validator, &mut latest_code, msg)?;
+        handle_msg(&mut request_compilation, &mut latest_code, msg)?;
         if let Some(passed_compilation) = last_compiling_version_var.try_take() {
             last_compiling_version = Some(passed_compilation);
         }
@@ -178,11 +179,14 @@ where
     Ok(())
 }
 
-fn handle_msg(
-    validator: &mut compilation_thread::Requester,
+fn handle_msg<R>(
+    request_compilation: &mut R,
     latest_code: &mut Option<SourceFileSnapshot>,
     msg: Msg,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+    R: FnMut(SourceFileSnapshot),
+{
     // Edit the old tree-sitter tree, or create it if we don't have one yet for
     // this file.
     match msg {
@@ -202,7 +206,7 @@ fn handle_msg(
     // editing the old tree. See the tree-sitter docs on parsing for more info.
     reparse_tree(latest_code)?;
     if !latest_code.tree.root_node().has_error() {
-        validator.request_validation(latest_code.clone());
+        request_compilation(latest_code.clone());
     }
     Ok(())
 }
@@ -920,13 +924,13 @@ mod compilation_thread {
         }
     }
 
-    pub struct Validator {
+    struct Validator {
         shared_state: Arc<SharedState>,
         last_validated_revision: Option<usize>,
     }
 
     impl Validator {
-        pub(crate) fn next(&mut self) -> SourceFileSnapshot {
+        fn next(&mut self) -> SourceFileSnapshot {
             let mut requests = lock(&self.shared_state.requests);
             loop {
                 match requests.pop() {
@@ -956,7 +960,7 @@ mod compilation_thread {
         new_request_condvar: Condvar,
     }
 
-    pub fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
+    fn channel(max_inflight_requests: usize) -> (Requester, Validator) {
         let shared_state = Arc::new(SharedState {
             requests: Mutex::new(SizedStack::with_capacity(max_inflight_requests)),
             new_request_condvar: Condvar::new(),
@@ -1161,9 +1165,10 @@ mod simulation {
     fn run_simulation_test_helper(path: &Path) -> Result<Option<ElmChange>, Error> {
         let mut simulation = Simulation::from_file(path)?;
         let mut elm_change = None;
+        let compilation_candidate = simulation.compilation_candidate;
         let store_elm_change = |change| elm_change = change;
         crate::run_change_analysis_thread(
-            simulation.validation_requester,
+            |snapshot| compilation_candidate.write(snapshot),
             &simulation.last_compiling_version,
             &mut simulation.iterator,
             store_elm_change,
@@ -1173,7 +1178,7 @@ mod simulation {
     }
 
     struct Simulation {
-        validation_requester: crate::compilation_thread::Requester,
+        compilation_candidate: Arc<MVar<SourceFileSnapshot>>,
         last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
         iterator: SimulationIterator,
     }
@@ -1213,7 +1218,7 @@ mod simulation {
     }
 
     struct SimulationIterator {
-        validation_processor: crate::compilation_thread::Validator,
+        compilation_candidate: Arc<MVar<SourceFileSnapshot>>,
         last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
         msgs: VecDeque<Msg>,
     }
@@ -1224,8 +1229,8 @@ mod simulation {
         fn next(&mut self) -> Option<Self::Item> {
             self.msgs.pop_front().map(|msg| {
                 if let Msg::CompilationSucceeded = msg {
-                    let last_snapshot = self.validation_processor.next();
-                    self.last_compiling_version.write(last_snapshot);
+                    let snapshot = self.compilation_candidate.try_take().unwrap();
+                    self.last_compiling_version.write(snapshot);
                 }
                 msg
             })
@@ -1360,15 +1365,14 @@ mod simulation {
         }
 
         fn finish(self) -> Simulation {
-            let (validation_requester, validation_processor) =
-                crate::compilation_thread::channel(1);
+            let compilation_candidate = Arc::new(MVar::new());
             let last_compiling_version = Arc::new(MVar::new());
             Simulation {
                 last_compiling_version: last_compiling_version.clone(),
-                validation_requester,
+                compilation_candidate: compilation_candidate.clone(),
                 iterator: SimulationIterator {
                     last_compiling_version,
-                    validation_processor,
+                    compilation_candidate,
                     msgs: self.msgs,
                 },
             }
