@@ -4,7 +4,7 @@ use ropey::Rope;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
+use tree_sitter::{InputEdit, Node, Query, QueryCursor, Tree, TreeCursor};
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
 
@@ -32,9 +32,13 @@ fn run() -> Result<(), Error> {
             last_compiling_code,
             new_diff_available,
         };
-        diff_iterator
-            .map(|diff| analyze_diff(&diff))
-            .for_each(|change| println!("CHANGE: {:?}", change));
+        diff_iterator.for_each(|diff| {
+            let opt_change = analyze_diff(&diff);
+            if let Some(change) = opt_change {
+                let refactor = elm_refactor(&diff, &change);
+                println!("REFACTOR: {:?}", refactor);
+            }
+        });
     });
     run_editor_listener_thread(
         &thread_error,
@@ -63,7 +67,7 @@ struct SourceFileSnapshot {
 
 struct FileData {
     // Absolute path to this source file.
-    _path: PathBuf,
+    path: PathBuf,
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
@@ -71,6 +75,7 @@ struct FileData {
 }
 
 // A change made by the user reported by the editor.
+#[derive(Debug)]
 struct Edit {
     // The file that was changed.
     file: PathBuf,
@@ -79,6 +84,30 @@ struct Edit {
     // Bytes representing the new contents of the file at the location described
     // by `input_edit`.
     new_bytes: String,
+}
+
+fn mk_edit(code: &SourceFileSnapshot, range: &Range<usize>, new_bytes: String) -> Edit {
+    let new_end_byte = range.start + new_bytes.len();
+    Edit {
+        file: code.file_data.path.clone(),
+        new_bytes,
+        input_edit: tree_sitter::InputEdit {
+            start_byte: range.start,
+            old_end_byte: range.end,
+            new_end_byte,
+            start_position: byte_to_point(code, range.start),
+            old_end_position: byte_to_point(code, range.end),
+            new_end_position: byte_to_point(code, new_end_byte),
+        },
+    }
+}
+
+fn byte_to_point(code: &SourceFileSnapshot, byte: usize) -> tree_sitter::Point {
+    let row = code.bytes.byte_to_line(byte);
+    tree_sitter::Point {
+        row,
+        column: code.bytes.byte_to_char(byte) - code.bytes.line_to_char(row),
+    }
 }
 
 #[derive(Debug)]
@@ -193,6 +222,65 @@ fn analyze_diff(diff: &SourceFileDiff) -> Option<ElmChange> {
     interpret_change(&tree_changes)
 }
 
+fn elm_refactor(diff: &SourceFileDiff, change: &ElmChange) -> Vec<Edit> {
+    let query_str = r#"
+[(import_clause
+    exposing:
+      (exposing_list
+        [
+          (double_dot)
+          (exposed_value)
+          (exposed_type)
+          (exposed_operator)
+        ] @exposed_value
+      )
+ ) @import
+]"#;
+    let query = Query::new(diff.new.tree.language(), query_str).unwrap();
+    match change {
+        ElmChange::QualifierAdded(name, qualifier) => {
+            // debug_print_tree(&diff.new);
+            let mut cursor = QueryCursor::new();
+            let exposed = cursor
+                .matches(&query, diff.new.tree.root_node(), |node| {
+                    debug_code_slice(&diff.new, &node.byte_range())
+                })
+                .find_map(|m| {
+                    let (import, exposed_val) = match m.captures {
+                        [x, y] => (x, y),
+                        _ => panic!("wrong number of capures"),
+                    };
+                    let import_node = import.node.child_by_field_name("moduleName")?;
+                    let import_name = debug_code_slice(&diff.new, &import_node.byte_range());
+                    let exposed_name = debug_code_slice(&diff.new, &exposed_val.node.byte_range());
+                    if import_name == *qualifier && exposed_name == *name {
+                        Some(exposed_val.node)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            let range = || {
+                let next = exposed.next_sibling();
+                if let Some(node) = next {
+                    if node.kind() == "," {
+                        return exposed.start_byte()..node.end_byte();
+                    }
+                }
+                let prev = exposed.prev_sibling();
+                if let Some(node) = prev {
+                    if node.kind() == "," {
+                        return node.start_byte()..exposed.end_byte();
+                    }
+                }
+                exposed.byte_range()
+            };
+            vec![mk_edit(&diff.new, &range(), String::new())]
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn get_initial_snapshot_from_first_edit(
     code: &mut Option<SourceFileSnapshot>,
     Edit {
@@ -204,7 +292,7 @@ fn get_initial_snapshot_from_first_edit(
     let file_data = Arc::new(FileData {
         elm_bin: find_executable("elm")?,
         project_root: find_project_root(&file)?.to_path_buf(),
-        _path: file,
+        path: file,
     });
     *code = Some(SourceFileSnapshot {
         tree,

@@ -1,6 +1,6 @@
 module Math exposing (..)
 
-import String exposing (..)
+import String exposing (toInt, fromInt)
 
 incrementString : String -> Maybe String
 incrementString str = toInt str |> Maybe.map (fromInt << (+) 1)
