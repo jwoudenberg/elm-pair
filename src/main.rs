@@ -165,7 +165,12 @@ where
     let mut latest_code = None;
     let mut last_compiling_version = None;
     for msg in msgs {
-        handle_msg(&mut request_compilation, &mut latest_code, msg)?;
+        match msg {
+            Msg::CompilationSucceeded => {}
+            Msg::ReceivedEditorEvent(edit) => {
+                handle_edit_event(&mut request_compilation, &mut latest_code, edit)?
+            }
+        }
         if let Some(passed_compilation) = last_compiling_version_var.try_take() {
             last_compiling_version = Some(passed_compilation);
         }
@@ -179,22 +184,19 @@ where
     Ok(())
 }
 
-fn handle_msg<R>(
+fn handle_edit_event<R>(
     request_compilation: &mut R,
     latest_code: &mut Option<SourceFileSnapshot>,
-    msg: Msg,
+    edit: Edit,
 ) -> Result<(), Error>
 where
     R: FnMut(SourceFileSnapshot),
 {
     // Edit the old tree-sitter tree, or create it if we don't have one yet for
     // this file.
-    match msg {
-        Msg::CompilationSucceeded => {}
-        Msg::ReceivedEditorEvent(edit) => match latest_code {
-            None => get_initial_snapshot_from_first_edit(latest_code, edit)?,
-            Some(code) => apply_edit(code, edit),
-        },
+    match latest_code {
+        None => get_initial_snapshot_from_first_edit(latest_code, edit)?,
+        Some(code) => apply_edit(code, edit),
     }
 
     let latest_code = match latest_code {
