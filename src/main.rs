@@ -3,7 +3,6 @@ use mvar::MVar;
 use ropey::Rope;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tree_sitter::{InputEdit, Node, Tree, TreeCursor};
 
@@ -20,31 +19,29 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    // We're using a sync_channel of size 1 here because:
-    // - Size 0 would mean sending blocks until the receiver is requesting a new
-    //   message. This is not okay, because we want to be able to queue up a
-    //   Msg::CompilationSucceeded for after current reparsing succeeds.
-    // - Size >1 means we start buffering editor events in this program. I want
-    //   to try to stay ouf the buffering business and leave it to the OS, until
-    //   I see a benefit in doing it in this program (I don't currently).
-    let (sender, receiver) = sync_channel(1);
+    let new_diff_available = Arc::new(MVar::new());
+    let new_diff_available_clone = new_diff_available.clone();
     let thread_error = Arc::new(MVar::new());
-    let thread_error_clone = thread_error.clone();
-    let (mut compilation_candidates, last_compiling_version) =
-        compilation_thread::run(thread_error.clone(), sender.clone());
+    let latest_code = Arc::new(MVar::new());
+    let latest_code_clone = latest_code.clone();
+    let (mut compilation_candidates, last_compiling_code) =
+        compilation_thread::run(thread_error.clone(), new_diff_available.clone());
     std::thread::spawn(move || {
-        let log_change = |elm_change| println!("CHANGE: {:?}", elm_change);
-        report_error(
-            thread_error_clone,
-            run_change_analysis_thread(
-                |snapshot| compilation_candidates.push(snapshot),
-                &last_compiling_version,
-                &mut receiver.iter(),
-                log_change,
-            ),
-        );
+        let diff_iterator = DiffIterator {
+            latest_code,
+            last_compiling_code,
+            new_diff_available,
+        };
+        diff_iterator
+            .map(|diff| analyze_diff(&diff))
+            .for_each(|change| println!("CHANGE: {:?}", change));
     });
-    run_editor_listener_thread(thread_error, &sender)
+    run_editor_listener_thread(
+        &thread_error,
+        |snapshot| compilation_candidates.push(snapshot),
+        &latest_code_clone,
+        &new_diff_available_clone,
+    )
 }
 
 #[derive(Clone)]
@@ -73,13 +70,6 @@ struct FileData {
     elm_bin: PathBuf,
 }
 
-// The event type central to this application. The main thread of the program
-// will process these one-at-a-time.
-enum Msg {
-    ReceivedEditorEvent(Edit),
-    CompilationSucceeded,
-}
-
 // A change made by the user reported by the editor.
 struct Edit {
     // The file that was changed.
@@ -103,8 +93,6 @@ enum Error {
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
     CompilationFailedToRunElmMake(std::io::Error),
-    SendingMsgFromEditorListenerThreadFailed,
-    SendingMsgFromCompilationThreadFailed,
     JsonParsingEditorEventFailed(serde_json::error::Error),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
@@ -151,47 +139,37 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
     })
 }
 
-fn run_change_analysis_thread<I, F, R>(
-    mut request_compilation: R,
-    last_compiling_version_var: &MVar<SourceFileSnapshot>,
-    msgs: &mut I,
-    mut on_change: F,
-) -> Result<(), Error>
-where
-    I: Iterator<Item = Msg>,
-    F: FnMut(Option<ElmChange>),
-    R: FnMut(SourceFileSnapshot),
-{
-    let mut latest_code = None;
-    let mut last_compiling_version = None;
-    for msg in msgs {
-        match msg {
-            Msg::CompilationSucceeded => {}
-            Msg::ReceivedEditorEvent(edit) => {
-                handle_edit_event(&mut request_compilation, &mut latest_code, edit)?
-            }
-        }
-        if let Some(passed_compilation) = last_compiling_version_var.try_take() {
-            last_compiling_version = Some(passed_compilation);
-        }
-        if let (Some(latest_code), Some(last_compiling_version)) =
-            (&latest_code, &last_compiling_version)
-        {
-            let elm_change = analyze_changes(latest_code, last_compiling_version)?;
-            on_change(elm_change);
-        }
-    }
-    Ok(())
+struct SourceFileDiff {
+    old: SourceFileSnapshot,
+    new: SourceFileSnapshot,
 }
 
-fn handle_edit_event<R>(
-    request_compilation: &mut R,
+struct DiffIterator {
+    latest_code: Arc<MVar<SourceFileSnapshot>>,
+    last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
+    new_diff_available: Arc<MVar<()>>,
+}
+
+impl<'a> Iterator for DiffIterator {
+    type Item = SourceFileDiff;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            self.new_diff_available.take();
+            if let (Some(old), Some(new)) = (
+                self.last_compiling_code.try_read(),
+                self.latest_code.try_read(),
+            ) {
+                return Some(SourceFileDiff { old, new });
+            }
+        }
+    }
+}
+
+fn handle_edit_event(
     latest_code: &mut Option<SourceFileSnapshot>,
     edit: Edit,
-) -> Result<(), Error>
-where
-    R: FnMut(SourceFileSnapshot),
-{
+) -> Result<(), Error> {
     // Edit the old tree-sitter tree, or create it if we don't have one yet for
     // this file.
     match latest_code {
@@ -207,19 +185,12 @@ where
     // Update the tree-sitter syntax three. Note: this is a separate step from
     // editing the old tree. See the tree-sitter docs on parsing for more info.
     reparse_tree(latest_code)?;
-    if !latest_code.tree.root_node().has_error() {
-        request_compilation(latest_code.clone());
-    }
     Ok(())
 }
 
-fn analyze_changes(
-    latest_code: &SourceFileSnapshot,
-    last_compiling_version: &SourceFileSnapshot,
-) -> Result<Option<ElmChange>, Error> {
-    let tree_changes = diff_trees(last_compiling_version, latest_code);
-    let elm_change = interpret_change(&tree_changes);
-    Ok(elm_change)
+fn analyze_diff(diff: &SourceFileDiff) -> Option<ElmChange> {
+    let tree_changes = diff_trees(diff);
+    interpret_change(&tree_changes)
 }
 
 fn get_initial_snapshot_from_first_edit(
@@ -255,10 +226,15 @@ fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
     }
 }
 
-fn run_editor_listener_thread(
-    thread_error: Arc<MVar<Error>>,
-    sender: &SyncSender<Msg>,
-) -> Result<(), Error> {
+fn run_editor_listener_thread<R>(
+    thread_error: &MVar<Error>,
+    mut request_compilation: R,
+    latest_code_var: &MVar<SourceFileSnapshot>,
+    new_diff_available: &MVar<()>,
+) -> Result<(), Error>
+where
+    R: FnMut(SourceFileSnapshot),
+{
     let fifo_path = "/tmp/elm-pair";
     nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU)
         .map_err(Error::FifoCreationFailed)?;
@@ -268,10 +244,16 @@ fn run_editor_listener_thread(
         if let Some(error) = thread_error.try_take() {
             return Err(error);
         }
+        let mut latest_code = latest_code_var.try_take();
         let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?)?;
-        sender
-            .send(Msg::ReceivedEditorEvent(edit))
-            .map_err(|_| Error::SendingMsgFromEditorListenerThreadFailed)?;
+        handle_edit_event(&mut latest_code, edit)?;
+        if let Some(latest) = latest_code {
+            if !latest.tree.root_node().has_error() {
+                request_compilation(latest.clone());
+            }
+            latest_code_var.write(latest);
+        }
+        new_diff_available.write(());
     }
     Ok(())
 }
@@ -469,7 +451,7 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             ),
         )),
         _ => {
-            debug_print_tree_changes(changes);
+            // debug_print_tree_changes(changes);
             None
         }
     }
@@ -505,12 +487,11 @@ struct TreeChanges<'a> {
     new_added: Vec<Node<'a>>,
 }
 
-fn diff_trees<'a>(
-    old_code: &'a SourceFileSnapshot,
-    new_code: &'a SourceFileSnapshot,
-) -> TreeChanges<'a> {
-    let mut old = old_code.tree.walk();
-    let mut new = new_code.tree.walk();
+fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
+    let old_code = &diff.old;
+    let new_code = &diff.new;
+    let mut old = diff.old.tree.walk();
+    let mut new = diff.new.tree.walk();
     loop {
         match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new) {
             FirstChangedSibling::NoneFound => {
@@ -823,14 +804,14 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
 }
 
 // A thread sync structure similar to Haskell's MVar. A variable, potentially
-// empty, that can be shared across threads. Does not support blocking
-// operations like Haskell's MVar though.
+// empty, that can be shared across threads.
 mod mvar {
     use crate::lock;
-    use std::sync::Mutex;
+    use std::sync::{Condvar, Mutex};
 
     pub struct MVar<T> {
         val: Mutex<Option<T>>,
+        full_condvar: Condvar,
     }
 
     impl<T> MVar<T> {
@@ -838,6 +819,7 @@ mod mvar {
         pub fn new() -> MVar<T> {
             MVar {
                 val: Mutex::new(None),
+                full_condvar: Condvar::new(),
             }
         }
 
@@ -845,6 +827,7 @@ mod mvar {
         pub fn write(&self, new: T) {
             let mut val = lock(&self.val);
             *val = Some(new);
+            self.full_condvar.notify_all();
         }
 
         // Write a value to an empty MVar. Returns true if the write succeeded,
@@ -854,15 +837,36 @@ mod mvar {
             match val.as_ref() {
                 None => {
                     *val = Some(new);
+                    self.full_condvar.notify_all();
                     true
                 }
                 Some(_) => false,
             }
         }
 
+        // Take the value from the MVar. If the MVar does not contain a value,
+        // block until it does.
+        pub fn take(&self) -> T {
+            let mut opt_val = crate::lock(&self.val);
+            loop {
+                match opt_val.take() {
+                    None {} => opt_val = self.full_condvar.wait(opt_val).unwrap(),
+                    Some(val) => return val,
+                }
+            }
+        }
+
         // Take the value from an MVar if it has one, leaving the MVar empty.
         pub fn try_take(&self) -> Option<T> {
             lock(&self.val).take()
+        }
+
+        // Clone the current value in the MVar and return it.
+        pub fn try_read(&self) -> Option<T>
+        where
+            T: Clone,
+        {
+            crate::lock(&self.val).clone()
         }
     }
 }
@@ -938,8 +942,7 @@ fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
 mod compilation_thread {
     use crate::mvar::MVar;
     use crate::sized_stack::SizedStack;
-    use crate::{Error, Msg, SourceFileSnapshot};
-    use std::sync::mpsc::SyncSender;
+    use crate::{Error, SourceFileSnapshot};
     use std::sync::Arc;
 
     pub struct CompilationCandidates {
@@ -958,8 +961,8 @@ mod compilation_thread {
 
     fn run_compilation_loop<F>(
         candidates: Arc<SizedStack<SourceFileSnapshot>>,
-        sender: SyncSender<Msg>,
-        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
+        new_diff_available: Arc<MVar<()>>,
+        last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
         compiles: F,
     ) -> Result<(), Error>
     where
@@ -972,13 +975,8 @@ mod compilation_thread {
                 continue;
             }
             if compiles(&snapshot)? {
-                last_compiling_version.write(snapshot);
-                // Let the main thread know it should reparse. If sending this fails
-                // we asume that's because a ReceivedEditorEvent got there first.
-                // That's okay, because those events cause reparsing too.
-                sender
-                    .try_send(Msg::CompilationSucceeded)
-                    .map_err(|_| Error::SendingMsgFromCompilationThreadFailed)?;
+                last_compiling_code.write(snapshot);
+                new_diff_available.write(());
             }
         }
     }
@@ -999,27 +997,27 @@ mod compilation_thread {
 
     pub(crate) fn run(
         error_var: Arc<MVar<Error>>,
-        sender: SyncSender<Msg>,
+        new_diff_available: Arc<MVar<()>>,
     ) -> (CompilationCandidates, Arc<MVar<SourceFileSnapshot>>) {
         let candidates = Arc::new(SizedStack::with_capacity(crate::MAX_COMPILATION_CANDIDATES));
         let compilation_candidates = CompilationCandidates {
             candidates: candidates.clone(),
             last_submitted_revision: None,
         };
-        let last_compiling_version = Arc::new(MVar::new());
-        let last_compiling_version_clone = last_compiling_version.clone();
+        let last_compiling_code = Arc::new(MVar::new());
+        let last_compiling_code_clone = last_compiling_code.clone();
         std::thread::spawn(move || {
             crate::report_error(
                 error_var,
                 run_compilation_loop(
                     candidates,
-                    sender,
-                    last_compiling_version,
+                    new_diff_available,
+                    last_compiling_code,
                     crate::does_snapshot_compile,
                 ),
             );
         });
-        (compilation_candidates, last_compiling_version_clone)
+        (compilation_candidates, last_compiling_code_clone)
     }
 }
 
@@ -1107,11 +1105,10 @@ mod included_answer_test {
 #[cfg(test)]
 mod simulation {
     use crate::included_answer_test::assert_eq_answer_in;
-    use crate::{Edit, ElmChange, MVar, Msg, SourceFileSnapshot};
+    use crate::{Edit, ElmChange};
     use std::collections::VecDeque;
     use std::io::BufRead;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use tree_sitter::{InputEdit, Point};
 
     #[macro_export]
@@ -1130,6 +1127,10 @@ mod simulation {
     }
     pub use simulation_test;
 
+    struct Simulation {
+        msgs: VecDeque<Msg>,
+    }
+
     pub fn run_simulation_test(path: &Path) {
         match run_simulation_test_helper(path) {
             Err(err) => panic!("simulation failed with: {:?}", err),
@@ -1138,24 +1139,60 @@ mod simulation {
     }
 
     fn run_simulation_test_helper(path: &Path) -> Result<Option<ElmChange>, Error> {
-        let mut simulation = Simulation::from_file(path)?;
-        let mut elm_change = None;
-        let compilation_candidate = simulation.compilation_candidate;
-        let store_elm_change = |change| elm_change = change;
-        crate::run_change_analysis_thread(
-            |snapshot| compilation_candidate.write(snapshot),
-            &simulation.last_compiling_version,
-            &mut simulation.iterator,
-            store_elm_change,
-        )
-        .map_err(Error::RunningSimulationFailed)?;
-        Ok(elm_change)
+        let simulation = Simulation::from_file(path)?;
+        let mut latest_code = None;
+        let mut last_compiling_code = None;
+        let diff_iterator = simulation.msgs.into_iter().filter_map(|msg| {
+            let res = {
+                match msg {
+                    Msg::CompilationSucceeded => {
+                        last_compiling_code = latest_code.clone();
+                        Ok(())
+                    }
+                    Msg::ReceivedEditorEvent(edit) => {
+                        crate::handle_edit_event(&mut latest_code, edit)
+                    }
+                }
+            };
+            if let Err(err) = res {
+                return Some(Err(err));
+            }
+            match (last_compiling_code.clone(), latest_code.clone()) {
+                (Some(old), Some(new)) => Some(Ok(crate::SourceFileDiff { old, new })),
+                _ => None,
+            }
+        });
+        diff_iterator
+            .map(|res| res.map(|diff| crate::analyze_diff(&diff)))
+            .last()
+            .transpose()
+            .map(Option::flatten)
+            .map_err(Error::RunningSimulationFailed)
     }
 
-    struct Simulation {
-        compilation_candidate: Arc<MVar<SourceFileSnapshot>>,
-        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
-        iterator: SimulationIterator,
+    fn find_start_simulation_script<I>(lines: &mut I) -> Result<(Vec<u8>, usize), Error>
+    where
+        I: Iterator<Item = Result<String, Error>>,
+    {
+        let mut code: Vec<u8> = Vec::new();
+        loop {
+            let line = match lines.next() {
+                None => return Err(Error::FromFileFailedNoStartSimulationFound),
+                Some(Err(err)) => return Err(err),
+                Some(Ok(line)) => line,
+            };
+            if let Some(padding) = line.strip_suffix("START SIMULATION") {
+                break Ok((code, padding.len()));
+            } else {
+                code.push(10 /* \n */);
+                code.append(&mut line.into_bytes());
+            }
+        }
+    }
+
+    enum Msg {
+        ReceivedEditorEvent(Edit),
+        CompilationSucceeded,
     }
 
     impl Simulation {
@@ -1189,46 +1226,6 @@ mod simulation {
                 };
             }
             Ok(builder.finish())
-        }
-    }
-
-    struct SimulationIterator {
-        compilation_candidate: Arc<MVar<SourceFileSnapshot>>,
-        last_compiling_version: Arc<MVar<SourceFileSnapshot>>,
-        msgs: VecDeque<Msg>,
-    }
-
-    impl Iterator for SimulationIterator {
-        type Item = Msg;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.msgs.pop_front().map(|msg| {
-                if let Msg::CompilationSucceeded = msg {
-                    let snapshot = self.compilation_candidate.try_take().unwrap();
-                    self.last_compiling_version.write(snapshot);
-                }
-                msg
-            })
-        }
-    }
-
-    fn find_start_simulation_script<I>(lines: &mut I) -> Result<(Vec<u8>, usize), Error>
-    where
-        I: Iterator<Item = Result<String, Error>>,
-    {
-        let mut code: Vec<u8> = Vec::new();
-        loop {
-            let line = match lines.next() {
-                None => return Err(Error::FromFileFailedNoStartSimulationFound),
-                Some(Err(err)) => return Err(err),
-                Some(Ok(line)) => line,
-            };
-            if let Some(padding) = line.strip_suffix("START SIMULATION") {
-                break Ok((code, padding.len()));
-            } else {
-                code.push(10 /* \n */);
-                code.append(&mut line.into_bytes());
-            }
         }
     }
 
@@ -1340,17 +1337,7 @@ mod simulation {
         }
 
         fn finish(self) -> Simulation {
-            let compilation_candidate = Arc::new(MVar::new());
-            let last_compiling_version = Arc::new(MVar::new());
-            Simulation {
-                last_compiling_version: last_compiling_version.clone(),
-                compilation_candidate: compilation_candidate.clone(),
-                iterator: SimulationIterator {
-                    last_compiling_version,
-                    compilation_candidate,
-                    msgs: self.msgs,
-                },
-            }
+            Simulation { msgs: self.msgs }
         }
     }
 
