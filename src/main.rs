@@ -116,9 +116,8 @@ enum Error {
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
-    FifoCreationFailed(nix::errno::Errno),
-    FifoOpeningFailed(std::io::Error),
-    FifoLineReadingFailed(std::io::Error),
+    SocketCreationFailed(std::io::Error),
+    ReadingFromSocketFailed(std::io::Error),
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
     CompilationFailedToRunElmMake(std::io::Error),
@@ -323,25 +322,28 @@ fn run_editor_listener_thread<R>(
 where
     R: FnMut(SourceFileSnapshot),
 {
-    let fifo_path = "/tmp/elm-pair";
-    nix::unistd::mkfifo(fifo_path, nix::sys::stat::Mode::S_IRWXU)
-        .map_err(Error::FifoCreationFailed)?;
-    let fifo = std::fs::File::open(fifo_path).map_err(Error::FifoOpeningFailed)?;
-    let buf_reader = std::io::BufReader::new(fifo).lines();
-    for line in buf_reader {
-        if let Some(error) = thread_error.try_take() {
-            return Err(error);
-        }
-        let mut latest_code = latest_code_var.try_take();
-        let edit = parse_editor_event(&line.map_err(Error::FifoLineReadingFailed)?)?;
-        handle_edit_event(&mut latest_code, edit)?;
-        if let Some(latest) = latest_code {
-            if !latest.tree.root_node().has_error() {
-                request_compilation(latest.clone());
+    let socket_path = "/tmp/elm-pair.sock";
+    let listener =
+        std::os::unix::net::UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
+    for socket in listener.incoming().into_iter() {
+        let buf_reader = std::io::BufReader::new(socket.unwrap()).lines();
+        // TODO: Figure out how to deal with multiple connections.
+        for line in buf_reader {
+            let line = line.map_err(Error::ReadingFromSocketFailed)?;
+            if let Some(error) = thread_error.try_take() {
+                return Err(error);
             }
-            latest_code_var.write(latest);
+            let mut latest_code = latest_code_var.try_take();
+            let edit = parse_editor_event(&line)?;
+            handle_edit_event(&mut latest_code, edit)?;
+            if let Some(latest) = latest_code {
+                if !latest.tree.root_node().has_error() {
+                    request_compilation(latest.clone());
+                }
+                latest_code_var.write(latest);
+            }
+            new_diff_available.write(());
         }
-        new_diff_available.write(());
     }
     Ok(())
 }

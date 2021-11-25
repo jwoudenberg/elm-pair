@@ -1,12 +1,11 @@
 -- luacheck: read globals vim
 local function start()
-    local socket = assert(io.open("/tmp/elm-pair", "a"))
+    local socket = vim.fn.sockconnect("pipe", "/tmp/elm-pair.sock",
+                                      {[vim.type_idx] = vim.types.dictionary})
     local buffer = vim.fn.bufnr("%")
 
     local function send_json_msg(msg)
-        socket:write(vim.fn.json_encode(msg))
-        socket:write("\n")
-        socket:flush()
+        vim.fn.chansend(socket, vim.fn.json_encode(msg) .. "\n")
     end
 
     local function on_bytes(_, _, _, start_row, start_col, start_byte, old_row,
