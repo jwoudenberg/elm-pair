@@ -2,6 +2,7 @@ use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
 use std::io::BufRead;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tree_sitter::{InputEdit, Node, Query, QueryCursor, Tree, TreeCursor};
@@ -24,12 +25,15 @@ fn run() -> Result<(), Error> {
     let thread_error = Arc::new(MVar::new());
     let latest_code = Arc::new(MVar::new());
     let latest_code_clone = latest_code.clone();
+    let write_socket_var = Arc::new(MVar::new());
+    let write_socket_var_clone = write_socket_var.clone();
     let (mut compilation_candidates, last_compiling_code) =
         compilation_thread::run(
             thread_error.clone(),
             new_diff_available.clone(),
         );
     std::thread::spawn(move || {
+        let mut write_socket = write_socket_var_clone.take();
         let diff_iterator = DiffIterator {
             latest_code,
             last_compiling_code,
@@ -40,6 +44,14 @@ fn run() -> Result<(), Error> {
             if let Some(change) = opt_change {
                 let refactor = elm_refactor(&diff, &change);
                 println!("REFACTOR: {:?}", refactor);
+                serde_json::to_writer(
+                    &mut write_socket,
+                    &refactor
+                        .into_iter()
+                        .map(Edit::serialize)
+                        .collect::<Vec<SerializedEdit>>(),
+                )
+                .unwrap();
             }
         });
     });
@@ -48,6 +60,7 @@ fn run() -> Result<(), Error> {
         |snapshot| compilation_candidates.push(snapshot),
         &latest_code_clone,
         &new_diff_available_clone,
+        &write_socket_var,
     )
 }
 
@@ -89,6 +102,81 @@ struct Edit {
     new_bytes: String,
 }
 
+impl Edit {
+    fn deserialize(
+        (
+            file,
+            new_bytes,
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_row,
+            start_col,
+            old_end_row,
+            old_end_col,
+            new_end_row,
+            new_end_col,
+        ): SerializedEdit,
+    ) -> Edit {
+        let start_position = tree_sitter::Point {
+            row: start_row,
+            column: start_col,
+        };
+        let old_end_position = tree_sitter::Point {
+            row: old_end_row,
+            column: old_end_col,
+        };
+        let new_end_position = tree_sitter::Point {
+            row: new_end_row,
+            column: new_end_col,
+        };
+        let input_edit = tree_sitter::InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position,
+            old_end_position,
+            new_end_position,
+        };
+        Edit {
+            file,
+            input_edit,
+            new_bytes,
+        }
+    }
+    fn serialize(self) -> SerializedEdit {
+        (
+            self.file,
+            self.new_bytes,
+            self.input_edit.start_byte,
+            self.input_edit.old_end_byte,
+            self.input_edit.new_end_byte,
+            self.input_edit.start_position.row,
+            self.input_edit.start_position.column,
+            self.input_edit.old_end_position.row,
+            self.input_edit.old_end_position.column,
+            self.input_edit.new_end_position.row,
+            self.input_edit.new_end_position.column,
+        )
+    }
+}
+
+// TODO: Remove the need for this type by dererializing/serializing directly
+// into Edit.
+type SerializedEdit = (
+    PathBuf,
+    String,
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+);
+
 fn mk_edit(
     code: &SourceFileSnapshot,
     range: &Range<usize>,
@@ -124,6 +212,10 @@ enum Error {
     DidNotFindPathEnvVar,
     NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
     SocketCreationFailed(std::io::Error),
+    AcceptingIncomingSocketConnectionFailed(std::io::Error),
+    CloningSocketFailed(std::io::Error),
+    ShuttingDownSocketReadsFailed(std::io::Error),
+    ShuttingDownSocketWritesFailed(std::io::Error),
     ReadingFromSocketFailed(std::io::Error),
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
@@ -131,48 +223,6 @@ enum Error {
     JsonParsingEditorEventFailed(serde_json::error::Error),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
-}
-
-fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
-    let (
-        file,
-        new_bytes,
-        start_byte,
-        old_end_byte,
-        new_end_byte,
-        start_row,
-        start_col,
-        old_end_row,
-        old_end_col,
-        new_end_row,
-        new_end_col,
-    ) = serde_json::from_str(serialized_event)
-        .map_err(Error::JsonParsingEditorEventFailed)?;
-    let start_position = tree_sitter::Point {
-        row: start_row,
-        column: start_col,
-    };
-    let old_end_position = tree_sitter::Point {
-        row: old_end_row,
-        column: old_end_col,
-    };
-    let new_end_position = tree_sitter::Point {
-        row: new_end_row,
-        column: new_end_col,
-    };
-    let input_edit = tree_sitter::InputEdit {
-        start_byte,
-        old_end_byte,
-        new_end_byte,
-        start_position,
-        old_end_position,
-        new_end_position,
-    };
-    Ok(Edit {
-        file,
-        input_edit,
-        new_bytes,
-    })
 }
 
 struct SourceFileDiff {
@@ -331,15 +381,22 @@ fn run_editor_listener_thread<R>(
     mut request_compilation: R,
     latest_code_var: &MVar<SourceFileSnapshot>,
     new_diff_available: &MVar<()>,
+    write_socket_var: &MVar<UnixStream>,
 ) -> Result<(), Error>
 where
     R: FnMut(SourceFileSnapshot),
 {
     let socket_path = "/tmp/elm-pair.sock";
-    let listener = std::os::unix::net::UnixListener::bind(socket_path)
-        .map_err(Error::SocketCreationFailed)?;
+    let listener =
+        UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
     for socket in listener.incoming().into_iter() {
-        let buf_reader = std::io::BufReader::new(socket.unwrap()).lines();
+        let read_socket =
+            socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
+        let write_socket = read_socket
+            .try_clone()
+            .map_err(Error::CloningSocketFailed)?;
+        write_socket_var.write(write_socket);
+        let buf_reader = std::io::BufReader::new(read_socket).lines();
         // TODO: Figure out how to deal with multiple connections.
         for line in buf_reader {
             let line = line.map_err(Error::ReadingFromSocketFailed)?;
@@ -347,7 +404,9 @@ where
                 return Err(error);
             }
             let mut latest_code = latest_code_var.try_take();
-            let edit = parse_editor_event(&line)?;
+            let serialized_edit = serde_json::from_str(&line)
+                .map_err(Error::JsonParsingEditorEventFailed)?;
+            let edit = Edit::deserialize(serialized_edit);
             handle_edit_event(&mut latest_code, edit)?;
             if let Some(latest) = latest_code {
                 if !latest.tree.root_node().has_error() {
