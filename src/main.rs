@@ -1,7 +1,7 @@
 use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
-use std::io::BufRead;
+use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,47 +21,77 @@ pub fn main() {
 
 fn run() -> Result<(), Error> {
     let new_diff_available = Arc::new(MVar::new());
-    let new_diff_available_clone = new_diff_available.clone();
     let thread_error = Arc::new(MVar::new());
     let latest_code = Arc::new(MVar::new());
-    let latest_code_clone = latest_code.clone();
-    let write_socket_var = Arc::new(MVar::new());
-    let write_socket_var_clone = write_socket_var.clone();
+    let editor_driver = Arc::new(MVar::new());
     let (mut compilation_candidates, last_compiling_code) =
         compilation_thread::run(
             thread_error.clone(),
             new_diff_available.clone(),
         );
-    std::thread::spawn(move || {
-        let mut write_socket = write_socket_var_clone.take();
-        let diff_iterator = DiffIterator {
-            latest_code,
-            last_compiling_code,
-            new_diff_available,
-        };
-        diff_iterator.for_each(|diff| {
-            let opt_change = analyze_diff(&diff);
-            if let Some(change) = opt_change {
-                let refactor = elm_refactor(&diff, &change);
-                println!("REFACTOR: {:?}", refactor);
-                serde_json::to_writer(
-                    &mut write_socket,
-                    &refactor
-                        .into_iter()
-                        .map(Edit::serialize)
-                        .collect::<Vec<SerializedEdit>>(),
-                )
-                .unwrap();
-            }
-        });
-    });
+    run_diff_thread(
+        thread_error.clone(),
+        editor_driver.clone(),
+        latest_code.clone(),
+        last_compiling_code,
+        new_diff_available.clone(),
+    );
     run_editor_listener_thread(
         &thread_error,
         |snapshot| compilation_candidates.push(snapshot),
-        &latest_code_clone,
-        &new_diff_available_clone,
-        &write_socket_var,
+        &latest_code,
+        &new_diff_available,
+        &editor_driver,
     )
+}
+
+fn run_diff_thread<W>(
+    error_var: Arc<MVar<Error>>,
+    editor_driver_var: Arc<MVar<neovim::NeovimDriver<W>>>,
+    latest_code: Arc<MVar<SourceFileSnapshot>>,
+    last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
+    new_diff_available: Arc<MVar<()>>,
+) where
+    W: Write + Send + 'static,
+{
+    std::thread::spawn(move || {
+        std::thread::spawn(move || {
+            crate::report_error(
+                error_var,
+                run_diff_loop(
+                    editor_driver_var,
+                    latest_code,
+                    last_compiling_code,
+                    new_diff_available,
+                ),
+            )
+        });
+    });
+}
+
+fn run_diff_loop<W>(
+    editor_driver_var: Arc<MVar<neovim::NeovimDriver<W>>>,
+    latest_code: Arc<MVar<SourceFileSnapshot>>,
+    last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
+    new_diff_available: Arc<MVar<()>>,
+) -> Result<(), Error>
+where
+    W: Write,
+{
+    let editor_driver = editor_driver_var.take();
+    let mut diff_iterator = DiffIterator {
+        latest_code,
+        last_compiling_code,
+        new_diff_available,
+    };
+    diff_iterator.try_for_each(|diff| {
+        let opt_change = analyze_diff(&diff);
+        if let Some(change) = opt_change {
+            let refactor = elm_refactor(&diff, &change);
+            editor_driver.apply_edits(refactor)?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Clone)]
@@ -102,81 +132,6 @@ struct Edit {
     new_bytes: String,
 }
 
-impl Edit {
-    fn deserialize(
-        (
-            file,
-            new_bytes,
-            start_byte,
-            old_end_byte,
-            new_end_byte,
-            start_row,
-            start_col,
-            old_end_row,
-            old_end_col,
-            new_end_row,
-            new_end_col,
-        ): SerializedEdit,
-    ) -> Edit {
-        let start_position = tree_sitter::Point {
-            row: start_row,
-            column: start_col,
-        };
-        let old_end_position = tree_sitter::Point {
-            row: old_end_row,
-            column: old_end_col,
-        };
-        let new_end_position = tree_sitter::Point {
-            row: new_end_row,
-            column: new_end_col,
-        };
-        let input_edit = tree_sitter::InputEdit {
-            start_byte,
-            old_end_byte,
-            new_end_byte,
-            start_position,
-            old_end_position,
-            new_end_position,
-        };
-        Edit {
-            file,
-            input_edit,
-            new_bytes,
-        }
-    }
-    fn serialize(self) -> SerializedEdit {
-        (
-            self.file,
-            self.new_bytes,
-            self.input_edit.start_byte,
-            self.input_edit.old_end_byte,
-            self.input_edit.new_end_byte,
-            self.input_edit.start_position.row,
-            self.input_edit.start_position.column,
-            self.input_edit.old_end_position.row,
-            self.input_edit.old_end_position.column,
-            self.input_edit.new_end_position.row,
-            self.input_edit.new_end_position.column,
-        )
-    }
-}
-
-// TODO: Remove the need for this type by dererializing/serializing directly
-// into Edit.
-type SerializedEdit = (
-    PathBuf,
-    String,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-);
-
 fn mk_edit(
     code: &SourceFileSnapshot,
     range: &Range<usize>,
@@ -214,13 +169,12 @@ enum Error {
     SocketCreationFailed(std::io::Error),
     AcceptingIncomingSocketConnectionFailed(std::io::Error),
     CloningSocketFailed(std::io::Error),
-    ShuttingDownSocketReadsFailed(std::io::Error),
-    ShuttingDownSocketWritesFailed(std::io::Error),
     ReadingFromSocketFailed(std::io::Error),
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
     CompilationFailedToRunElmMake(std::io::Error),
     JsonParsingEditorEventFailed(serde_json::error::Error),
+    SendingRefactorToEditorFailed(serde_json::error::Error),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }
@@ -381,7 +335,7 @@ fn run_editor_listener_thread<R>(
     mut request_compilation: R,
     latest_code_var: &MVar<SourceFileSnapshot>,
     new_diff_available: &MVar<()>,
-    write_socket_var: &MVar<UnixStream>,
+    editor_driver: &MVar<neovim::NeovimDriver<UnixStream>>,
 ) -> Result<(), Error>
 where
     R: FnMut(SourceFileSnapshot),
@@ -389,25 +343,21 @@ where
     let socket_path = "/tmp/elm-pair.sock";
     let listener =
         UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
+    // TODO: Figure out how to deal with multiple connections.
     for socket in listener.incoming().into_iter() {
         let read_socket =
             socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
         let write_socket = read_socket
             .try_clone()
             .map_err(Error::CloningSocketFailed)?;
-        write_socket_var.write(write_socket);
-        let buf_reader = std::io::BufReader::new(read_socket).lines();
-        // TODO: Figure out how to deal with multiple connections.
-        for line in buf_reader {
-            let line = line.map_err(Error::ReadingFromSocketFailed)?;
+        let neovim = neovim::Neovim::new(read_socket, write_socket);
+        editor_driver.write(neovim.driver());
+        for edit in neovim {
             if let Some(error) = thread_error.try_take() {
                 return Err(error);
             }
             let mut latest_code = latest_code_var.try_take();
-            let serialized_edit = serde_json::from_str(&line)
-                .map_err(Error::JsonParsingEditorEventFailed)?;
-            let edit = Edit::deserialize(serialized_edit);
-            handle_edit_event(&mut latest_code, edit)?;
+            handle_edit_event(&mut latest_code, edit?)?;
             if let Some(latest) = latest_code {
                 if !latest.tree.root_node().has_error() {
                     request_compilation(latest.clone());
@@ -989,6 +939,154 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
         debug_code_slice(code, &node.byte_range()),
         if node.has_changes() { " (changed)" } else { "" },
     );
+}
+
+mod neovim {
+    use crate::{Edit, Error};
+    use std::io::{BufRead, BufReader, Lines, Read, Write};
+    use std::ops::DerefMut;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) struct Neovim<R, W> {
+        lines: Lines<BufReader<R>>,
+        write: Arc<Mutex<W>>,
+    }
+
+    impl<R, W> Neovim<R, W> {
+        pub fn new(read: R, write: W) -> Self
+        where
+            R: Read,
+        {
+            Neovim {
+                lines: BufReader::new(read).lines(),
+                write: Arc::new(Mutex::new(write)),
+            }
+        }
+
+        pub fn driver(&self) -> NeovimDriver<W> {
+            NeovimDriver {
+                write: self.write.clone(),
+            }
+        }
+    }
+
+    impl<R, W> Iterator for Neovim<R, W>
+    where
+        R: Read,
+    {
+        type Item = Result<Edit, Error>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.lines.next().map(parse_line)
+        }
+    }
+
+    fn parse_line(line: Result<String, std::io::Error>) -> Result<Edit, Error> {
+        let line = line.map_err(Error::ReadingFromSocketFailed)?;
+        let serialized_edit = serde_json::from_str(&line)
+            .map_err(Error::JsonParsingEditorEventFailed)?;
+        let edit = deserialize(serialized_edit);
+        Ok(edit)
+    }
+
+    pub struct NeovimDriver<W> {
+        write: Arc<Mutex<W>>,
+    }
+
+    impl<W> NeovimDriver<W>
+    where
+        W: Write,
+    {
+        pub(crate) fn apply_edits(
+            &self,
+            refactor: Vec<Edit>,
+        ) -> Result<(), Error> {
+            println!("REFACTOR: {:?}", refactor);
+            let mut write = crate::lock(&self.write);
+            serde_json::to_writer(
+                &mut write.deref_mut(),
+                &refactor
+                    .into_iter()
+                    .map(serialize)
+                    .collect::<Vec<SerializedEdit>>(),
+            )
+            .map_err(Error::SendingRefactorToEditorFailed)
+        }
+    }
+
+    // TODO: Remove the need for this type by dererializing/serializing directly
+    // into Edit.
+    type SerializedEdit = (
+        PathBuf,
+        String,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    );
+
+    fn deserialize(
+        (
+            file,
+            new_bytes,
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_row,
+            start_col,
+            old_end_row,
+            old_end_col,
+            new_end_row,
+            new_end_col,
+        ): SerializedEdit,
+    ) -> Edit {
+        let start_position = tree_sitter::Point {
+            row: start_row,
+            column: start_col,
+        };
+        let old_end_position = tree_sitter::Point {
+            row: old_end_row,
+            column: old_end_col,
+        };
+        let new_end_position = tree_sitter::Point {
+            row: new_end_row,
+            column: new_end_col,
+        };
+        let input_edit = tree_sitter::InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position,
+            old_end_position,
+            new_end_position,
+        };
+        Edit {
+            file,
+            input_edit,
+            new_bytes,
+        }
+    }
+    fn serialize(edit: Edit) -> SerializedEdit {
+        (
+            edit.file,
+            edit.new_bytes,
+            edit.input_edit.start_byte,
+            edit.input_edit.old_end_byte,
+            edit.input_edit.new_end_byte,
+            edit.input_edit.start_position.row,
+            edit.input_edit.start_position.column,
+            edit.input_edit.old_end_position.row,
+            edit.input_edit.old_end_position.column,
+            edit.input_edit.new_end_position.row,
+            edit.input_edit.new_end_position.column,
+        )
+    }
 }
 
 // A thread sync structure similar to Haskell's MVar. A variable, potentially
