@@ -25,7 +25,10 @@ fn run() -> Result<(), Error> {
     let latest_code = Arc::new(MVar::new());
     let latest_code_clone = latest_code.clone();
     let (mut compilation_candidates, last_compiling_code) =
-        compilation_thread::run(thread_error.clone(), new_diff_available.clone());
+        compilation_thread::run(
+            thread_error.clone(),
+            new_diff_available.clone(),
+        );
     std::thread::spawn(move || {
         let diff_iterator = DiffIterator {
             latest_code,
@@ -86,7 +89,11 @@ struct Edit {
     new_bytes: String,
 }
 
-fn mk_edit(code: &SourceFileSnapshot, range: &Range<usize>, new_bytes: String) -> Edit {
+fn mk_edit(
+    code: &SourceFileSnapshot,
+    range: &Range<usize>,
+    new_bytes: String,
+) -> Edit {
     let new_end_byte = range.start + new_bytes.len();
     Edit {
         file: code.file_data.path.clone(),
@@ -139,7 +146,8 @@ fn parse_editor_event(serialized_event: &str) -> Result<Edit, Error> {
         old_end_col,
         new_end_row,
         new_end_col,
-    ) = serde_json::from_str(serialized_event).map_err(Error::JsonParsingEditorEventFailed)?;
+    ) = serde_json::from_str(serialized_event)
+        .map_err(Error::JsonParsingEditorEventFailed)?;
     let start_position = tree_sitter::Point {
         row: start_row,
         column: start_col,
@@ -249,9 +257,14 @@ fn elm_refactor(diff: &SourceFileDiff, change: &ElmChange) -> Vec<Edit> {
                         [x, y] => (x, y),
                         _ => panic!("wrong number of capures"),
                     };
-                    let import_node = import.node.child_by_field_name("moduleName")?;
-                    let import_name = debug_code_slice(&diff.new, &import_node.byte_range());
-                    let exposed_name = debug_code_slice(&diff.new, &exposed_val.node.byte_range());
+                    let import_node =
+                        import.node.child_by_field_name("moduleName")?;
+                    let import_name =
+                        debug_code_slice(&diff.new, &import_node.byte_range());
+                    let exposed_name = debug_code_slice(
+                        &diff.new,
+                        &exposed_val.node.byte_range(),
+                    );
                     if import_name == *qualifier && exposed_name == *name {
                         Some(exposed_val.node)
                     } else {
@@ -323,8 +336,8 @@ where
     R: FnMut(SourceFileSnapshot),
 {
     let socket_path = "/tmp/elm-pair.sock";
-    let listener =
-        std::os::unix::net::UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
+    let listener = std::os::unix::net::UnixListener::bind(socket_path)
+        .map_err(Error::SocketCreationFailed)?;
     for socket in listener.incoming().into_iter() {
         let buf_reader = std::io::BufReader::new(socket.unwrap()).lines();
         // TODO: Figure out how to deal with multiple connections.
@@ -349,7 +362,8 @@ where
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {
-    let cwd = std::env::current_dir().map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
+    let cwd = std::env::current_dir()
+        .map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
     let path = std::env::var_os("PATH").ok_or(Error::DidNotFindPathEnvVar)?;
     let dirs = std::env::split_paths(&path);
     for dir in dirs {
@@ -404,74 +418,82 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
         attach_kinds(&changes.old_removed).as_slice(),
         attach_kinds(&changes.new_added).as_slice(),
     ) {
-        ([("lower_case_identifier", before)], [("lower_case_identifier", after)]) => {
-            Some(ElmChange::NameChanged(
-                debug_code_slice(changes.old_code, &before.byte_range()),
-                debug_code_slice(changes.new_code, &after.byte_range()),
-            ))
-        }
-        ([("upper_case_identifier", before)], [("upper_case_identifier", after)]) => {
-            match before.parent()?.kind() {
-                "as_clause" => Some(ElmChange::AsClauseChanged(
-                    debug_code_slice(changes.old_code, &before.byte_range()),
-                    debug_code_slice(changes.new_code, &after.byte_range()),
-                )),
-                _ => Some(ElmChange::TypeChanged(
-                    debug_code_slice(changes.old_code, &before.byte_range()),
-                    debug_code_slice(changes.new_code, &after.byte_range()),
-                )),
-            }
-        }
-        ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(debug_code_slice(
-            changes.new_code,
-            &after.byte_range(),
-        ))),
-        ([("import_clause", before)], []) => Some(ElmChange::ImportRemoved(debug_code_slice(
-            changes.old_code,
-            &before.byte_range(),
-        ))),
-        ([], [("type_declaration", after)]) => Some(ElmChange::TypeAdded(debug_code_slice(
-            changes.new_code,
-            &after.byte_range(),
-        ))),
-        ([("type_declaration", before)], []) => Some(ElmChange::TypeRemoved(debug_code_slice(
-            changes.old_code,
-            &before.byte_range(),
-        ))),
-        ([], [("type_alias_declaration", after)]) => Some(ElmChange::TypeAliasAdded(
+        (
+            [("lower_case_identifier", before)],
+            [("lower_case_identifier", after)],
+        ) => Some(ElmChange::NameChanged(
+            debug_code_slice(changes.old_code, &before.byte_range()),
             debug_code_slice(changes.new_code, &after.byte_range()),
         )),
-        ([("type_alias_declaration", before)], []) => Some(ElmChange::TypeAliasRemoved(
+        (
+            [("upper_case_identifier", before)],
+            [("upper_case_identifier", after)],
+        ) => match before.parent()?.kind() {
+            "as_clause" => Some(ElmChange::AsClauseChanged(
+                debug_code_slice(changes.old_code, &before.byte_range()),
+                debug_code_slice(changes.new_code, &after.byte_range()),
+            )),
+            _ => Some(ElmChange::TypeChanged(
+                debug_code_slice(changes.old_code, &before.byte_range()),
+                debug_code_slice(changes.new_code, &after.byte_range()),
+            )),
+        },
+        ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(
+            debug_code_slice(changes.new_code, &after.byte_range()),
+        )),
+        ([("import_clause", before)], []) => Some(ElmChange::ImportRemoved(
             debug_code_slice(changes.old_code, &before.byte_range()),
         )),
-        ([], [("field_type", after)]) => Some(ElmChange::FieldAdded(debug_code_slice(
-            changes.new_code,
-            &after.byte_range(),
-        ))),
-        ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(debug_code_slice(
-            changes.new_code,
-            &after.byte_range(),
-        ))),
-        ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(debug_code_slice(
-            changes.new_code,
-            &after.byte_range(),
-        ))),
-        ([("field_type", before)], []) => Some(ElmChange::FieldRemoved(debug_code_slice(
-            changes.old_code,
-            &before.byte_range(),
-        ))),
-        ([(",", _), ("field_type", before)], []) => Some(ElmChange::FieldRemoved(
+        ([], [("type_declaration", after)]) => Some(ElmChange::TypeAdded(
+            debug_code_slice(changes.new_code, &after.byte_range()),
+        )),
+        ([("type_declaration", before)], []) => Some(ElmChange::TypeRemoved(
             debug_code_slice(changes.old_code, &before.byte_range()),
         )),
-        ([("field_type", before), (",", _)], []) => Some(ElmChange::FieldRemoved(
+        ([], [("type_alias_declaration", after)]) => {
+            Some(ElmChange::TypeAliasAdded(debug_code_slice(
+                changes.new_code,
+                &after.byte_range(),
+            )))
+        }
+        ([("type_alias_declaration", before)], []) => {
+            Some(ElmChange::TypeAliasRemoved(debug_code_slice(
+                changes.old_code,
+                &before.byte_range(),
+            )))
+        }
+        ([], [("field_type", after)]) => Some(ElmChange::FieldAdded(
+            debug_code_slice(changes.new_code, &after.byte_range()),
+        )),
+        ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(
+            debug_code_slice(changes.new_code, &after.byte_range()),
+        )),
+        ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(
+            debug_code_slice(changes.new_code, &after.byte_range()),
+        )),
+        ([("field_type", before)], []) => Some(ElmChange::FieldRemoved(
             debug_code_slice(changes.old_code, &before.byte_range()),
         )),
+        ([(",", _), ("field_type", before)], []) => {
+            Some(ElmChange::FieldRemoved(debug_code_slice(
+                changes.old_code,
+                &before.byte_range(),
+            )))
+        }
+        ([("field_type", before), (",", _)], []) => {
+            Some(ElmChange::FieldRemoved(debug_code_slice(
+                changes.old_code,
+                &before.byte_range(),
+            )))
+        }
         (
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", before)],
             [("upper_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
+            let name_before =
+                debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after =
+                debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierRemoved(
                     name_before,
@@ -485,8 +507,10 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", before)],
             [("lower_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
+            let name_before =
+                debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after =
+                debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierRemoved(
                     name_before,
@@ -500,8 +524,10 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             [("upper_case_identifier", before)],
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
+            let name_before =
+                debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after =
+                debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierAdded(
                     name_before,
@@ -515,8 +541,10 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             [("lower_case_identifier", before)],
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", after)],
         ) => {
-            let name_before = debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after = debug_code_slice(changes.new_code, &after.byte_range());
+            let name_before =
+                debug_code_slice(changes.old_code, &before.byte_range());
+            let name_after =
+                debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
                 Some(ElmChange::QualifierAdded(
                     name_before,
@@ -527,14 +555,20 @@ fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
             }
         }
         ([("as_clause", before)], []) => Some(ElmChange::AsClauseRemoved(
-            debug_code_slice(changes.old_code, &before.prev_sibling()?.byte_range()),
+            debug_code_slice(
+                changes.old_code,
+                &before.prev_sibling()?.byte_range(),
+            ),
             debug_code_slice(
                 changes.old_code,
                 &before.child_by_field_name("name")?.byte_range(),
             ),
         )),
         ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
-            debug_code_slice(changes.new_code, &after.prev_sibling()?.byte_range()),
+            debug_code_slice(
+                changes.new_code,
+                &after.prev_sibling()?.byte_range(),
+            ),
             debug_code_slice(
                 changes.new_code,
                 &after.child_by_field_name("name")?.byte_range(),
@@ -583,7 +617,8 @@ fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let mut old = diff.old.tree.walk();
     let mut new = diff.new.tree.walk();
     loop {
-        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new) {
+        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new)
+        {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
                     old_code,
@@ -692,8 +727,12 @@ fn goto_first_changed_sibling(
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
                 (true, true) => continue,
                 (false, false) => return FirstChangedSibling::NoneFound,
-                (true, false) => return FirstChangedSibling::OldAtFirstAdditional,
-                (false, true) => return FirstChangedSibling::NewAtFirstAdditional,
+                (true, false) => {
+                    return FirstChangedSibling::OldAtFirstAdditional
+                }
+                (false, true) => {
+                    return FirstChangedSibling::NewAtFirstAdditional
+                }
             }
         }
     }
@@ -940,7 +979,9 @@ mod mvar {
             let mut opt_val = crate::lock(&self.val);
             loop {
                 match opt_val.take() {
-                    None {} => opt_val = self.full_condvar.wait(opt_val).unwrap(),
+                    None {} => {
+                        opt_val = self.full_condvar.wait(opt_val).unwrap()
+                    }
                     Some(val) => return val,
                 }
             }
@@ -1011,8 +1052,10 @@ fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
-    let mut temp_path = snapshot.file_data.project_root.join("elm-stuff/elm-pair");
-    std::fs::create_dir_all(&temp_path).map_err(Error::CompilationFailedToCreateTempDir)?;
+    let mut temp_path =
+        snapshot.file_data.project_root.join("elm-stuff/elm-pair");
+    std::fs::create_dir_all(&temp_path)
+        .map_err(Error::CompilationFailedToCreateTempDir)?;
     temp_path.push("Temp.elm");
     std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
         .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
@@ -1089,7 +1132,9 @@ mod compilation_thread {
         error_var: Arc<MVar<Error>>,
         new_diff_available: Arc<MVar<()>>,
     ) -> (CompilationCandidates, Arc<MVar<SourceFileSnapshot>>) {
-        let candidates = Arc::new(SizedStack::with_capacity(crate::MAX_COMPILATION_CANDIDATES));
+        let candidates = Arc::new(SizedStack::with_capacity(
+            crate::MAX_COMPILATION_CANDIDATES,
+        ));
         let compilation_candidates = CompilationCandidates {
             candidates: candidates.clone(),
             last_submitted_revision: None,
@@ -1158,11 +1203,14 @@ mod included_answer_test {
 
     pub fn assert_eq_answer_in(output: &str, path: &Path) {
         let prefix = "-- ";
-        let separator = "\n\n".to_owned() + prefix + "=== expected output below ===\n";
+        let separator =
+            "\n\n".to_owned() + prefix + "=== expected output below ===\n";
         let contents = assert_ok(std::fs::read_to_string(path));
         match contents.split_once(&separator) {
             None => {
-                let mut file = assert_ok(std::fs::OpenOptions::new().append(true).open(path));
+                let mut file = assert_ok(
+                    std::fs::OpenOptions::new().append(true).open(path),
+                );
                 assert_ok(file.write_all(separator.as_bytes()));
                 for line in output.lines() {
                     assert_ok(file.write_all(prefix.as_bytes()));
@@ -1208,7 +1256,8 @@ mod simulation {
             fn $name() {
                 let mut path = std::path::PathBuf::new();
                 path.push("./tests");
-                let module_name = crate::simulation::snake_to_camel(stringify!($name));
+                let module_name =
+                    crate::simulation::snake_to_camel(stringify!($name));
                 path.push(module_name + ".elm");
                 println!("Run simulation {:?}", &path);
                 crate::simulation::run_simulation_test(&path);
@@ -1228,7 +1277,9 @@ mod simulation {
         }
     }
 
-    fn run_simulation_test_helper(path: &Path) -> Result<Option<ElmChange>, Error> {
+    fn run_simulation_test_helper(
+        path: &Path,
+    ) -> Result<Option<ElmChange>, Error> {
         let simulation = Simulation::from_file(path)?;
         let mut latest_code = None;
         let mut last_compiling_code = None;
@@ -1248,7 +1299,9 @@ mod simulation {
                 return Some(Err(err));
             }
             match (last_compiling_code.clone(), latest_code.clone()) {
-                (Some(old), Some(new)) => Some(Ok(crate::SourceFileDiff { old, new })),
+                (Some(old), Some(new)) => {
+                    Some(Ok(crate::SourceFileDiff { old, new }))
+                }
                 _ => None,
             }
         });
@@ -1260,14 +1313,18 @@ mod simulation {
             .map_err(Error::RunningSimulationFailed)
     }
 
-    fn find_start_simulation_script<I>(lines: &mut I) -> Result<(Vec<u8>, usize), Error>
+    fn find_start_simulation_script<I>(
+        lines: &mut I,
+    ) -> Result<(Vec<u8>, usize), Error>
     where
         I: Iterator<Item = Result<String, Error>>,
     {
         let mut code: Vec<u8> = Vec::new();
         loop {
             let line = match lines.next() {
-                None => return Err(Error::FromFileFailedNoStartSimulationFound),
+                None => {
+                    return Err(Error::FromFileFailedNoStartSimulationFound)
+                }
                 Some(Err(err)) => return Err(err),
                 Some(Ok(line)) => line,
             };
@@ -1287,11 +1344,13 @@ mod simulation {
 
     impl Simulation {
         fn from_file(path: &Path) -> Result<Simulation, Error> {
-            let file = std::fs::File::open(path).map_err(Error::FromFileOpenFailed)?;
+            let file =
+                std::fs::File::open(path).map_err(Error::FromFileOpenFailed)?;
             let mut lines = std::io::BufReader::new(file)
                 .lines()
                 .map(|line| line.map_err(Error::FromFileReadingLineFailed));
-            let (code, simulation_script_padding) = find_start_simulation_script(&mut lines)?;
+            let (code, simulation_script_padding) =
+                find_start_simulation_script(&mut lines)?;
             let mut builder = SimulationBuilder::new(path.to_path_buf(), code);
             loop {
                 let line = match lines.next() {
@@ -1304,14 +1363,20 @@ mod simulation {
                 match line.split(' ').collect::<Vec<&str>>().as_slice() {
                     ["END", "SIMULATION"] => break,
                     ["MOVE", "CURSOR", "TO", "LINE", line_str, strs @ ..] => {
-                        let line = line_str
-                            .parse()
-                            .map_err(|_| Error::CannotParseLineNumber(line.to_string()))?;
+                        let line = line_str.parse().map_err(|_| {
+                            Error::CannotParseLineNumber(line.to_string())
+                        })?;
                         builder = builder.move_cursor(line, &strs.join(" "))?
                     }
-                    ["INSERT", strs @ ..] => builder = builder.insert(&strs.join(" ")),
-                    ["DELETE", strs @ ..] => builder = builder.delete(&strs.join(" "))?,
-                    ["COMPILATION", "SUCCEEDS"] => builder = builder.compilation_succeeds(),
+                    ["INSERT", strs @ ..] => {
+                        builder = builder.insert(&strs.join(" "))
+                    }
+                    ["DELETE", strs @ ..] => {
+                        builder = builder.delete(&strs.join(" "))?
+                    }
+                    ["COMPILATION", "SUCCEEDS"] => {
+                        builder = builder.compilation_succeeds()
+                    }
                     _ => return Err(Error::CannotParseSimulationLine(line)),
                 };
             }
@@ -1330,7 +1395,10 @@ mod simulation {
         fn new(file: PathBuf, initial_bytes: Vec<u8>) -> SimulationBuilder {
             let init_msg = Msg::ReceivedEditorEvent(Edit {
                 file: file.clone(),
-                new_bytes: std::string::String::from_utf8(initial_bytes.clone()).unwrap(),
+                new_bytes: std::string::String::from_utf8(
+                    initial_bytes.clone(),
+                )
+                .unwrap(),
                 input_edit: InputEdit {
                     start_byte: 0,
                     old_end_byte: 0,
@@ -1371,7 +1439,9 @@ mod simulation {
                 self.current_position += 1;
                 match reversed_bytes.pop() {
                     None => return Err(Error::MoveCursorDidNotFindWordOnLine),
-                    Some(10 /* \n */) => return Err(Error::MoveCursorDidNotFindWordOnLine),
+                    Some(10 /* \n */) => {
+                        return Err(Error::MoveCursorDidNotFindWordOnLine)
+                    }
                     Some(_) => {}
                 }
             }
@@ -1400,7 +1470,8 @@ mod simulation {
 
         fn delete(mut self, str: &str) -> Result<Self, Error> {
             let bytes = str.as_bytes();
-            let range = self.current_position..(self.current_position + bytes.len());
+            let range =
+                self.current_position..(self.current_position + bytes.len());
             if self.current_bytes.get(range.clone()) == Some(bytes) {
                 self.current_bytes.splice(range.clone(), []);
                 self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
