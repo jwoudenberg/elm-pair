@@ -986,7 +986,7 @@ mod neovim {
 
         pub fn driver(&self) -> NeovimDriver<W> {
             NeovimDriver {
-                _write: self.write.clone(),
+                write: self.write.clone(),
             }
         }
 
@@ -1022,6 +1022,7 @@ mod neovim {
             let method = rmp::decode::read_str(&mut self.read, &mut buffer)
                 .map_err(str_err)?;
             match method {
+                "nvim_error_event" => self.parse_error_event(),
                 "nvim_buf_lines_event" => self.parse_buf_lines_event(),
                 "nvim_buf_changedtick_event" => {
                     self.parse_buf_changedtick_event()
@@ -1034,6 +1035,22 @@ mod neovim {
             }
         }
 
+        fn parse_error_event(&mut self) -> Result<(), Error> {
+            let array_len =
+                rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+            if array_len < 2 {
+                return decoding_error(
+                    DecodingError::NotEnoughArgsInBufLinesEvent(array_len),
+                );
+            }
+            let type_ =
+                rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
+            let msg = read_string(&mut self.read)?;
+            skip_objects(&mut self.read, array_len - 2)?;
+
+            decoding_error(DecodingError::ReceivedErrorEvent(type_, msg))
+        }
+
         fn parse_buffer_opened(&mut self) -> Result<(), Error> {
             let array_len =
                 rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
@@ -1044,7 +1061,6 @@ mod neovim {
             }
             let buf =
                 rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
-            println!("BUFFER: {:?}", buf);
             skip_objects(&mut self.read, array_len - 1)?;
             self.nvim_buf_attach(buf)
         }
@@ -1113,9 +1129,7 @@ mod neovim {
             let write = write_guard.deref_mut();
             rmp::encode::write_array_len(write, 3).unwrap();
             rmp::encode::write_i8(write, 2).unwrap();
-            let method = "nvim_buf_attach";
-            rmp::encode::write_str_len(write, method.len() as u32).unwrap();
-            write.write_all(method.as_bytes()).unwrap();
+            write_str(write, "nvim_buf_attach");
             // nvim_buf_attach arguments
             rmp::encode::write_array_len(write, 3).unwrap();
             rmp::encode::write_u8(write, buf).unwrap(); //buf
@@ -1211,6 +1225,7 @@ mod neovim {
         UnknownMessageType(u32, u8),
         UnknownEventMethod(String),
         NotEnoughArgsInBufLinesEvent(u32),
+        ReceivedErrorEvent(u64, String),
     }
 
     fn decoding_error(err: DecodingError) -> Result<(), Error> {
@@ -1482,7 +1497,7 @@ mod neovim {
     }
 
     pub struct NeovimDriver<W> {
-        _write: Arc<Mutex<W>>,
+        write: Arc<Mutex<W>>,
     }
 
     impl<W> NeovimDriver<W>
@@ -1494,8 +1509,45 @@ mod neovim {
             refactor: Vec<Edit>,
         ) -> Result<(), Error> {
             println!("REFACTOR: {:?}", refactor);
+            let mut write_guard = crate::lock(&self.write);
+            let write = write_guard.deref_mut();
+
+            rmp::encode::write_array_len(write, 3).unwrap(); // msgpack envelope
+            rmp::encode::write_i8(write, 2).unwrap();
+            write_str(write, "nvim_call_atomic");
+
+            rmp::encode::write_array_len(write, 1).unwrap(); // nvim_call_atomic args
+
+            rmp::encode::write_array_len(write, refactor.len() as u32).unwrap(); // calls array
+            let buf = 0; // TODO: use a real value here.
+            for edit in refactor {
+                let start = edit.input_edit.start_position;
+                let end = edit.input_edit.old_end_position;
+
+                rmp::encode::write_array_len(write, 2).unwrap(); // call tuple
+                write_str(write, "nvim_buf_set_text");
+
+                rmp::encode::write_array_len(write, 6).unwrap(); // nvim_buf_set_text args
+                rmp::encode::write_u8(write, buf).unwrap();
+                rmp::encode::write_u64(write, start.row as u64).unwrap();
+                rmp::encode::write_u64(write, start.column as u64).unwrap();
+                rmp::encode::write_u64(write, end.row as u64).unwrap();
+                rmp::encode::write_u64(write, end.column as u64).unwrap();
+
+                rmp::encode::write_array_len(write, 1).unwrap(); // array of lines
+                write_str(write, &edit.new_bytes);
+            }
             Ok(())
         }
+    }
+
+    pub fn write_str<W>(write: &mut W, str: &str)
+    where
+        W: Write,
+    {
+        let bytes = str.as_bytes();
+        rmp::encode::write_str_len(write, bytes.len() as u32).unwrap();
+        write.write_all(bytes).unwrap();
     }
 }
 
