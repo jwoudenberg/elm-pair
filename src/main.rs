@@ -146,18 +146,18 @@ fn mk_edit(
             start_byte: range.start,
             old_end_byte: range.end,
             new_end_byte,
-            start_position: byte_to_point(code, range.start),
-            old_end_position: byte_to_point(code, range.end),
-            new_end_position: byte_to_point(code, new_end_byte),
+            start_position: byte_to_point(&code.bytes, range.start),
+            old_end_position: byte_to_point(&code.bytes, range.end),
+            new_end_position: byte_to_point(&code.bytes, new_end_byte),
         },
     }
 }
 
-fn byte_to_point(code: &SourceFileSnapshot, byte: usize) -> tree_sitter::Point {
-    let row = code.bytes.byte_to_line(byte);
+fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
+    let row = code.byte_to_line(byte);
     tree_sitter::Point {
         row,
-        column: code.bytes.byte_to_char(byte) - code.bytes.line_to_char(row),
+        column: code.byte_to_char(byte) - code.line_to_char(row),
     }
 }
 
@@ -379,19 +379,38 @@ where
             return Err(error);
         }
         let mut latest_code = latest_code_var.try_take();
-        let opt_edit = change.apply(&mut latest_code)?;
-        match latest_code {
-            None => return Ok(()),
-            Some(mut code) => {
+        match &mut latest_code {
+            None => {
+                if let Some(bytes) = change.apply_first()? {
+                    latest_code = Some(SourceFileSnapshot {
+                        tree: parse(None, &bytes)?,
+                        bytes,
+                        revision: 0,
+                        file_data: Arc::new(crate::FileData {
+                            // TODO: put real data here.
+                            path: PathBuf::new(),
+                            project_root: PathBuf::from(
+                                "/home/jasper/dev/elm-pair/tests",
+                            ),
+                            elm_bin: PathBuf::from("elm"),
+                        }),
+                    })
+                }
+            }
+            Some(code) => {
+                let opt_edit = change.apply(&mut code.bytes)?;
+                code.revision += 1;
                 if let Some(edit) = opt_edit {
                     code.tree.edit(&edit);
-                    reparse_tree(&mut code)?;
+                    reparse_tree(code)?;
                 }
-                if !code.tree.root_node().has_error() {
-                    request_compilation(code.clone());
-                }
-                latest_code_var.write(code);
             }
+        }
+        if let Some(code) = latest_code {
+            if !code.tree.root_node().has_error() {
+                request_compilation(code.clone());
+            }
+            latest_code_var.write(code);
         };
         new_diff_available.write(());
         Ok(())
@@ -993,10 +1012,11 @@ trait EditorDriver {
 // Represents a change to source code reported by an editor. This can be applied
 // to our local copy of the source code.
 trait EditorSourceChange {
-    fn apply(
-        &self,
-        code: &mut Option<SourceFileSnapshot>,
-    ) -> Result<Option<InputEdit>, Error>;
+    // Called when we don't have an existing local copy for a source file yet.
+    fn apply_first(&self) -> Result<Option<Rope>, Error>;
+
+    // Called when we have an existing copy of a source file.
+    fn apply(&self, code: &mut Rope) -> Result<Option<InputEdit>, Error>;
 }
 
 // A thread sync structure similar to Haskell's MVar. A variable, potentially

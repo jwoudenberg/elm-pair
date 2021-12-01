@@ -1,9 +1,8 @@
-use crate::{Edit, EditorSourceChange, InputEdit, SourceFileSnapshot};
+use crate::{Edit, EditorSourceChange, InputEdit};
 use byteorder::ReadBytesExt;
-use ropey::RopeBuilder;
+use ropey::{Rope, RopeBuilder};
 use std::io::{BufReader, Read, Write};
 use std::ops::DerefMut;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Neovim<R, W> {
@@ -130,7 +129,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
         skip_objects(&mut self.read, extra_args)?;
         (self.on_buf_change)(BufChange {
             _buf: buf as u64,
-            changedtick,
+            _changedtick: changedtick,
             firstline,
             lastline,
             linedata,
@@ -175,71 +174,73 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
 
 pub struct BufChange {
     _buf: u64,
-    changedtick: u64,
+    _changedtick: u64,
     firstline: i64,
     lastline: i64,
     linedata: Vec<String>,
 }
 
 impl EditorSourceChange for BufChange {
-    fn apply(
-        &self,
-        opt_code: &mut Option<SourceFileSnapshot>,
-    ) -> Result<Option<InputEdit>, crate::Error> {
-        match (self.lastline, opt_code) {
-            (-1, code) => {
-                let mut builder = RopeBuilder::new();
-                for line in &self.linedata {
-                    builder.append(line);
-                    builder.append("\n");
-                }
-                let bytes = builder.finish();
-                *code = Some(SourceFileSnapshot {
-                    tree: crate::parse(None, &bytes)?,
-                    bytes,
-                    revision: self.changedtick as usize,
-                    file_data: Arc::new(crate::FileData {
-                        // TODO: put real data here.
-                        path: PathBuf::new(),
-                        project_root: PathBuf::from(
-                            "/home/jasper/dev/elm-pair/tests",
-                        ),
-                        elm_bin: PathBuf::from("elm"),
-                    }),
-                });
-                Ok(None)
-            }
-            (_, None) => {
-                Err(Error::GotIncrementalUpdateBeforeFullUpdate.into())
-            }
-            (lastline, Some(code)) => {
-                let start_line = self.firstline as usize;
-                let old_end_line = lastline as usize;
-                let start_char = code.bytes.line_to_char(start_line);
-                let start_byte = code.bytes.line_to_byte(start_line);
-                let old_end_char = code.bytes.line_to_char(old_end_line);
-                let old_end_byte = code.bytes.line_to_byte(old_end_line);
-                let mut new_end_byte = start_byte;
-                code.bytes.remove(start_char..old_end_char);
-                for line in &self.linedata {
-                    code.bytes.insert(start_char, line.as_str());
-                    new_end_byte += line.len();
-                    let new_end_char = code.bytes.byte_to_char(new_end_byte);
-                    code.bytes.insert_char(new_end_char, '\n');
-                    new_end_byte += 1;
-                }
-                code.revision = self.changedtick as usize;
-                Ok(Some(InputEdit {
-                    start_byte,
-                    old_end_byte,
-                    new_end_byte,
-                    start_position: crate::byte_to_point(code, start_byte),
-                    old_end_position: crate::byte_to_point(code, old_end_byte),
-                    new_end_position: crate::byte_to_point(code, new_end_byte),
-                }))
-            }
+    fn apply_first(&self) -> Result<Option<Rope>, crate::Error> {
+        if self.lastline == -1 {
+            Ok(Some(rope_from_lines(&self.linedata)))
+        } else {
+            Err(Error::GotIncrementalUpdateBeforeFullUpdate.into())
         }
     }
+
+    fn apply(
+        &self,
+        code: &mut Rope,
+    ) -> Result<Option<InputEdit>, crate::Error> {
+        if self.lastline == -1 {
+            let old_end_byte = code.len_bytes();
+            *code = rope_from_lines(&self.linedata);
+            let start_byte = 0;
+            let new_end_byte = code.len_bytes();
+            Ok(Some(InputEdit {
+                start_byte,
+                old_end_byte,
+                new_end_byte,
+                start_position: crate::byte_to_point(code, start_byte),
+                old_end_position: crate::byte_to_point(code, old_end_byte),
+                new_end_position: crate::byte_to_point(code, new_end_byte),
+            }))
+        } else {
+            let start_line = self.firstline as usize;
+            let old_end_line = self.lastline as usize;
+            let start_char = code.line_to_char(start_line);
+            let start_byte = code.line_to_byte(start_line);
+            let old_end_char = code.line_to_char(old_end_line);
+            let old_end_byte = code.line_to_byte(old_end_line);
+            let mut new_end_byte = start_byte;
+            code.remove(start_char..old_end_char);
+            for line in &self.linedata {
+                code.insert(start_char, line.as_str());
+                new_end_byte += line.len();
+                let new_end_char = code.byte_to_char(new_end_byte);
+                code.insert_char(new_end_char, '\n');
+                new_end_byte += 1;
+            }
+            Ok(Some(InputEdit {
+                start_byte,
+                old_end_byte,
+                new_end_byte,
+                start_position: crate::byte_to_point(code, start_byte),
+                old_end_position: crate::byte_to_point(code, old_end_byte),
+                new_end_position: crate::byte_to_point(code, new_end_byte),
+            }))
+        }
+    }
+}
+
+fn rope_from_lines(lines: &[String]) -> Rope {
+    let mut builder = RopeBuilder::new();
+    for line in lines {
+        builder.append(line);
+        builder.append("\n");
+    }
+    builder.finish()
 }
 
 #[derive(Debug)]
