@@ -332,7 +332,7 @@ fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
 
 fn run_editor_listener_thread<R>(
     thread_error: &MVar<Error>,
-    request_compilation: R,
+    mut request_compilation: R,
     latest_code_var: &MVar<SourceFileSnapshot>,
     new_diff_available: &MVar<()>,
     editor_driver: &MVar<neovim::NeovimDriver<UnixStream>>,
@@ -379,42 +379,52 @@ where
             return Err(error);
         }
         let mut latest_code = latest_code_var.try_take();
-        match &mut latest_code {
-            None => {
-                if let Some(bytes) = change.apply_first()? {
-                    latest_code = Some(SourceFileSnapshot {
-                        tree: parse(None, &bytes)?,
-                        bytes,
-                        revision: 0,
-                        file_data: Arc::new(crate::FileData {
-                            // TODO: put real data here.
-                            path: PathBuf::new(),
-                            project_root: PathBuf::from(
-                                "/home/jasper/dev/elm-pair/tests",
-                            ),
-                            elm_bin: PathBuf::from("elm"),
-                        }),
-                    })
-                }
-            }
-            Some(code) => {
-                let opt_edit = change.apply(&mut code.bytes)?;
-                code.revision += 1;
-                if let Some(edit) = opt_edit {
-                    code.tree.edit(&edit);
-                    reparse_tree(code)?;
-                }
-            }
-        }
+        handle_editor_source_change(&mut latest_code, change)?;
         if let Some(code) = latest_code {
             if !code.tree.root_node().has_error() {
                 request_compilation(code.clone());
             }
             latest_code_var.write(code);
-        };
-        new_diff_available.write(());
+            new_diff_available.write(());
+        }
         Ok(())
-    })?;
+    })
+}
+
+fn handle_editor_source_change<E>(
+    latest_code: &mut Option<SourceFileSnapshot>,
+    change: E,
+) -> Result<(), Error>
+where
+    E: EditorSourceChange,
+{
+    match latest_code {
+        None => {
+            if let Some(bytes) = change.apply_first()? {
+                *latest_code = Some(SourceFileSnapshot {
+                    tree: parse(None, &bytes)?,
+                    bytes,
+                    revision: 0,
+                    file_data: Arc::new(crate::FileData {
+                        // TODO: put real data here.
+                        path: PathBuf::new(),
+                        project_root: PathBuf::from(
+                            "/home/jasper/dev/elm-pair/tests",
+                        ),
+                        elm_bin: PathBuf::from("elm"),
+                    }),
+                })
+            }
+        }
+        Some(code) => {
+            let opt_edit = change.apply(&mut code.bytes)?;
+            code.revision += 1;
+            if let Some(edit) = opt_edit {
+                code.tree.edit(&edit);
+                reparse_tree(code)?;
+            }
+        }
+    }
     Ok(())
 }
 
