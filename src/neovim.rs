@@ -6,39 +6,58 @@ use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub(crate) struct Neovim<R, W, P> {
+pub(crate) struct Neovim<R, W> {
     read: BufReader<R>,
     write: Arc<Mutex<W>>,
-    apply_buf_change: P,
 }
 
-impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
-    Neovim<R, W, P>
-{
-    pub fn new(read: R, write: W, apply_buf_change: P) -> Self
+impl<R: Read, W: Write> Neovim<R, W> {
+    pub fn new(read: R, write: W) -> Self
     where
         R: Read,
     {
         Neovim {
             read: BufReader::new(read),
             write: Arc::new(Mutex::new(write)),
-            apply_buf_change,
         }
     }
+}
 
-    pub fn driver(&self) -> NeovimDriver<W> {
+impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
+    type Driver = NeovimDriver<W>;
+    type SourceChange = BufChange;
+
+    fn driver(&self) -> NeovimDriver<W> {
         NeovimDriver {
             write: self.write.clone(),
         }
     }
 
-    pub fn start(mut self) -> Result<(), crate::Error> {
+    fn listen<P>(self, on_buf_change: P) -> Result<(), crate::Error>
+    where
+        P: FnMut(BufChange) -> Result<(), crate::Error>,
+    {
+        let mut listener = NeovimListener {
+            read: self.read,
+            write: self.write,
+            on_buf_change,
+        };
         // TODO: figure out how to stop this loop when we the reader closes.
         loop {
-            self.parse_msg()?;
+            listener.parse_msg()?;
         }
     }
+}
 
+struct NeovimListener<R, W, P> {
+    read: BufReader<R>,
+    write: Arc<Mutex<W>>,
+    on_buf_change: P,
+}
+
+impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
+    NeovimListener<R, W, P>
+{
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
     // webpack-rpc: https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md
@@ -109,7 +128,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
         let _more = rmp::decode::read_bool(&mut self.read)?;
         let extra_args = array_len - 6;
         skip_objects(&mut self.read, extra_args)?;
-        (self.apply_buf_change)(BufChange {
+        (self.on_buf_change)(BufChange {
             _buf: buf as u64,
             changedtick,
             firstline,
@@ -472,14 +491,11 @@ pub struct NeovimDriver<W> {
     write: Arc<Mutex<W>>,
 }
 
-impl<W> NeovimDriver<W>
+impl<W> crate::EditorDriver for NeovimDriver<W>
 where
     W: Write,
 {
-    pub(crate) fn apply_edits(
-        &self,
-        refactor: Vec<Edit>,
-    ) -> Result<(), crate::Error> {
+    fn apply_edits(&self, refactor: Vec<Edit>) -> Result<(), crate::Error> {
         println!("REFACTOR: {:?}", refactor);
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();

@@ -1,7 +1,6 @@
 use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
-use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -47,14 +46,14 @@ fn run() -> Result<(), Error> {
     )
 }
 
-fn run_diff_thread<W>(
+fn run_diff_thread<E>(
     error_var: Arc<MVar<Error>>,
-    editor_driver_var: Arc<MVar<neovim::NeovimDriver<W>>>,
+    editor_driver_var: Arc<MVar<E>>,
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
     new_diff_available: Arc<MVar<()>>,
 ) where
-    W: Write + Send + 'static,
+    E: EditorDriver + Send + 'static,
 {
     std::thread::spawn(move || {
         std::thread::spawn(move || {
@@ -71,14 +70,14 @@ fn run_diff_thread<W>(
     });
 }
 
-fn run_diff_loop<W>(
-    editor_driver_var: Arc<MVar<neovim::NeovimDriver<W>>>,
+fn run_diff_loop<E>(
+    editor_driver_var: Arc<MVar<E>>,
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
     new_diff_available: Arc<MVar<()>>,
 ) -> Result<(), Error>
 where
-    W: Write,
+    E: EditorDriver,
 {
     let editor_driver = editor_driver_var.take();
     let mut diff_iterator = DiffIterator {
@@ -351,7 +350,9 @@ where
         let write_socket = read_socket
             .try_clone()
             .map_err(Error::CloningSocketFailed)?;
-        let neovim = neovim::Neovim::new(read_socket, write_socket, |change| {
+        let neovim = neovim::Neovim::new(read_socket, write_socket);
+        editor_driver.write(neovim.driver());
+        neovim.listen(|change| {
             if let Some(error) = thread_error.try_take() {
                 return Err(error);
             }
@@ -372,9 +373,7 @@ where
             };
             new_diff_available.write(());
             Ok(())
-        });
-        editor_driver.write(neovim.driver());
-        neovim.start()?;
+        })?;
     }
     Ok(())
 }
@@ -950,6 +949,28 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
     );
 }
 
+// An API for communicatating with an editor.
+trait Editor {
+    type Driver: EditorDriver;
+    type SourceChange: EditorSourceChange;
+
+    // Listen for changes to source files happening in the editor.
+    fn listen<P>(self, on_source_change: P) -> Result<(), Error>
+    where
+        P: FnMut(Self::SourceChange) -> Result<(), Error>;
+
+    // Obtain an EditorDriver for sending commands to the editor.
+    fn driver(&self) -> Self::Driver;
+}
+
+// An API for sending commands to an editor. This is defined as a trait to
+// support different kinds of editors.
+trait EditorDriver {
+    fn apply_edits(&self, edits: Vec<Edit>) -> Result<(), Error>;
+}
+
+// Represents a change to source code reported by an editor. This can be applied
+// to our local copy of the source code.
 trait EditorSourceChange {
     fn apply(
         &self,
