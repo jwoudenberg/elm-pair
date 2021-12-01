@@ -342,7 +342,7 @@ impl From<rmp::decode::DecodeStringError<'_>> for DecodingError {
 
 // Skip `count` messagepack options. If one of these objects is an array or
 // map, skip its contents too.
-fn skip_objects<R>(read: &mut BufReader<R>, count: u32) -> Result<(), Error>
+fn skip_objects<R>(read: &mut R, count: u32) -> Result<(), Error>
 where
     R: Read,
 {
@@ -357,7 +357,7 @@ where
 }
 
 fn skip_one_object<R>(
-    read: &mut BufReader<R>,
+    read: &mut R,
     marker: rmp::Marker,
 ) -> Result<u32, std::io::Error>
 where
@@ -448,10 +448,7 @@ where
     Ok(0)
 }
 
-fn skip_bytes<R>(
-    read: &mut BufReader<R>,
-    count: u64,
-) -> Result<(), std::io::Error>
+fn skip_bytes<R>(read: &mut R, count: u64) -> Result<(), std::io::Error>
 where
     R: Read,
 {
@@ -459,7 +456,7 @@ where
     Ok(())
 }
 
-fn read_string<R>(read: &mut BufReader<R>) -> Result<String, Error>
+fn read_string<R>(read: &mut R) -> Result<String, Error>
 where
     R: Read,
 {
@@ -472,7 +469,7 @@ where
     })
 }
 
-fn read_buf<R>(read: &mut BufReader<R>) -> Result<u8, Error>
+fn read_buf<R>(read: &mut R) -> Result<u8, Error>
 where
     R: Read,
 {
