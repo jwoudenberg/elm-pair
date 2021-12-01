@@ -152,7 +152,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
         let write = write_guard.deref_mut();
         rmp::encode::write_array_len(write, 3)?;
         rmp::encode::write_i8(write, 2)?;
-        write_str(write, "nvim_buf_attach");
+        write_str(write, "nvim_buf_attach")?;
         // nvim_buf_attach arguments
         rmp::encode::write_array_len(write, 3)?;
         rmp::encode::write_u8(write, buf)?; //buf
@@ -242,6 +242,7 @@ pub enum DecodingError {
     DecodingFailedWhileReadingString(std::io::Error),
     EncodingFailedWhileWritingMarker(std::io::Error),
     EncodingFailedWhileWritingData(std::io::Error),
+    EncodingFailedWhileWritingString(std::io::Error),
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
     NotEnoughArgsInBufLinesEvent(u32),
@@ -516,7 +517,7 @@ where
 
         rmp::encode::write_array_len(write, 3)?; // msgpack envelope
         rmp::encode::write_i8(write, 2)?;
-        write_str(write, "nvim_call_atomic");
+        write_str(write, "nvim_call_atomic")?;
 
         rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
 
@@ -527,7 +528,7 @@ where
             let end = edit.input_edit.old_end_position;
 
             rmp::encode::write_array_len(write, 2)?; // call tuple
-            write_str(write, "nvim_buf_set_text");
+            write_str(write, "nvim_buf_set_text")?;
 
             rmp::encode::write_array_len(write, 6)?; // nvim_buf_set_text args
             rmp::encode::write_u8(write, buf)?;
@@ -537,17 +538,20 @@ where
             rmp::encode::write_u64(write, end.column as u64)?;
 
             rmp::encode::write_array_len(write, 1)?; // array of lines
-            write_str(write, &edit.new_bytes);
+            write_str(write, &edit.new_bytes)?;
         }
         Ok(())
     }
 }
 
-pub fn write_str<W>(write: &mut W, str: &str)
+fn write_str<W>(write: &mut W, str: &str) -> Result<(), Error>
 where
     W: Write,
 {
     let bytes = str.as_bytes();
-    rmp::encode::write_str_len(write, bytes.len() as u32).unwrap();
-    write.write_all(bytes).unwrap();
+    rmp::encode::write_str_len(write, bytes.len() as u32)?;
+    write
+        .write_all(bytes)
+        .map_err(DecodingError::EncodingFailedWhileWritingString)?;
+    Ok(())
 }
