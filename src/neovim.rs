@@ -1,5 +1,6 @@
 use crate::{Edit, EditorSourceChange, InputEdit};
 use byteorder::ReadBytesExt;
+use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
 use std::io::{BufReader, Read, Write};
 use std::ops::DerefMut;
@@ -44,40 +45,6 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
         while listener.parse_msg()? {}
         Ok(())
     }
-}
-
-// Helper macro that counts the numver of arguments passed to it.
-// Taken from: https://stackoverflow.com/questions/34304593/counting-length-of-repetition-in-macro
-macro_rules! count {
-    () => (0usize);
-    ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));
-}
-
-// A macro for safely reading an messagepack array. The macro takes care of
-// checking we get at least the expected amount of items, and skips over extra
-// elements we're not interested in.
-//
-//     read_tuple!(
-//         read,
-//         watts = read_int8(read)?,
-//         defrost = read_bool(read)?,
-//     )
-//     println!("The microwave is set to {:?} Watts", watts);
-//
-macro_rules! read_tuple {
-    ($read:expr) => { {
-        let array_len = rmp::decode::read_array_len($read)?;
-        skip_objects($read, array_len)?;
-    } };
-    ($read:expr, $( $name:ident = $x:expr ),* ) => {
-        let array_len = rmp::decode::read_array_len($read)?;
-        let expected_len = count!($($x)*) as u32;
-        if array_len  < expected_len {
-            return Err(Error::DecodingFailedFewerArrayElementsThanExpected(array_len, expected_len))
-        }
-        $( let $name = $x; )*
-        skip_objects($read, array_len - expected_len)?;
-    };
 }
 
 struct NeovimListener<R, W, P> {
@@ -281,15 +248,7 @@ fn rope_from_lines(lines: &[String]) -> Rope {
 
 #[derive(Debug)]
 pub(crate) enum Error {
-    DecodingFailedWhileReadingMarker(std::io::Error),
-    DecodingFailedWhileReadingData(std::io::Error),
-    DecodingFailedWithTypeMismatch(rmp::Marker),
-    DecodingFailedWithOutOfRange,
-    DecodingFailedWithInvalidUtf8(core::str::Utf8Error),
-    DecodingFailedWritingStringInTooSmallABuffer(u32),
-    DecodingFailedWhileSkippingData(std::io::Error),
-    DecodingFailedWhileReadingString(std::io::Error),
-    DecodingFailedFewerArrayElementsThanExpected(u32, u32),
+    DecodingFailed(DecodingError),
     EncodingFailedWhileWritingMarker(std::io::Error),
     EncodingFailedWhileWritingData(std::io::Error),
     EncodingFailedWhileWritingString(std::io::Error),
@@ -310,6 +269,12 @@ impl From<Error> for crate::Error {
     }
 }
 
+impl From<DecodingError> for Error {
+    fn from(err: DecodingError) -> Error {
+        Error::DecodingFailed(err)
+    }
+}
+
 impl From<rmp::encode::ValueWriteError> for Error {
     fn from(error: rmp::encode::ValueWriteError) -> Error {
         match error {
@@ -327,7 +292,7 @@ impl From<rmp::decode::MarkerReadError> for Error {
     fn from(
         rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
     ) -> Error {
-        Error::DecodingFailedWhileReadingMarker(error)
+        DecodingError::ReadingMarker(error).into()
     }
 }
 
@@ -335,13 +300,13 @@ impl From<rmp::decode::ValueReadError> for Error {
     fn from(error: rmp::decode::ValueReadError) -> Error {
         match error {
             rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
-                Error::DecodingFailedWhileReadingMarker(sub_error)
+                DecodingError::ReadingMarker(sub_error).into()
             }
             rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
-                Error::DecodingFailedWhileReadingData(sub_error)
+                DecodingError::ReadingData(sub_error).into()
             }
             rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
-                Error::DecodingFailedWithTypeMismatch(sub_error)
+                DecodingError::TypeMismatch(sub_error).into()
             }
         }
     }
@@ -351,16 +316,16 @@ impl From<rmp::decode::NumValueReadError> for Error {
     fn from(error: rmp::decode::NumValueReadError) -> Error {
         match error {
             rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
-                Error::DecodingFailedWhileReadingMarker(sub_error)
+                DecodingError::ReadingMarker(sub_error).into()
             }
             rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
-                Error::DecodingFailedWhileReadingData(sub_error)
+                DecodingError::ReadingData(sub_error).into()
             }
             rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
-                Error::DecodingFailedWithTypeMismatch(sub_error)
+                DecodingError::TypeMismatch(sub_error).into()
             }
             rmp::decode::NumValueReadError::OutOfRange => {
-                Error::DecodingFailedWithOutOfRange
+                DecodingError::OutOfRange.into()
             }
         }
     }
@@ -370,19 +335,19 @@ impl From<rmp::decode::DecodeStringError<'_>> for Error {
     fn from(error: rmp::decode::DecodeStringError) -> Error {
         match error {
             rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
-                Error::DecodingFailedWhileReadingMarker(sub_error)
+                DecodingError::ReadingMarker(sub_error).into()
             }
             rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
-                Error::DecodingFailedWhileReadingData(sub_error)
+                DecodingError::ReadingData(sub_error).into()
             }
             rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
-                Error::DecodingFailedWithTypeMismatch(sub_error)
+                DecodingError::TypeMismatch(sub_error).into()
             }
             rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
-                Error::DecodingFailedWritingStringInTooSmallABuffer(sub_error)
+                DecodingError::BufferCannotHoldString(sub_error).into()
             }
             rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
-                Error::DecodingFailedWithInvalidUtf8(sub_error)
+                DecodingError::InvalidUtf8(sub_error).into()
             }
         }
     }
@@ -399,7 +364,7 @@ where
         count -= 1;
         let marker = rmp::decode::read_marker(read)?;
         count += skip_one_object(read, marker)
-            .map_err(Error::DecodingFailedWhileSkippingData)?;
+            .map_err(DecodingError::SkippingData)?;
     }
     Ok(())
 }
@@ -511,9 +476,9 @@ where
     let len = rmp::decode::read_str_len(read)?;
     let mut buffer = vec![0; len as usize];
     read.read_exact(&mut buffer)
-        .map_err(Error::DecodingFailedWhileReadingString)?;
+        .map_err(DecodingError::ReadingString)?;
     std::string::String::from_utf8(buffer)
-        .map_err(|err| Error::DecodingFailedWithInvalidUtf8(err.utf8_error()))
+        .map_err(|err| DecodingError::InvalidUtf8(err.utf8_error()).into())
 }
 
 fn read_buf<R>(read: &mut R) -> Result<u8, Error>
@@ -583,4 +548,62 @@ where
         .write_all(bytes)
         .map_err(Error::EncodingFailedWhileWritingString)?;
     Ok(())
+}
+
+mod messagepack {
+    #[derive(Debug)]
+    pub(crate) enum DecodingError {
+        ReadingMarker(std::io::Error),
+        ReadingData(std::io::Error),
+        SkippingData(std::io::Error),
+        ReadingString(std::io::Error),
+        TypeMismatch(rmp::Marker),
+        OutOfRange,
+        InvalidUtf8(core::str::Utf8Error),
+        BufferCannotHoldString(u32),
+        NotEnoughArrayElements { expected: u32, actual: u32 },
+    }
+
+    // Helper macro that counts the numver of arguments passed to it.
+    // Taken from: https://stackoverflow.com/questions/34304593/counting-length-of-repetition-in-macro
+    #[macro_export]
+    macro_rules! count {
+        () => (0usize);
+        ( $x:tt $($xs:tt)* ) => (1usize + messagepack::count!($($xs)*));
+    }
+    pub use count;
+
+    // A macro for safely reading an messagepack array. The macro takes care of
+    // checking we get at least the expected amount of items, and skips over extra
+    // elements we're not interested in.
+    //
+    //     read_tuple!(
+    //         read,
+    //         watts = read_int8(read)?,
+    //         defrost = read_bool(read)?,
+    //     )
+    //     println!("The microwave is set to {:?} Watts", watts);
+    //
+    #[macro_export]
+    macro_rules! read_tuple {
+        ($read:expr) => { {
+            let array_len = rmp::decode::read_array_len($read)?;
+            skip_objects($read, array_len)?;
+        } };
+        ($read:expr, $( $name:ident = $x:expr ),* ) => {
+            let array_len = rmp::decode::read_array_len($read)?;
+            let expected_len = messagepack::count!($($x)*) as u32;
+            if array_len  < expected_len {
+                return Err(
+                    DecodingError::NotEnoughArrayElements {
+                        actual: array_len,
+                        expected: expected_len
+                    }.into()
+                )
+            }
+            $( let $name = $x; )*
+            skip_objects($read, array_len - expected_len)?;
+        };
+    }
+    pub use read_tuple;
 }
