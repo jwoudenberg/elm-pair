@@ -46,6 +46,40 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
     }
 }
 
+// Helper macro that counts the numver of arguments passed to it.
+// Taken from: https://stackoverflow.com/questions/34304593/counting-length-of-repetition-in-macro
+macro_rules! count {
+    () => (0usize);
+    ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));
+}
+
+// A macro for safely reading an messagepack array. The macro takes care of
+// checking we get at least the expected amount of items, and skips over extra
+// elements we're not interested in.
+//
+//     read_tuple!(
+//         read,
+//         watts = read_int8(read)?,
+//         defrost = read_bool(read)?,
+//     )
+//     println!("The microwave is set to {:?} Watts", watts);
+//
+macro_rules! read_tuple {
+    ($read:expr) => { {
+        let array_len = rmp::decode::read_array_len($read)?;
+        skip_objects($read, array_len)?;
+    } };
+    ($read:expr, $( $name:ident = $x:expr ),* ) => {
+        let array_len = rmp::decode::read_array_len($read)?;
+        let expected_len = count!($($x)*) as u32;
+        if array_len  < expected_len {
+            return Err(Error::DecodingFailedFewerArrayElementsThanExpected(array_len, expected_len))
+        }
+        $( let $name = $x; )*
+        skip_objects($read, array_len - expected_len)?;
+    };
+}
+
 struct NeovimListener<R, W, P> {
     read: BufReader<R>,
     write: Arc<Mutex<W>>,
@@ -100,46 +134,40 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
     }
 
     fn parse_error_event(&mut self) -> Result<(), Error> {
-        let array_len = rmp::decode::read_array_len(&mut self.read)?;
-        if array_len < 2 {
-            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
-        }
-        let type_ = rmp::decode::read_int(&mut self.read)?;
-        let msg = read_string(&mut self.read)?;
-        skip_objects(&mut self.read, array_len - 2)?;
-
+        read_tuple!(
+            &mut self.read,
+            type_ = rmp::decode::read_int(&mut self.read)?,
+            msg = read_string(&mut self.read)?
+        );
         Err(Error::ReceivedErrorEvent(type_, msg))
     }
 
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
-        let array_len = rmp::decode::read_array_len(&mut self.read)?;
-        if array_len < 2 {
-            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
-        }
-        let buf = rmp::decode::read_int(&mut self.read)?;
-        skip_objects(&mut self.read, array_len - 1)?;
+        read_tuple!(
+            &mut self.read,
+            buf = rmp::decode::read_int(&mut self.read)?
+        );
         self.nvim_buf_attach(buf)
     }
 
     fn parse_buf_lines_event(&mut self) -> Result<(), Error> {
-        let array_len = rmp::decode::read_array_len(&mut self.read)?;
-        if array_len < 6 {
-            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
-        }
-        let buf = read_buf(&mut self.read)?;
-        let changedtick = rmp::decode::read_int(&mut self.read)?;
-        let firstline = rmp::decode::read_int(&mut self.read)?;
-        let lastline = rmp::decode::read_int(&mut self.read)?;
-        let mut line_count = rmp::decode::read_array_len(&mut self.read)?;
-        let mut linedata = Vec::with_capacity(line_count as usize);
-        while line_count > 0 {
-            line_count -= 1;
-            linedata.push(read_string(&mut self.read)?);
-        }
-        // I'm not using the `more` argument for anything.
-        let _more = rmp::decode::read_bool(&mut self.read)?;
-        let extra_args = array_len - 6;
-        skip_objects(&mut self.read, extra_args)?;
+        read_tuple!(
+            &mut self.read,
+            buf = read_buf(&mut self.read)?,
+            changedtick = rmp::decode::read_int(&mut self.read)?,
+            firstline = rmp::decode::read_int(&mut self.read)?,
+            lastline = rmp::decode::read_int(&mut self.read)?,
+            linedata = {
+                let mut line_count =
+                    rmp::decode::read_array_len(&mut self.read)?;
+                let mut linedata = Vec::with_capacity(line_count as usize);
+                while line_count > 0 {
+                    line_count -= 1;
+                    linedata.push(read_string(&mut self.read)?);
+                }
+                linedata
+            }
+        );
         (self.on_buf_change)(BufChange {
             _buf: buf as u64,
             _changedtick: changedtick,
@@ -152,20 +180,14 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
 
     fn parse_buf_changedtick_event(&mut self) -> Result<(), Error> {
         // We're not interested in these events, so we skip them.
-        let array_len = rmp::decode::read_array_len(&mut self.read)?;
-        skip_objects(&mut self.read, array_len)?;
+        read_tuple!(&mut self.read);
         Ok(())
     }
 
     fn parse_buf_detach_event(&mut self) -> Result<(), Error> {
         // Re-attach this buffer
         // TODO: consider when we might not want to reattach.
-        let array_len = rmp::decode::read_array_len(&mut self.read)?;
-        if array_len < 1 {
-            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
-        }
-        let buf = read_buf(&mut self.read)?;
-        skip_objects(&mut self.read, array_len - 1)?;
+        read_tuple!(&mut self.read, buf = read_buf(&mut self.read)?);
         self.nvim_buf_attach(buf)
     }
 
@@ -267,12 +289,12 @@ pub(crate) enum Error {
     DecodingFailedWritingStringInTooSmallABuffer(u32),
     DecodingFailedWhileSkippingData(std::io::Error),
     DecodingFailedWhileReadingString(std::io::Error),
+    DecodingFailedFewerArrayElementsThanExpected(u32, u32),
     EncodingFailedWhileWritingMarker(std::io::Error),
     EncodingFailedWhileWritingData(std::io::Error),
     EncodingFailedWhileWritingString(std::io::Error),
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
-    NotEnoughArgsInBufLinesEvent(u32),
     ReceivedErrorEvent(u64, String),
     GotIncrementalUpdateBeforeFullUpdate,
     FailedWhileProcessingBufChange(Box<crate::Error>),
