@@ -171,7 +171,7 @@ enum Error {
     SocketCreationFailed(std::io::Error),
     AcceptingIncomingSocketConnectionFailed(std::io::Error),
     CloningSocketFailed(std::io::Error),
-    NeovimMessageDecodingFailed(neovim::DecodingError),
+    NeovimMessageDecodingFailed(neovim::Error),
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
     CompilationFailedToRunElmMake(std::io::Error),

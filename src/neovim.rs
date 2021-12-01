@@ -1,4 +1,4 @@
-use crate::{Edit, EditorSourceChange, Error, InputEdit, SourceFileSnapshot};
+use crate::{Edit, EditorSourceChange, InputEdit, SourceFileSnapshot};
 use byteorder::ReadBytesExt;
 use ropey::RopeBuilder;
 use std::io::{BufReader, Read, Write};
@@ -12,7 +12,7 @@ pub(crate) struct Neovim<R, W, P> {
     apply_buf_change: P,
 }
 
-impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
+impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
     Neovim<R, W, P>
 {
     pub fn new(read: R, write: W, apply_buf_change: P) -> Self
@@ -32,7 +32,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
         }
     }
 
-    pub fn start(mut self) -> Result<(), Error> {
+    pub fn start(mut self) -> Result<(), crate::Error> {
         // TODO: figure out how to stop this loop when we the reader closes.
         loop {
             self.parse_msg()?;
@@ -50,7 +50,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
         if array_len == 3 && type_ == 2 {
             self.parse_notification_msg()
         } else {
-            Err(DecodingError::UnknownMessageType(array_len, type_).into())
+            Err(Error::UnknownMessageType(array_len, type_))
         }
     }
 
@@ -64,32 +64,26 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
             "nvim_buf_changedtick_event" => self.parse_buf_changedtick_event(),
             "nvim_buf_detach_event" => self.parse_buf_detach_event(),
             "buffer_opened" => self.parse_buffer_opened(),
-            method => {
-                Err(DecodingError::UnknownEventMethod(method.to_owned()).into())
-            }
+            method => Err(Error::UnknownEventMethod(method.to_owned())),
         }
     }
 
     fn parse_error_event(&mut self) -> Result<(), Error> {
         let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 2 {
-            return Err(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
-            );
+            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
         }
         let type_ = rmp::decode::read_int(&mut self.read)?;
         let msg = read_string(&mut self.read)?;
         skip_objects(&mut self.read, array_len - 2)?;
 
-        Err(DecodingError::ReceivedErrorEvent(type_, msg).into())
+        Err(Error::ReceivedErrorEvent(type_, msg))
     }
 
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
         let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 2 {
-            return Err(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
-            );
+            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
         }
         let buf = rmp::decode::read_int(&mut self.read)?;
         skip_objects(&mut self.read, array_len - 1)?;
@@ -99,9 +93,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
     fn parse_buf_lines_event(&mut self) -> Result<(), Error> {
         let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 6 {
-            return Err(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
-            );
+            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
         }
         let buf = read_buf(&mut self.read)?;
         let changedtick = rmp::decode::read_int(&mut self.read)?;
@@ -124,6 +116,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
             lastline,
             linedata,
         })
+        .map_err(|err| Error::FailedWhileProcessingBufChange(Box::new(err)))
     }
 
     fn parse_buf_changedtick_event(&mut self) -> Result<(), Error> {
@@ -138,9 +131,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
         // TODO: consider when we might not want to reattach.
         let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 1 {
-            return Err(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
-            );
+            return Err(Error::NotEnoughArgsInBufLinesEvent(array_len));
         }
         let buf = read_buf(&mut self.read)?;
         skip_objects(&mut self.read, array_len - 1)?;
@@ -157,7 +148,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
         rmp::encode::write_array_len(write, 3)?;
         rmp::encode::write_u8(write, buf)?; //buf
         rmp::encode::write_bool(write, true)
-            .map_err(DecodingError::EncodingFailedWhileWritingData)?; // send_buffer
+            .map_err(Error::EncodingFailedWhileWritingData)?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
         Ok(())
     }
@@ -175,7 +166,7 @@ impl EditorSourceChange for BufChange {
     fn apply(
         &self,
         opt_code: &mut Option<SourceFileSnapshot>,
-    ) -> Result<Option<InputEdit>, Error> {
+    ) -> Result<Option<InputEdit>, crate::Error> {
         match (self.lastline, opt_code) {
             (-1, code) => {
                 let mut builder = RopeBuilder::new();
@@ -200,7 +191,7 @@ impl EditorSourceChange for BufChange {
                 Ok(None)
             }
             (_, None) => {
-                Err(DecodingError::GotIncrementalUpdateBeforeFullUpdate.into())
+                Err(Error::GotIncrementalUpdateBeforeFullUpdate.into())
             }
             (lastline, Some(code)) => {
                 let start_line = self.firstline as usize;
@@ -233,7 +224,7 @@ impl EditorSourceChange for BufChange {
 }
 
 #[derive(Debug)]
-pub enum DecodingError {
+pub(crate) enum Error {
     DecodingFailedWhileReadingMarker(std::io::Error),
     DecodingFailedWhileReadingData(std::io::Error),
     DecodingFailedWithTypeMismatch(rmp::Marker),
@@ -250,64 +241,51 @@ pub enum DecodingError {
     NotEnoughArgsInBufLinesEvent(u32),
     ReceivedErrorEvent(u64, String),
     GotIncrementalUpdateBeforeFullUpdate,
+    FailedWhileProcessingBufChange(Box<crate::Error>),
 }
 
-impl From<DecodingError> for Error {
-    fn from(err: DecodingError) -> Error {
-        Error::NeovimMessageDecodingFailed(err)
+impl From<Error> for crate::Error {
+    fn from(err: Error) -> crate::Error {
+        if let Error::FailedWhileProcessingBufChange(original) = err {
+            *original
+        } else {
+            crate::Error::NeovimMessageDecodingFailed(err)
+        }
     }
 }
 
 impl From<rmp::encode::ValueWriteError> for Error {
     fn from(error: rmp::encode::ValueWriteError) -> Error {
-        error.into()
-    }
-}
-
-impl From<rmp::encode::ValueWriteError> for DecodingError {
-    fn from(error: rmp::encode::ValueWriteError) -> DecodingError {
         match error {
             rmp::encode::ValueWriteError::InvalidMarkerWrite(sub_error) => {
-                DecodingError::EncodingFailedWhileWritingMarker(sub_error)
+                Error::EncodingFailedWhileWritingMarker(sub_error)
             }
             rmp::encode::ValueWriteError::InvalidDataWrite(sub_error) => {
-                DecodingError::EncodingFailedWhileWritingData(sub_error)
+                Error::EncodingFailedWhileWritingData(sub_error)
             }
         }
     }
 }
 
 impl From<rmp::decode::MarkerReadError> for Error {
-    fn from(error: rmp::decode::MarkerReadError) -> Error {
-        error.into()
-    }
-}
-
-impl From<rmp::decode::MarkerReadError> for DecodingError {
     fn from(
         rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
-    ) -> DecodingError {
-        DecodingError::DecodingFailedWhileReadingMarker(error)
+    ) -> Error {
+        Error::DecodingFailedWhileReadingMarker(error)
     }
 }
 
 impl From<rmp::decode::ValueReadError> for Error {
     fn from(error: rmp::decode::ValueReadError) -> Error {
-        error.into()
-    }
-}
-
-impl From<rmp::decode::ValueReadError> for DecodingError {
-    fn from(error: rmp::decode::ValueReadError) -> DecodingError {
         match error {
             rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
-                DecodingError::DecodingFailedWhileReadingMarker(sub_error)
+                Error::DecodingFailedWhileReadingMarker(sub_error)
             }
             rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
-                DecodingError::DecodingFailedWhileReadingData(sub_error)
+                Error::DecodingFailedWhileReadingData(sub_error)
             }
             rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
-                DecodingError::DecodingFailedWithTypeMismatch(sub_error)
+                Error::DecodingFailedWithTypeMismatch(sub_error)
             }
         }
     }
@@ -315,24 +293,18 @@ impl From<rmp::decode::ValueReadError> for DecodingError {
 
 impl From<rmp::decode::NumValueReadError> for Error {
     fn from(error: rmp::decode::NumValueReadError) -> Error {
-        error.into()
-    }
-}
-
-impl From<rmp::decode::NumValueReadError> for DecodingError {
-    fn from(error: rmp::decode::NumValueReadError) -> DecodingError {
         match error {
             rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
-                DecodingError::DecodingFailedWhileReadingMarker(sub_error)
+                Error::DecodingFailedWhileReadingMarker(sub_error)
             }
             rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
-                DecodingError::DecodingFailedWhileReadingData(sub_error)
+                Error::DecodingFailedWhileReadingData(sub_error)
             }
             rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
-                DecodingError::DecodingFailedWithTypeMismatch(sub_error)
+                Error::DecodingFailedWithTypeMismatch(sub_error)
             }
             rmp::decode::NumValueReadError::OutOfRange => {
-                DecodingError::DecodingFailedWithOutOfRange
+                Error::DecodingFailedWithOutOfRange
             }
         }
     }
@@ -340,29 +312,21 @@ impl From<rmp::decode::NumValueReadError> for DecodingError {
 
 impl From<rmp::decode::DecodeStringError<'_>> for Error {
     fn from(error: rmp::decode::DecodeStringError) -> Error {
-        error.into()
-    }
-}
-
-impl From<rmp::decode::DecodeStringError<'_>> for DecodingError {
-    fn from(error: rmp::decode::DecodeStringError) -> DecodingError {
         match error {
             rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
-                DecodingError::DecodingFailedWhileReadingMarker(sub_error)
+                Error::DecodingFailedWhileReadingMarker(sub_error)
             }
             rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
-                DecodingError::DecodingFailedWhileReadingData(sub_error)
+                Error::DecodingFailedWhileReadingData(sub_error)
             }
             rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
-                DecodingError::DecodingFailedWithTypeMismatch(sub_error)
+                Error::DecodingFailedWithTypeMismatch(sub_error)
             }
             rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
-                DecodingError::DecodingFailedWritingStringInTooSmallABuffer(
-                    sub_error,
-                )
+                Error::DecodingFailedWritingStringInTooSmallABuffer(sub_error)
             }
             rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
-                DecodingError::DecodingFailedWithInvalidUtf8(sub_error)
+                Error::DecodingFailedWithInvalidUtf8(sub_error)
             }
         }
     }
@@ -379,7 +343,7 @@ where
         count -= 1;
         let marker = rmp::decode::read_marker(read)?;
         count += skip_one_object(read, marker)
-            .map_err(DecodingError::DecodingFailedWhileSkippingData)?;
+            .map_err(Error::DecodingFailedWhileSkippingData)?;
     }
     Ok(())
 }
@@ -491,10 +455,9 @@ where
     let len = rmp::decode::read_str_len(read)?;
     let mut buffer = vec![0; len as usize];
     read.read_exact(&mut buffer)
-        .map_err(DecodingError::DecodingFailedWhileReadingString)?;
-    std::string::String::from_utf8(buffer).map_err(|err| {
-        DecodingError::DecodingFailedWithInvalidUtf8(err.utf8_error()).into()
-    })
+        .map_err(Error::DecodingFailedWhileReadingString)?;
+    std::string::String::from_utf8(buffer)
+        .map_err(|err| Error::DecodingFailedWithInvalidUtf8(err.utf8_error()))
 }
 
 fn read_buf<R>(read: &mut R) -> Result<u8, Error>
@@ -513,38 +476,48 @@ impl<W> NeovimDriver<W>
 where
     W: Write,
 {
-    pub(crate) fn apply_edits(&self, refactor: Vec<Edit>) -> Result<(), Error> {
+    pub(crate) fn apply_edits(
+        &self,
+        refactor: Vec<Edit>,
+    ) -> Result<(), crate::Error> {
         println!("REFACTOR: {:?}", refactor);
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
-
-        rmp::encode::write_array_len(write, 3)?; // msgpack envelope
-        rmp::encode::write_i8(write, 2)?;
-        write_str(write, "nvim_call_atomic")?;
-
-        rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
-
-        rmp::encode::write_array_len(write, refactor.len() as u32)?; // calls array
-        let buf = 0; // TODO: use a real value here.
-        for edit in refactor {
-            let start = edit.input_edit.start_position;
-            let end = edit.input_edit.old_end_position;
-
-            rmp::encode::write_array_len(write, 2)?; // call tuple
-            write_str(write, "nvim_buf_set_text")?;
-
-            rmp::encode::write_array_len(write, 6)?; // nvim_buf_set_text args
-            rmp::encode::write_u8(write, buf)?;
-            rmp::encode::write_u64(write, start.row as u64)?;
-            rmp::encode::write_u64(write, start.column as u64)?;
-            rmp::encode::write_u64(write, end.row as u64)?;
-            rmp::encode::write_u64(write, end.column as u64)?;
-
-            rmp::encode::write_array_len(write, 1)?; // array of lines
-            write_str(write, &edit.new_bytes)?;
-        }
+        write_refactor(write, refactor)?;
         Ok(())
     }
+}
+
+fn write_refactor<W>(write: &mut W, refactor: Vec<Edit>) -> Result<(), Error>
+where
+    W: Write,
+{
+    rmp::encode::write_array_len(write, 3)?; // msgpack envelope
+    rmp::encode::write_i8(write, 2)?;
+    write_str(write, "nvim_call_atomic")?;
+
+    rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
+
+    rmp::encode::write_array_len(write, refactor.len() as u32)?; // calls array
+    let buf = 0; // TODO: use a real value here.
+    for edit in refactor {
+        let start = edit.input_edit.start_position;
+        let end = edit.input_edit.old_end_position;
+
+        rmp::encode::write_array_len(write, 2)?; // call tuple
+        write_str(write, "nvim_buf_set_text")?;
+
+        rmp::encode::write_array_len(write, 6)?; // nvim_buf_set_text args
+        rmp::encode::write_u8(write, buf)?;
+        rmp::encode::write_u64(write, start.row as u64)?;
+        rmp::encode::write_u64(write, start.column as u64)?;
+        rmp::encode::write_u64(write, end.row as u64)?;
+        rmp::encode::write_u64(write, end.column as u64)?;
+
+        rmp::encode::write_array_len(write, 1)?; // array of lines
+        write_str(write, &edit.new_bytes)?;
+    }
+    Ok(())
 }
 
 fn write_str<W>(write: &mut W, str: &str) -> Result<(), Error>
@@ -555,6 +528,6 @@ where
     rmp::encode::write_str_len(write, bytes.len() as u32)?;
     write
         .write_all(bytes)
-        .map_err(DecodingError::EncodingFailedWhileWritingString)?;
+        .map_err(Error::EncodingFailedWhileWritingString)?;
     Ok(())
 }
