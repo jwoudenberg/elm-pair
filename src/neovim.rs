@@ -41,10 +41,8 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
             write: self.write,
             on_buf_change,
         };
-        // TODO: figure out how to stop this loop when we the reader closes.
-        loop {
-            listener.parse_msg()?;
-        }
+        while listener.parse_msg()? {}
+        Ok(())
     }
 }
 
@@ -62,11 +60,26 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
     // webpack-rpc: https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md
     //
     // TODO handle neovim API versions
-    fn parse_msg(&mut self) -> Result<(), Error> {
-        let array_len = rmp::decode::read_array_len(&mut self.read)?;
+    fn parse_msg(&mut self) -> Result<bool, Error> {
+        let array_len_res = rmp::decode::read_array_len(&mut self.read);
+        // There's currently no way to check if there's more to read save by
+        // trying to read some bytes and seeing what happens. That's what we
+        // do here. If we run into an EOF on the first byte(s) of a new message,
+        // then the EOF is on a message boundary, so we'll shut down gracefully.
+        let array_len = match &array_len_res {
+            Err(rmp::decode::ValueReadError::InvalidMarkerRead(io_err)) => {
+                if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
+                    return Ok(false);
+                } else {
+                    array_len_res?
+                }
+            }
+            _ => array_len_res?,
+        };
         let type_ = rmp::decode::read_int(&mut self.read)?;
         if array_len == 3 && type_ == 2 {
-            self.parse_notification_msg()
+            self.parse_notification_msg()?;
+            Ok(true)
         } else {
             Err(Error::UnknownMessageType(array_len, type_))
         }
