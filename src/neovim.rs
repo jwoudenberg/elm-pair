@@ -45,87 +45,76 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
     //
     // TODO handle neovim API versions
     fn parse_msg(&mut self) -> Result<(), Error> {
-        let array_len =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
-        let type_ =
-            rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
+        let array_len = rmp::decode::read_array_len(&mut self.read)?;
+        let type_ = rmp::decode::read_int(&mut self.read)?;
         if array_len == 3 && type_ == 2 {
             self.parse_notification_msg()
         } else {
-            decoding_error(DecodingError::UnknownMessageType(array_len, type_))
+            Err(DecodingError::UnknownMessageType(array_len, type_).into())
         }
     }
 
     fn parse_notification_msg(&mut self) -> Result<(), Error> {
         let mut buffer = [0u8; 30];
         // TODO: Don't parse to UTF8 here. Compare bytestrings instead.
-        let method = rmp::decode::read_str(&mut self.read, &mut buffer)
-            .map_err(str_err)?;
+        let method = rmp::decode::read_str(&mut self.read, &mut buffer)?;
         match method {
             "nvim_error_event" => self.parse_error_event(),
             "nvim_buf_lines_event" => self.parse_buf_lines_event(),
             "nvim_buf_changedtick_event" => self.parse_buf_changedtick_event(),
             "nvim_buf_detach_event" => self.parse_buf_detach_event(),
             "buffer_opened" => self.parse_buffer_opened(),
-            method => decoding_error(DecodingError::UnknownEventMethod(
-                method.to_owned(),
-            )),
+            method => {
+                Err(DecodingError::UnknownEventMethod(method.to_owned()).into())
+            }
         }
     }
 
     fn parse_error_event(&mut self) -> Result<(), Error> {
-        let array_len =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+        let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 2 {
-            return decoding_error(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len),
+            return Err(
+                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
             );
         }
-        let type_ =
-            rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
+        let type_ = rmp::decode::read_int(&mut self.read)?;
         let msg = read_string(&mut self.read)?;
         skip_objects(&mut self.read, array_len - 2)?;
 
-        decoding_error(DecodingError::ReceivedErrorEvent(type_, msg))
+        Err(DecodingError::ReceivedErrorEvent(type_, msg).into())
     }
 
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
-        let array_len =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+        let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 2 {
-            return decoding_error(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len),
+            return Err(
+                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
             );
         }
-        let buf = rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
+        let buf = rmp::decode::read_int(&mut self.read)?;
         skip_objects(&mut self.read, array_len - 1)?;
         self.nvim_buf_attach(buf)
     }
 
     fn parse_buf_lines_event(&mut self) -> Result<(), Error> {
-        let array_len =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+        let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 6 {
-            return decoding_error(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len),
+            return Err(
+                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
             );
         }
         let buf = read_buf(&mut self.read)?;
-        let changedtick =
-            rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
-        let firstline =
-            rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
-        let lastline =
-            rmp::decode::read_int(&mut self.read).map_err(num_val_err)?;
-        let mut line_count =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+        let changedtick = rmp::decode::read_int(&mut self.read)?;
+        let firstline = rmp::decode::read_int(&mut self.read)?;
+        let lastline = rmp::decode::read_int(&mut self.read)?;
+        let mut line_count = rmp::decode::read_array_len(&mut self.read)?;
         let mut linedata = Vec::with_capacity(line_count as usize);
         while line_count > 0 {
             line_count -= 1;
             linedata.push(read_string(&mut self.read)?);
         }
         // I'm not using the `more` argument for anything.
-        let _more = rmp::decode::read_bool(&mut self.read).map_err(val_err)?;
+        let _more = rmp::decode::read_bool(&mut self.read)?;
         let extra_args = array_len - 6;
         skip_objects(&mut self.read, extra_args)?;
         (self.apply_buf_change)(BufChange {
@@ -139,8 +128,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
 
     fn parse_buf_changedtick_event(&mut self) -> Result<(), Error> {
         // We're not interested in these events, so we skip them.
-        let array_len =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+        let array_len = rmp::decode::read_array_len(&mut self.read)?;
         skip_objects(&mut self.read, array_len)?;
         Ok(())
     }
@@ -148,11 +136,10 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
     fn parse_buf_detach_event(&mut self) -> Result<(), Error> {
         // Re-attach this buffer
         // TODO: consider when we might not want to reattach.
-        let array_len =
-            rmp::decode::read_array_len(&mut self.read).map_err(val_err)?;
+        let array_len = rmp::decode::read_array_len(&mut self.read)?;
         if array_len < 1 {
-            return decoding_error(
-                DecodingError::NotEnoughArgsInBufLinesEvent(array_len),
+            return Err(
+                DecodingError::NotEnoughArgsInBufLinesEvent(array_len).into()
             );
         }
         let buf = read_buf(&mut self.read)?;
@@ -251,14 +238,106 @@ pub enum DecodingError {
     DecodingFailedWithInvalidUtf8(core::str::Utf8Error),
     DecodingFailedWithBufferSizeTooSmall(u32),
     DecodingFailedWhileSkipping(std::io::Error),
+    DecodingFailedWhileReadingString(std::io::Error),
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
     NotEnoughArgsInBufLinesEvent(u32),
     ReceivedErrorEvent(u64, String),
 }
 
-fn decoding_error(err: DecodingError) -> Result<(), Error> {
-    Err(Error::NeovimMessageDecodingFailed(err))
+impl From<DecodingError> for Error {
+    fn from(err: DecodingError) -> Error {
+        Error::NeovimMessageDecodingFailed(err)
+    }
+}
+
+impl From<rmp::decode::MarkerReadError> for Error {
+    fn from(error: rmp::decode::MarkerReadError) -> Error {
+        error.into()
+    }
+}
+
+impl From<rmp::decode::MarkerReadError> for DecodingError {
+    fn from(
+        rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
+    ) -> DecodingError {
+        DecodingError::DecodingFailedWithInvalidMarkerRead(error)
+    }
+}
+
+impl From<rmp::decode::ValueReadError> for Error {
+    fn from(error: rmp::decode::ValueReadError) -> Error {
+        error.into()
+    }
+}
+
+impl From<rmp::decode::ValueReadError> for DecodingError {
+    fn from(error: rmp::decode::ValueReadError) -> DecodingError {
+        match error {
+            rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
+                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error)
+            }
+            rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
+                DecodingError::DecodingFailedWithInvalidDataRead(sub_error)
+            }
+            rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
+                DecodingError::DecodingFailedWithTypeMismatch(sub_error)
+            }
+        }
+    }
+}
+
+impl From<rmp::decode::NumValueReadError> for Error {
+    fn from(error: rmp::decode::NumValueReadError) -> Error {
+        error.into()
+    }
+}
+
+impl From<rmp::decode::NumValueReadError> for DecodingError {
+    fn from(error: rmp::decode::NumValueReadError) -> DecodingError {
+        match error {
+            rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
+                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error)
+            }
+            rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
+                DecodingError::DecodingFailedWithInvalidDataRead(sub_error)
+            }
+            rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
+                DecodingError::DecodingFailedWithTypeMismatch(sub_error)
+            }
+            rmp::decode::NumValueReadError::OutOfRange => {
+                DecodingError::DecodingFailedWithOutOfRange
+            }
+        }
+    }
+}
+
+impl From<rmp::decode::DecodeStringError<'_>> for Error {
+    fn from(error: rmp::decode::DecodeStringError) -> Error {
+        error.into()
+    }
+}
+
+impl From<rmp::decode::DecodeStringError<'_>> for DecodingError {
+    fn from(error: rmp::decode::DecodeStringError) -> DecodingError {
+        match error {
+            rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
+                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error)
+            }
+            rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
+                DecodingError::DecodingFailedWithInvalidDataRead(sub_error)
+            }
+            rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
+                DecodingError::DecodingFailedWithTypeMismatch(sub_error)
+            }
+            rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
+                DecodingError::DecodingFailedWithBufferSizeTooSmall(sub_error)
+            }
+            rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
+                DecodingError::DecodingFailedWithInvalidUtf8(sub_error)
+            }
+        }
+    }
 }
 
 // Skip `count` messagepack options. If one of these objects is an array or
@@ -270,139 +349,113 @@ where
     let mut count = count;
     while count > 0 {
         count -= 1;
-        let marker = rmp::decode::read_marker(read).map_err(marker_err)?;
-        match marker {
-            rmp::Marker::FixPos(_) => {}
-            rmp::Marker::FixNeg(_) => {}
-            rmp::Marker::Null => {}
-            rmp::Marker::True => {}
-            rmp::Marker::False => {}
-            rmp::Marker::U8 => skip_bytes(read, 1)?,
-            rmp::Marker::U16 => skip_bytes(read, 2)?,
-            rmp::Marker::U32 => skip_bytes(read, 4)?,
-            rmp::Marker::U64 => skip_bytes(read, 8)?,
-            rmp::Marker::I8 => skip_bytes(read, 1)?,
-            rmp::Marker::I16 => skip_bytes(read, 2)?,
-            rmp::Marker::I32 => skip_bytes(read, 4)?,
-            rmp::Marker::I64 => skip_bytes(read, 8)?,
-            rmp::Marker::F32 => skip_bytes(read, 4)?,
-            rmp::Marker::F64 => skip_bytes(read, 8)?,
-            rmp::Marker::FixStr(bytes) => skip_bytes(read, bytes as u64)?,
-            rmp::Marker::Str8 => {
-                let bytes = read
-                    .read_u8()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, bytes as u64)?
-            }
-            rmp::Marker::Str16 => {
-                let bytes = read
-                    .read_u16::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, bytes as u64)?
-            }
-            rmp::Marker::Str32 => {
-                let bytes = read
-                    .read_u32::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, bytes as u64)?
-            }
-            rmp::Marker::Bin8 => {
-                let bytes = read
-                    .read_u8()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, bytes as u64)?
-            }
-            rmp::Marker::Bin16 => {
-                let bytes = read
-                    .read_u16::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, bytes as u64)?
-            }
-            rmp::Marker::Bin32 => {
-                let bytes = read
-                    .read_u32::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, bytes as u64)?
-            }
-            rmp::Marker::FixArray(objects) => {
-                count += objects as u32;
-            }
-            rmp::Marker::Array16 => {
-                let objects = read
-                    .read_u16::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                count += objects as u32;
-            }
-            rmp::Marker::Array32 => {
-                let objects = read
-                    .read_u32::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                count += objects;
-            }
-            rmp::Marker::FixMap(entries) => {
-                count += 2 * entries as u32;
-            }
-            rmp::Marker::Map16 => {
-                let entries = read
-                    .read_u16::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                count += 2 * entries as u32;
-            }
-            rmp::Marker::Map32 => {
-                let entries = read
-                    .read_u32::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                count += 2 * entries;
-            }
-            rmp::Marker::FixExt1 => skip_bytes(read, 2)?,
-            rmp::Marker::FixExt2 => skip_bytes(read, 3)?,
-            rmp::Marker::FixExt4 => skip_bytes(read, 5)?,
-            rmp::Marker::FixExt8 => skip_bytes(read, 9)?,
-            rmp::Marker::FixExt16 => skip_bytes(read, 17)?,
-            rmp::Marker::Ext8 => {
-                let bytes = read
-                    .read_u8()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, 1 + bytes as u64)?
-            }
-            rmp::Marker::Ext16 => {
-                let bytes = read
-                    .read_u16::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, 1 + bytes as u64)?
-            }
-            rmp::Marker::Ext32 => {
-                let bytes = read
-                    .read_u32::<byteorder::BigEndian>()
-                    .map_err(DecodingError::DecodingFailedWhileSkipping)
-                    .map_err(Error::NeovimMessageDecodingFailed)?;
-                skip_bytes(read, 1 + bytes as u64)?
-            }
-            rmp::Marker::Reserved => {}
-        }
+        let marker = rmp::decode::read_marker(read)?;
+        count += skip_one_object(read, marker)
+            .map_err(DecodingError::DecodingFailedWhileSkipping)?;
     }
     Ok(())
 }
 
-fn skip_bytes<R>(read: &mut BufReader<R>, count: u64) -> Result<(), Error>
+fn skip_one_object<R>(
+    read: &mut BufReader<R>,
+    marker: rmp::Marker,
+) -> Result<u32, std::io::Error>
 where
     R: Read,
 {
-    std::io::copy(&mut read.take(count), &mut std::io::sink())
-        .map_err(DecodingError::DecodingFailedWhileSkipping)
-        .map_err(Error::NeovimMessageDecodingFailed)?;
+    match marker {
+        rmp::Marker::FixPos(_) => {}
+        rmp::Marker::FixNeg(_) => {}
+        rmp::Marker::Null => {}
+        rmp::Marker::True => {}
+        rmp::Marker::False => {}
+        rmp::Marker::U8 => skip_bytes(read, 1)?,
+        rmp::Marker::U16 => skip_bytes(read, 2)?,
+        rmp::Marker::U32 => skip_bytes(read, 4)?,
+        rmp::Marker::U64 => skip_bytes(read, 8)?,
+        rmp::Marker::I8 => skip_bytes(read, 1)?,
+        rmp::Marker::I16 => skip_bytes(read, 2)?,
+        rmp::Marker::I32 => skip_bytes(read, 4)?,
+        rmp::Marker::I64 => skip_bytes(read, 8)?,
+        rmp::Marker::F32 => skip_bytes(read, 4)?,
+        rmp::Marker::F64 => skip_bytes(read, 8)?,
+        rmp::Marker::FixStr(bytes) => skip_bytes(read, bytes as u64)?,
+        rmp::Marker::Str8 => {
+            let bytes = read.read_u8()?;
+            skip_bytes(read, bytes as u64)?;
+        }
+        rmp::Marker::Str16 => {
+            let bytes = read.read_u16::<byteorder::BigEndian>()?;
+            skip_bytes(read, bytes as u64)?
+        }
+        rmp::Marker::Str32 => {
+            let bytes = read.read_u32::<byteorder::BigEndian>()?;
+            skip_bytes(read, bytes as u64)?
+        }
+        rmp::Marker::Bin8 => {
+            let bytes = read.read_u8()?;
+            skip_bytes(read, bytes as u64)?
+        }
+        rmp::Marker::Bin16 => {
+            let bytes = read.read_u16::<byteorder::BigEndian>()?;
+            skip_bytes(read, bytes as u64)?
+        }
+        rmp::Marker::Bin32 => {
+            let bytes = read.read_u32::<byteorder::BigEndian>()?;
+            skip_bytes(read, bytes as u64)?
+        }
+        rmp::Marker::FixArray(objects) => {
+            return Ok(objects as u32);
+        }
+        rmp::Marker::Array16 => {
+            let objects = read.read_u16::<byteorder::BigEndian>()?;
+            return Ok(objects as u32);
+        }
+        rmp::Marker::Array32 => {
+            let objects = read.read_u32::<byteorder::BigEndian>()?;
+            return Ok(objects);
+        }
+        rmp::Marker::FixMap(entries) => {
+            return Ok(2 * entries as u32);
+        }
+        rmp::Marker::Map16 => {
+            let entries = read.read_u16::<byteorder::BigEndian>()?;
+            return Ok(2 * entries as u32);
+        }
+        rmp::Marker::Map32 => {
+            let entries = read.read_u32::<byteorder::BigEndian>()?;
+            return Ok(2 * entries);
+        }
+        rmp::Marker::FixExt1 => skip_bytes(read, 2)?,
+        rmp::Marker::FixExt2 => skip_bytes(read, 3)?,
+        rmp::Marker::FixExt4 => skip_bytes(read, 5)?,
+        rmp::Marker::FixExt8 => skip_bytes(read, 9)?,
+        rmp::Marker::FixExt16 => skip_bytes(read, 17)?,
+        rmp::Marker::Ext8 => {
+            let bytes = read.read_u8()?;
+            skip_bytes(read, 1 + bytes as u64)?
+        }
+        rmp::Marker::Ext16 => {
+            let bytes = read.read_u16::<byteorder::BigEndian>()?;
+            skip_bytes(read, 1 + bytes as u64)?
+        }
+        rmp::Marker::Ext32 => {
+            let bytes = read.read_u32::<byteorder::BigEndian>()?;
+            skip_bytes(read, 1 + bytes as u64)?
+        }
+        rmp::Marker::Reserved => {}
+    }
+    Ok(0)
+}
+
+fn skip_bytes<R>(
+    read: &mut BufReader<R>,
+    count: u64,
+) -> Result<(), std::io::Error>
+where
+    R: Read,
+{
+    std::io::copy(&mut read.take(count), &mut std::io::sink())?;
     Ok(())
 }
 
@@ -410,15 +463,12 @@ fn read_string<R>(read: &mut BufReader<R>) -> Result<String, Error>
 where
     R: Read,
 {
-    let len = rmp::decode::read_str_len(read).map_err(val_err)?;
+    let len = rmp::decode::read_str_len(read)?;
     let mut buffer = vec![0; len as usize];
     read.read_exact(&mut buffer)
-        .map_err(DecodingError::DecodingFailedWhileSkipping)
-        .map_err(Error::NeovimMessageDecodingFailed)?;
+        .map_err(DecodingError::DecodingFailedWhileReadingString)?;
     std::string::String::from_utf8(buffer).map_err(|err| {
-        Error::NeovimMessageDecodingFailed(
-            DecodingError::DecodingFailedWithInvalidUtf8(err.utf8_error()),
-        )
+        DecodingError::DecodingFailedWithInvalidUtf8(err.utf8_error()).into()
     })
 }
 
@@ -426,93 +476,8 @@ fn read_buf<R>(read: &mut BufReader<R>) -> Result<u8, Error>
 where
     R: Read,
 {
-    let (_, buf) = rmp::decode::read_fixext1(read).map_err(val_err)?;
+    let (_, buf) = rmp::decode::read_fixext1(read)?;
     Ok(buf as u8)
-}
-
-fn marker_err(error: rmp::decode::MarkerReadError) -> Error {
-    match error {
-        rmp::decode::MarkerReadError(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error),
-            )
-        }
-    }
-}
-
-fn val_err(error: rmp::decode::ValueReadError) -> Error {
-    match error {
-        rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error),
-            )
-        }
-        rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidDataRead(sub_error),
-            )
-        }
-        rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithTypeMismatch(sub_error),
-            )
-        }
-    }
-}
-
-fn num_val_err(error: rmp::decode::NumValueReadError) -> Error {
-    match error {
-        rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error),
-            )
-        }
-        rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidDataRead(sub_error),
-            )
-        }
-        rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithTypeMismatch(sub_error),
-            )
-        }
-        rmp::decode::NumValueReadError::OutOfRange => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithOutOfRange,
-            )
-        }
-    }
-}
-
-fn str_err(error: rmp::decode::DecodeStringError) -> Error {
-    match error {
-        rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error),
-            )
-        }
-        rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidDataRead(sub_error),
-            )
-        }
-        rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithTypeMismatch(sub_error),
-            )
-        }
-        rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithBufferSizeTooSmall(sub_error),
-            )
-        }
-        rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
-            Error::NeovimMessageDecodingFailed(
-                DecodingError::DecodingFailedWithInvalidUtf8(sub_error),
-            )
-        }
-    }
 }
 
 pub struct NeovimDriver<W> {
