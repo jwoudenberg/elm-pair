@@ -205,29 +205,6 @@ impl<'a> Iterator for DiffIterator {
     }
 }
 
-// TODO: Remove this function (currently only used by simulation).
-fn handle_edit_event(
-    latest_code: &mut Option<SourceFileSnapshot>,
-    edit: Edit,
-) -> Result<(), Error> {
-    // Edit the old tree-sitter tree, or create it if we don't have one yet for
-    // this file.
-    match latest_code {
-        None => get_initial_snapshot_from_first_edit(latest_code, edit)?,
-        Some(code) => apply_edit(code, edit),
-    }
-
-    let latest_code = match latest_code {
-        None => return Ok(()),
-        Some(code) => code,
-    };
-
-    // Update the tree-sitter syntax three. Note: this is a separate step from
-    // editing the old tree. See the tree-sitter docs on parsing for more info.
-    reparse_tree(latest_code)?;
-    Ok(())
-}
-
 fn analyze_diff(diff: &SourceFileDiff) -> Option<ElmChange> {
     let tree_changes = diff_trees(diff);
     interpret_change(&tree_changes)
@@ -297,28 +274,6 @@ fn elm_refactor(diff: &SourceFileDiff, change: &ElmChange) -> Vec<Edit> {
     }
 }
 
-fn get_initial_snapshot_from_first_edit(
-    code: &mut Option<SourceFileSnapshot>,
-    Edit {
-        file, new_bytes, ..
-    }: Edit,
-) -> Result<(), Error> {
-    let bytes = Rope::from_str(&new_bytes);
-    let tree = parse(None, &bytes)?;
-    let file_data = Arc::new(FileData {
-        elm_bin: find_executable("elm")?,
-        project_root: find_project_root(&file)?.to_path_buf(),
-        path: file,
-    });
-    *code = Some(SourceFileSnapshot {
-        tree,
-        bytes,
-        file_data,
-        revision: 0,
-    });
-    Ok(())
-}
-
 fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
     match result {
         Ok(_) => {}
@@ -332,7 +287,7 @@ fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
 
 fn run_editor_listener_thread<R>(
     thread_error: &MVar<Error>,
-    mut request_compilation: R,
+    request_compilation: R,
     latest_code_var: &MVar<SourceFileSnapshot>,
     new_diff_available: &MVar<()>,
     editor_driver: &MVar<neovim::NeovimDriver<UnixStream>>,
@@ -461,16 +416,6 @@ fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
             }
         }
     }
-}
-
-fn apply_edit(code: &mut SourceFileSnapshot, edit: Edit) {
-    code.tree.edit(&edit.input_edit);
-    let bytes = &mut code.bytes;
-    let start = bytes.byte_to_char(edit.input_edit.start_byte);
-    let end = bytes.byte_to_char(edit.input_edit.old_end_byte);
-    bytes.remove(start..end);
-    bytes.insert(start, &edit.new_bytes);
-    code.revision += 1;
 }
 
 fn reparse_tree(code: &mut SourceFileSnapshot) -> Result<(), Error> {
@@ -1340,11 +1285,12 @@ mod included_answer_test {
 #[cfg(test)]
 mod simulation {
     use crate::included_answer_test::assert_eq_answer_in;
-    use crate::{Edit, ElmChange};
+    use crate::ElmChange;
+    use ropey::Rope;
     use std::collections::VecDeque;
     use std::io::BufRead;
-    use std::path::{Path, PathBuf};
-    use tree_sitter::{InputEdit, Point};
+    use std::path::Path;
+    use tree_sitter::InputEdit;
 
     #[macro_export]
     macro_rules! simulation_test {
@@ -1388,7 +1334,10 @@ mod simulation {
                         Ok(())
                     }
                     Msg::ReceivedEditorEvent(edit) => {
-                        crate::handle_edit_event(&mut latest_code, edit)
+                        crate::handle_editor_source_change(
+                            &mut latest_code,
+                            edit,
+                        )
                     }
                 }
             };
@@ -1435,7 +1384,7 @@ mod simulation {
     }
 
     enum Msg {
-        ReceivedEditorEvent(Edit),
+        ReceivedEditorEvent(SimulatedSourceChange),
         CompilationSucceeded,
     }
 
@@ -1448,7 +1397,7 @@ mod simulation {
                 .map(|line| line.map_err(Error::FromFileReadingLineFailed));
             let (code, simulation_script_padding) =
                 find_start_simulation_script(&mut lines)?;
-            let mut builder = SimulationBuilder::new(path.to_path_buf(), code);
+            let mut builder = SimulationBuilder::new(code);
             loop {
                 let line = match lines.next() {
                     None => return Err(Error::FileEndCameBeforeSimulationEnd),
@@ -1482,33 +1431,60 @@ mod simulation {
     }
 
     struct SimulationBuilder {
-        file: PathBuf,
         current_bytes: Vec<u8>,
         current_position: usize,
         msgs: VecDeque<Msg>,
     }
 
+    struct SimulatedSourceChange {
+        new_bytes: String,
+        start_byte: usize,
+        old_end_byte: usize,
+    }
+
+    impl crate::EditorSourceChange for SimulatedSourceChange {
+        fn apply_first(&self) -> Result<Option<Rope>, crate::Error> {
+            let mut builder = ropey::RopeBuilder::new();
+            builder.append(&self.new_bytes);
+            Ok(Some(builder.finish()))
+        }
+
+        fn apply(
+            &self,
+            code: &mut Rope,
+        ) -> Result<Option<InputEdit>, crate::Error> {
+            let start_char = code.byte_to_char(self.start_byte);
+            let old_end_char = code.byte_to_char(self.old_end_byte);
+            let old_end_position =
+                crate::byte_to_point(code, self.old_end_byte);
+            code.remove(start_char..old_end_char);
+            code.insert(start_char, &self.new_bytes);
+            let new_end_byte = self.start_byte + self.new_bytes.len();
+            let edit = InputEdit {
+                start_byte: self.start_byte,
+                old_end_byte: self.old_end_byte,
+                new_end_byte,
+                start_position: crate::byte_to_point(code, self.start_byte),
+                old_end_position,
+                new_end_position: crate::byte_to_point(code, new_end_byte),
+            };
+            Ok(Some(edit))
+        }
+    }
+
     impl SimulationBuilder {
-        fn new(file: PathBuf, initial_bytes: Vec<u8>) -> SimulationBuilder {
-            let init_msg = Msg::ReceivedEditorEvent(Edit {
-                file: file.clone(),
+        fn new(initial_bytes: Vec<u8>) -> SimulationBuilder {
+            let init_msg = Msg::ReceivedEditorEvent(SimulatedSourceChange {
                 new_bytes: std::string::String::from_utf8(
                     initial_bytes.clone(),
                 )
                 .unwrap(),
-                input_edit: InputEdit {
-                    start_byte: 0,
-                    old_end_byte: 0,
-                    new_end_byte: 0,
-                    start_position: Point { row: 0, column: 0 },
-                    old_end_position: Point { row: 0, column: 0 },
-                    new_end_position: Point { row: 0, column: 0 },
-                },
+                start_byte: 0,
+                old_end_byte: 0,
             });
             let mut msgs = VecDeque::new();
             msgs.push_front(init_msg);
             SimulationBuilder {
-                file,
                 current_position: 0,
                 current_bytes: initial_bytes,
                 msgs,
@@ -1550,18 +1526,13 @@ mod simulation {
             let range = self.current_position..self.current_position;
             self.current_bytes.splice(range.clone(), bytes.clone());
             self.current_position += bytes.len();
-            self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
-                file: self.file.clone(),
-                new_bytes: str.to_owned(),
-                input_edit: InputEdit {
+            self.msgs.push_back(Msg::ReceivedEditorEvent(
+                SimulatedSourceChange {
+                    new_bytes: str.to_owned(),
                     start_byte: range.start,
                     old_end_byte: range.start,
-                    new_end_byte: self.current_position,
-                    start_position: Point { row: 0, column: 0 },
-                    old_end_position: Point { row: 0, column: 0 },
-                    new_end_position: Point { row: 0, column: 0 },
                 },
-            }));
+            ));
             self
         }
 
@@ -1571,18 +1542,13 @@ mod simulation {
                 self.current_position..(self.current_position + bytes.len());
             if self.current_bytes.get(range.clone()) == Some(bytes) {
                 self.current_bytes.splice(range.clone(), []);
-                self.msgs.push_back(Msg::ReceivedEditorEvent(Edit {
-                    file: self.file.clone(),
-                    new_bytes: String::new(),
-                    input_edit: InputEdit {
+                self.msgs.push_back(Msg::ReceivedEditorEvent(
+                    SimulatedSourceChange {
+                        new_bytes: String::new(),
                         start_byte: range.start,
                         old_end_byte: range.end,
-                        new_end_byte: range.start,
-                        start_position: Point { row: 0, column: 0 },
-                        old_end_position: Point { row: 0, column: 0 },
-                        new_end_position: Point { row: 0, column: 0 },
                     },
-                }));
+                ));
                 Ok(self)
             } else {
                 Err(Error::DeleteFailedNoSuchStrAtCursor)

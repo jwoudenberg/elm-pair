@@ -214,6 +214,7 @@ impl EditorSourceChange for BufChange {
             let old_end_char = code.line_to_char(old_end_line);
             let old_end_byte = code.line_to_byte(old_end_line);
             let mut new_end_byte = start_byte;
+            let old_end_position = crate::byte_to_point(code, old_end_byte);
             code.remove(start_char..old_end_char);
             for line in &self.linedata {
                 code.insert(start_char, line.as_str());
@@ -227,7 +228,7 @@ impl EditorSourceChange for BufChange {
                 old_end_byte,
                 new_end_byte,
                 start_position: crate::byte_to_point(code, start_byte),
-                old_end_position: crate::byte_to_point(code, old_end_byte),
+                old_end_position,
                 new_end_position: crate::byte_to_point(code, new_end_byte),
             }))
         }
