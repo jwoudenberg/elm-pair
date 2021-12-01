@@ -157,7 +157,7 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
         rmp::encode::write_array_len(write, 3)?;
         rmp::encode::write_u8(write, buf)?; //buf
         rmp::encode::write_bool(write, true)
-            .map_err(DecodingError::EncodingFailedWhileWritingBool)?; // send_buffer
+            .map_err(DecodingError::EncodingFailedWhileWritingData)?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
         Ok(())
     }
@@ -232,17 +232,16 @@ impl EditorSourceChange for BufChange {
 
 #[derive(Debug)]
 pub enum DecodingError {
-    DecodingFailedWithInvalidMarkerRead(rmp::decode::Error),
-    DecodingFailedWithInvalidDataRead(rmp::decode::Error),
+    DecodingFailedWhileReadingMarker(std::io::Error),
+    DecodingFailedWhileReadingData(std::io::Error),
     DecodingFailedWithTypeMismatch(rmp::Marker),
     DecodingFailedWithOutOfRange,
     DecodingFailedWithInvalidUtf8(core::str::Utf8Error),
-    DecodingFailedWithBufferSizeTooSmall(u32),
-    DecodingFailedWhileSkipping(std::io::Error),
+    DecodingFailedWritingStringInTooSmallABuffer(u32),
+    DecodingFailedWhileSkippingData(std::io::Error),
     DecodingFailedWhileReadingString(std::io::Error),
-    EncodingFailedWhileWritingMarker(rmp::encode::Error),
-    EncodingFailedWhileWritingData(rmp::encode::Error),
-    EncodingFailedWhileWritingBool(std::io::Error),
+    EncodingFailedWhileWritingMarker(std::io::Error),
+    EncodingFailedWhileWritingData(std::io::Error),
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
     NotEnoughArgsInBufLinesEvent(u32),
@@ -284,7 +283,7 @@ impl From<rmp::decode::MarkerReadError> for DecodingError {
     fn from(
         rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
     ) -> DecodingError {
-        DecodingError::DecodingFailedWithInvalidMarkerRead(error)
+        DecodingError::DecodingFailedWhileReadingMarker(error)
     }
 }
 
@@ -298,10 +297,10 @@ impl From<rmp::decode::ValueReadError> for DecodingError {
     fn from(error: rmp::decode::ValueReadError) -> DecodingError {
         match error {
             rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error)
+                DecodingError::DecodingFailedWhileReadingMarker(sub_error)
             }
             rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
-                DecodingError::DecodingFailedWithInvalidDataRead(sub_error)
+                DecodingError::DecodingFailedWhileReadingData(sub_error)
             }
             rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
                 DecodingError::DecodingFailedWithTypeMismatch(sub_error)
@@ -320,10 +319,10 @@ impl From<rmp::decode::NumValueReadError> for DecodingError {
     fn from(error: rmp::decode::NumValueReadError) -> DecodingError {
         match error {
             rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error)
+                DecodingError::DecodingFailedWhileReadingMarker(sub_error)
             }
             rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
-                DecodingError::DecodingFailedWithInvalidDataRead(sub_error)
+                DecodingError::DecodingFailedWhileReadingData(sub_error)
             }
             rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
                 DecodingError::DecodingFailedWithTypeMismatch(sub_error)
@@ -345,16 +344,18 @@ impl From<rmp::decode::DecodeStringError<'_>> for DecodingError {
     fn from(error: rmp::decode::DecodeStringError) -> DecodingError {
         match error {
             rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
-                DecodingError::DecodingFailedWithInvalidMarkerRead(sub_error)
+                DecodingError::DecodingFailedWhileReadingMarker(sub_error)
             }
             rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
-                DecodingError::DecodingFailedWithInvalidDataRead(sub_error)
+                DecodingError::DecodingFailedWhileReadingData(sub_error)
             }
             rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
                 DecodingError::DecodingFailedWithTypeMismatch(sub_error)
             }
             rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
-                DecodingError::DecodingFailedWithBufferSizeTooSmall(sub_error)
+                DecodingError::DecodingFailedWritingStringInTooSmallABuffer(
+                    sub_error,
+                )
             }
             rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
                 DecodingError::DecodingFailedWithInvalidUtf8(sub_error)
@@ -374,7 +375,7 @@ where
         count -= 1;
         let marker = rmp::decode::read_marker(read)?;
         count += skip_one_object(read, marker)
-            .map_err(DecodingError::DecodingFailedWhileSkipping)?;
+            .map_err(DecodingError::DecodingFailedWhileSkippingData)?;
     }
     Ok(())
 }
