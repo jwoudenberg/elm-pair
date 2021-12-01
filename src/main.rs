@@ -332,7 +332,7 @@ fn report_error<I>(thread_error: Arc<MVar<Error>>, result: Result<I, Error>) {
 
 fn run_editor_listener_thread<R>(
     thread_error: &MVar<Error>,
-    mut request_compilation: R,
+    request_compilation: R,
     latest_code_var: &MVar<SourceFileSnapshot>,
     new_diff_available: &MVar<()>,
     editor_driver: &MVar<neovim::NeovimDriver<UnixStream>>,
@@ -344,37 +344,58 @@ where
     let listener =
         UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
     // TODO: Figure out how to deal with multiple connections.
-    for socket in listener.incoming().into_iter() {
-        let read_socket =
-            socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
-        let write_socket = read_socket
-            .try_clone()
-            .map_err(Error::CloningSocketFailed)?;
-        let neovim = neovim::Neovim::new(read_socket, write_socket);
-        editor_driver.write(neovim.driver());
-        neovim.listen(|change| {
-            if let Some(error) = thread_error.try_take() {
-                return Err(error);
-            }
-            let mut latest_code = latest_code_var.try_take();
-            let opt_edit = change.apply(&mut latest_code)?;
-            match latest_code {
-                None => return Ok(()),
-                Some(mut code) => {
-                    if let Some(edit) = opt_edit {
-                        code.tree.edit(&edit);
-                        reparse_tree(&mut code)?;
-                    }
-                    if !code.tree.root_node().has_error() {
-                        request_compilation(code.clone());
-                    }
-                    latest_code_var.write(code);
+    let socket = listener.incoming().into_iter().next().unwrap();
+    let read_socket =
+        socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
+    let write_socket = read_socket
+        .try_clone()
+        .map_err(Error::CloningSocketFailed)?;
+    let neovim = neovim::Neovim::new(read_socket, write_socket);
+    listen_to_editor(
+        thread_error,
+        request_compilation,
+        latest_code_var,
+        new_diff_available,
+        editor_driver,
+        neovim,
+    )
+}
+
+fn listen_to_editor<R, E>(
+    thread_error: &MVar<Error>,
+    mut request_compilation: R,
+    latest_code_var: &MVar<SourceFileSnapshot>,
+    new_diff_available: &MVar<()>,
+    editor_driver: &MVar<E::Driver>,
+    editor: E,
+) -> Result<(), Error>
+where
+    R: FnMut(SourceFileSnapshot),
+    E: Editor,
+{
+    editor_driver.write(editor.driver());
+    editor.listen(|change| {
+        if let Some(error) = thread_error.try_take() {
+            return Err(error);
+        }
+        let mut latest_code = latest_code_var.try_take();
+        let opt_edit = change.apply(&mut latest_code)?;
+        match latest_code {
+            None => return Ok(()),
+            Some(mut code) => {
+                if let Some(edit) = opt_edit {
+                    code.tree.edit(&edit);
+                    reparse_tree(&mut code)?;
                 }
-            };
-            new_diff_available.write(());
-            Ok(())
-        })?;
-    }
+                if !code.tree.root_node().has_error() {
+                    request_compilation(code.clone());
+                }
+                latest_code_var.write(code);
+            }
+        };
+        new_diff_available.write(());
+        Ok(())
+    })?;
     Ok(())
 }
 
