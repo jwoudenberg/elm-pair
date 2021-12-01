@@ -150,14 +150,15 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), Error>>
     fn nvim_buf_attach(&self, buf: u8) -> Result<(), Error> {
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
-        rmp::encode::write_array_len(write, 3).unwrap();
-        rmp::encode::write_i8(write, 2).unwrap();
+        rmp::encode::write_array_len(write, 3)?;
+        rmp::encode::write_i8(write, 2)?;
         write_str(write, "nvim_buf_attach");
         // nvim_buf_attach arguments
-        rmp::encode::write_array_len(write, 3).unwrap();
-        rmp::encode::write_u8(write, buf).unwrap(); //buf
-        rmp::encode::write_bool(write, true).unwrap(); // send_buffer
-        rmp::encode::write_map_len(write, 0).unwrap(); // opts
+        rmp::encode::write_array_len(write, 3)?;
+        rmp::encode::write_u8(write, buf)?; //buf
+        rmp::encode::write_bool(write, true)
+            .map_err(DecodingError::EncodingFailedWhileWritingBool)?; // send_buffer
+        rmp::encode::write_map_len(write, 0)?; // opts
         Ok(())
     }
 }
@@ -239,6 +240,9 @@ pub enum DecodingError {
     DecodingFailedWithBufferSizeTooSmall(u32),
     DecodingFailedWhileSkipping(std::io::Error),
     DecodingFailedWhileReadingString(std::io::Error),
+    EncodingFailedWhileWritingMarker(rmp::encode::Error),
+    EncodingFailedWhileWritingData(rmp::encode::Error),
+    EncodingFailedWhileWritingBool(std::io::Error),
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
     NotEnoughArgsInBufLinesEvent(u32),
@@ -248,6 +252,25 @@ pub enum DecodingError {
 impl From<DecodingError> for Error {
     fn from(err: DecodingError) -> Error {
         Error::NeovimMessageDecodingFailed(err)
+    }
+}
+
+impl From<rmp::encode::ValueWriteError> for Error {
+    fn from(error: rmp::encode::ValueWriteError) -> Error {
+        error.into()
+    }
+}
+
+impl From<rmp::encode::ValueWriteError> for DecodingError {
+    fn from(error: rmp::encode::ValueWriteError) -> DecodingError {
+        match error {
+            rmp::encode::ValueWriteError::InvalidMarkerWrite(sub_error) => {
+                DecodingError::EncodingFailedWhileWritingMarker(sub_error)
+            }
+            rmp::encode::ValueWriteError::InvalidDataWrite(sub_error) => {
+                DecodingError::EncodingFailedWhileWritingData(sub_error)
+            }
+        }
     }
 }
 
@@ -490,29 +513,29 @@ where
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
 
-        rmp::encode::write_array_len(write, 3).unwrap(); // msgpack envelope
-        rmp::encode::write_i8(write, 2).unwrap();
+        rmp::encode::write_array_len(write, 3)?; // msgpack envelope
+        rmp::encode::write_i8(write, 2)?;
         write_str(write, "nvim_call_atomic");
 
-        rmp::encode::write_array_len(write, 1).unwrap(); // nvim_call_atomic args
+        rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
 
-        rmp::encode::write_array_len(write, refactor.len() as u32).unwrap(); // calls array
+        rmp::encode::write_array_len(write, refactor.len() as u32)?; // calls array
         let buf = 0; // TODO: use a real value here.
         for edit in refactor {
             let start = edit.input_edit.start_position;
             let end = edit.input_edit.old_end_position;
 
-            rmp::encode::write_array_len(write, 2).unwrap(); // call tuple
+            rmp::encode::write_array_len(write, 2)?; // call tuple
             write_str(write, "nvim_buf_set_text");
 
-            rmp::encode::write_array_len(write, 6).unwrap(); // nvim_buf_set_text args
-            rmp::encode::write_u8(write, buf).unwrap();
-            rmp::encode::write_u64(write, start.row as u64).unwrap();
-            rmp::encode::write_u64(write, start.column as u64).unwrap();
-            rmp::encode::write_u64(write, end.row as u64).unwrap();
-            rmp::encode::write_u64(write, end.column as u64).unwrap();
+            rmp::encode::write_array_len(write, 6)?; // nvim_buf_set_text args
+            rmp::encode::write_u8(write, buf)?;
+            rmp::encode::write_u64(write, start.row as u64)?;
+            rmp::encode::write_u64(write, start.column as u64)?;
+            rmp::encode::write_u64(write, end.row as u64)?;
+            rmp::encode::write_u64(write, end.column as u64)?;
 
-            rmp::encode::write_array_len(write, 1).unwrap(); // array of lines
+            rmp::encode::write_array_len(write, 1)?; // array of lines
             write_str(write, &edit.new_bytes);
         }
         Ok(())
