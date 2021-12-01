@@ -175,7 +175,7 @@ impl EditorSourceChange for BufChange {
     fn apply(
         &self,
         opt_code: &mut Option<SourceFileSnapshot>,
-    ) -> Option<InputEdit> {
+    ) -> Result<Option<InputEdit>, Error> {
         match (self.lastline, opt_code) {
             (-1, code) => {
                 let mut builder = RopeBuilder::new();
@@ -185,7 +185,7 @@ impl EditorSourceChange for BufChange {
                 }
                 let bytes = builder.finish();
                 *code = Some(SourceFileSnapshot {
-                    tree: crate::parse(None, &bytes).unwrap(),
+                    tree: crate::parse(None, &bytes)?,
                     bytes,
                     revision: self.changedtick as usize,
                     file_data: Arc::new(crate::FileData {
@@ -197,9 +197,11 @@ impl EditorSourceChange for BufChange {
                         elm_bin: PathBuf::from("elm"),
                     }),
                 });
-                None
+                Ok(None)
             }
-            (_, None) => panic!("incremental update for unknown code."),
+            (_, None) => {
+                Err(DecodingError::GotIncrementalUpdateBeforeFullUpdate.into())
+            }
             (lastline, Some(code)) => {
                 let start_line = self.firstline as usize;
                 let old_end_line = lastline as usize;
@@ -217,14 +219,14 @@ impl EditorSourceChange for BufChange {
                     new_end_byte += 1;
                 }
                 code.revision = self.changedtick as usize;
-                Some(InputEdit {
+                Ok(Some(InputEdit {
                     start_byte,
                     old_end_byte,
                     new_end_byte,
                     start_position: crate::byte_to_point(code, start_byte),
                     old_end_position: crate::byte_to_point(code, old_end_byte),
                     new_end_position: crate::byte_to_point(code, new_end_byte),
-                })
+                }))
             }
         }
     }
@@ -247,6 +249,7 @@ pub enum DecodingError {
     UnknownEventMethod(String),
     NotEnoughArgsInBufLinesEvent(u32),
     ReceivedErrorEvent(u64, String),
+    GotIncrementalUpdateBeforeFullUpdate,
 }
 
 impl From<DecodingError> for Error {

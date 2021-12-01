@@ -356,7 +356,7 @@ where
                 return Err(error);
             }
             let mut latest_code = latest_code_var.try_take();
-            let opt_edit = change.apply(&mut latest_code);
+            let opt_edit = change.apply(&mut latest_code)?;
             match latest_code {
                 None => return Ok(()),
                 Some(mut code) => {
@@ -951,8 +951,10 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
 }
 
 trait EditorSourceChange {
-    fn apply(&self, code: &mut Option<SourceFileSnapshot>)
-        -> Option<InputEdit>;
+    fn apply(
+        &self,
+        code: &mut Option<SourceFileSnapshot>,
+    ) -> Result<Option<InputEdit>, Error>;
 }
 
 // A thread sync structure similar to Haskell's MVar. A variable, potentially
