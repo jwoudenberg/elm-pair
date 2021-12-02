@@ -98,15 +98,22 @@ where
 
     fn parse_notification_msg(&mut self) -> Result<(), Error> {
         let mut buffer = [0u8; 30];
-        // TODO: Don't parse to UTF8 here. Compare bytestrings instead.
-        let method = rmp::decode::read_str(&mut self.read, &mut buffer)?;
-        match method {
-            "nvim_error_event" => self.parse_error_event(),
-            "nvim_buf_lines_event" => self.parse_buf_lines_event(),
-            "nvim_buf_changedtick_event" => self.parse_buf_changedtick_event(),
-            "nvim_buf_detach_event" => self.parse_buf_detach_event(),
-            "buffer_opened" => self.parse_buffer_opened(),
-            method => Err(Error::UnknownEventMethod(method.to_owned())),
+        let len = rmp::decode::read_str_len(&mut self.read)? as usize;
+        if len > buffer.len() {
+            return Err(
+                DecodingError::BufferCannotHoldString(len as u32).into()
+            );
+        }
+        self.read
+            .read_exact(&mut buffer[0..len])
+            .map_err(DecodingError::ReadingString)?;
+        match &buffer[0..len] {
+            b"nvim_error_event" => self.parse_error_event(),
+            b"nvim_buf_lines_event" => self.parse_buf_lines_event(),
+            b"nvim_buf_changedtick_event" => self.parse_buf_changedtick_event(),
+            b"nvim_buf_detach_event" => self.parse_buf_detach_event(),
+            b"buffer_opened" => self.parse_buffer_opened(),
+            method => Err(Error::UnknownEventMethod(to_utf8(method)?)),
         }
     }
 
@@ -114,7 +121,14 @@ where
         read_tuple!(
             &mut self.read,
             type_ = rmp::decode::read_int(&mut self.read)?,
-            msg = read_string(&mut self.read)?
+            msg = {
+                let len = rmp::decode::read_str_len(&mut self.read)?;
+                let mut buffer = vec![0; len as usize];
+                self.read
+                    .read_exact(&mut buffer)
+                    .map_err(DecodingError::ReadingString)?;
+                to_utf8(&buffer)?
+            }
         );
         Err(Error::ReceivedErrorEvent(type_, msg))
     }
@@ -440,17 +454,10 @@ where
     Ok(())
 }
 
-// TODO: Remove this function
-fn read_string<R>(read: &mut R) -> Result<String, DecodingError>
-where
-    R: Read,
-{
-    let len = rmp::decode::read_str_len(read)?;
-    let mut buffer = vec![0; len as usize];
-    read.read_exact(&mut buffer)
-        .map_err(DecodingError::ReadingString)?;
-    std::string::String::from_utf8(buffer)
-        .map_err(|err| DecodingError::InvalidUtf8(err.utf8_error()))
+fn to_utf8(buffer: &[u8]) -> Result<String, DecodingError> {
+    let str =
+        std::str::from_utf8(buffer).map_err(DecodingError::InvalidUtf8)?;
+    Ok(str.to_owned())
 }
 
 // Reads chunks of string slices of a reader. Used to copy bits of a reader
