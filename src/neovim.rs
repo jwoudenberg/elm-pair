@@ -1,9 +1,11 @@
-use crate::{Edit, EditorSourceChange, InputEdit};
+use crate::{Edit, EditorEvent, InputEdit, SourceFileSnapshot};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::ops::DerefMut;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Neovim<R, W> {
@@ -38,14 +40,15 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
         store_new_code: G,
     ) -> Result<(), crate::Error>
     where
-        F: FnMut() -> Result<Rope, crate::Error>,
-        G: FnMut(EditorSourceChange) -> Result<(), crate::Error>,
+        F: FnMut(usize) -> Result<SourceFileSnapshot, crate::Error>,
+        G: FnMut(EditorEvent) -> Result<(), crate::Error>,
     {
         let mut listener = NeovimListener {
             read: self.read,
             write: self.write,
             load_code_copy,
             store_new_code,
+            paths_for_new_buffers: HashMap::new(),
         };
         while listener.parse_msg()? {}
         Ok(())
@@ -57,14 +60,15 @@ struct NeovimListener<R, W, F, G> {
     write: Arc<Mutex<W>>,
     load_code_copy: F,
     store_new_code: G,
+    paths_for_new_buffers: HashMap<usize, PathBuf>,
 }
 
 impl<R, W, F, G> NeovimListener<R, W, F, G>
 where
     R: Read,
     W: Write,
-    F: FnMut() -> Result<Rope, crate::Error>,
-    G: FnMut(EditorSourceChange) -> Result<(), crate::Error>,
+    F: FnMut(usize) -> Result<SourceFileSnapshot, crate::Error>,
+    G: FnMut(EditorEvent) -> Result<(), crate::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
@@ -113,7 +117,9 @@ where
             b"nvim_buf_changedtick_event" => self.parse_buf_changedtick_event(),
             b"nvim_buf_detach_event" => self.parse_buf_detach_event(),
             b"buffer_opened" => self.parse_buffer_opened(),
-            method => Err(Error::UnknownEventMethod(to_utf8(method)?)),
+            method => {
+                Err(Error::UnknownEventMethod(to_utf8(method)?.to_owned()))
+            }
         }
     }
 
@@ -127,7 +133,7 @@ where
                 self.read
                     .read_exact(&mut buffer)
                     .map_err(DecodingError::ReadingString)?;
-                to_utf8(&buffer)?
+                to_utf8(&buffer)?.to_owned()
             }
         );
         Err(Error::ReceivedErrorEvent(type_, msg))
@@ -136,42 +142,54 @@ where
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
         read_tuple!(
             &mut self.read,
-            buf = rmp::decode::read_int(&mut self.read)?
+            buf = rmp::decode::read_int(&mut self.read)?,
+            path = {
+                let len = rmp::decode::read_str_len(&mut self.read)?;
+                let mut buffer = vec![0; len as usize];
+                self.read
+                    .read_exact(&mut buffer)
+                    .map_err(DecodingError::ReadingString)?;
+                Path::new(to_utf8(&buffer)?).to_owned()
+            }
         );
+        self.paths_for_new_buffers.insert(buf, path);
         self.nvim_buf_attach(buf)
     }
 
     fn parse_buf_lines_event(&mut self) -> Result<(), Error> {
         read_tuple!(
             &mut self.read,
-            buf = read_buf(&mut self.read)?,
-            changedtick = rmp::decode::read_int(&mut self.read)?,
+            buffer = read_buf(&mut self.read)?,
+            _changedtick = skip_objects(&mut self.read, 1)?,
             firstline = rmp::decode::read_int(&mut self.read)?,
             lastline = rmp::decode::read_int(&mut self.read)?,
-            _linedata = {
-                if lastline == -1 {
-                    let rope = self.read_rope()?;
-                    (self.store_new_code)(EditorSourceChange {
-                        new_bytes: rope,
-                        edit: None,
+            _linedata =
+                {
+                    if lastline == -1 {
+                        let rope = self.read_rope()?;
+                        (self.store_new_code)(EditorEvent::OpenedNewSourceFile {
+                        bytes: rope,
+                        buffer,
+                        path: self.paths_for_new_buffers.remove(&buffer).ok_or(
+                            Error::ReceivedLinesEventForUnknownBuffer(buffer),
+                        )?,
                     })?;
-                } else {
-                    let mut bytes = (self.load_code_copy)()?;
-                    let edit = self.apply_change(
-                        BufChange {
-                            _buf: buf as u64,
-                            _changedtick: changedtick,
+                    } else {
+                        let mut code = (self.load_code_copy)(buffer)?;
+                        let edit = self.apply_change(
                             firstline,
                             lastline,
-                        },
-                        &mut bytes,
-                    )?;
-                    (self.store_new_code)(EditorSourceChange {
-                        new_bytes: bytes,
-                        edit: Some(edit),
-                    })?;
+                            &mut code.bytes,
+                        )?;
+                        (self.store_new_code)(
+                            EditorEvent::ModifiedSourceFile {
+                                buffer,
+                                code,
+                                edit,
+                            },
+                        )?;
+                    }
                 }
-            }
         );
         Ok(())
     }
@@ -189,7 +207,7 @@ where
         self.nvim_buf_attach(buf)
     }
 
-    fn nvim_buf_attach(&self, buf: u8) -> Result<(), Error> {
+    fn nvim_buf_attach(&self, buf: usize) -> Result<(), Error> {
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
         rmp::encode::write_array_len(write, 3)?;
@@ -197,7 +215,7 @@ where
         write_str(write, "nvim_buf_attach")?;
         // nvim_buf_attach arguments
         rmp::encode::write_array_len(write, 3)?;
-        rmp::encode::write_u8(write, buf)?; //buf
+        rmp::encode::write_u32(write, buf as u32)?; //buf
         rmp::encode::write_bool(write, true)
             .map_err(Error::EncodingFailedWhileWritingData)?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
@@ -206,11 +224,12 @@ where
 
     fn apply_change(
         &mut self,
-        change: BufChange,
+        firstline: i64,
+        lastline: i64,
         code: &mut Rope,
     ) -> Result<InputEdit, Error> {
-        let start_line = change.firstline as usize;
-        let old_end_line = change.lastline as usize;
+        let start_line = firstline as usize;
+        let old_end_line = lastline as usize;
         let start_char = code.line_to_char(start_line);
         let start_byte = code.line_to_byte(start_line);
         let old_end_char = code.line_to_char(old_end_line);
@@ -266,13 +285,6 @@ where
     }
 }
 
-pub struct BufChange {
-    _buf: u64,
-    _changedtick: u64,
-    firstline: i64,
-    lastline: i64,
-}
-
 #[derive(Debug)]
 pub(crate) enum Error {
     DecodingFailed(DecodingError),
@@ -283,6 +295,7 @@ pub(crate) enum Error {
     UnknownEventMethod(String),
     ReceivedErrorEvent(u64, String),
     FailedWhileProcessingBufChange(Box<crate::Error>),
+    ReceivedLinesEventForUnknownBuffer(usize),
 }
 
 impl From<Error> for crate::Error {
@@ -460,10 +473,10 @@ where
     Ok(())
 }
 
-fn to_utf8(buffer: &[u8]) -> Result<String, DecodingError> {
+fn to_utf8(buffer: &[u8]) -> Result<&str, DecodingError> {
     let str =
         std::str::from_utf8(buffer).map_err(DecodingError::InvalidUtf8)?;
-    Ok(str.to_owned())
+    Ok(str)
 }
 
 // Reads chunks of string slices of a reader. Used to copy bits of a reader
@@ -513,12 +526,12 @@ where
     Ok(())
 }
 
-fn read_buf<R>(read: &mut R) -> Result<u8, DecodingError>
+fn read_buf<R>(read: &mut R) -> Result<usize, DecodingError>
 where
     R: Read,
 {
     let (_, buf) = rmp::decode::read_fixext1(read)?;
-    Ok(buf as u8)
+    Ok(buf as usize)
 }
 
 pub struct NeovimDriver<W> {

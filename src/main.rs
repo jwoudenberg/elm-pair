@@ -332,29 +332,30 @@ where
 {
     editor_driver.write(editor.driver());
     editor.listen(
-        || {
+        |_buf| {
             if let Some(error) = thread_error.try_take() {
                 return Err(error);
             }
             if let Some(code) = latest_code_var.try_take() {
-                Ok(code.bytes)
+                Ok(code)
             } else {
                 // TODO: let the editor handle this error (so it can request
                 // a refresh).
                 Err(Error::EditorRequestedNonExistingLocalCopy)
             }
         },
-        |change| {
+        |event| {
             if let Some(error) = thread_error.try_take() {
                 return Err(error);
             }
-            let latest_code = latest_code_var.try_take();
-            let code = match (latest_code, change.edit) {
-                (Some(mut code), Some(edit)) => {
+            let code = match event {
+                EditorEvent::ModifiedSourceFile { mut code, edit, .. } => {
                     apply_source_file_edit(&mut code, edit)?;
                     code
                 }
-                _ => init_source_file_snapshot(change.new_bytes)?,
+                EditorEvent::OpenedNewSourceFile { bytes, .. } => {
+                    init_source_file_snapshot(bytes)?
+                }
             };
             if !code.tree.root_node().has_error() {
                 request_compilation(code.clone());
@@ -963,16 +964,24 @@ trait Editor {
         store_new_code: G,
     ) -> Result<(), Error>
     where
-        F: FnMut() -> Result<Rope, Error>,
-        G: FnMut(EditorSourceChange) -> Result<(), Error>;
+        F: FnMut(usize) -> Result<SourceFileSnapshot, Error>,
+        G: FnMut(EditorEvent) -> Result<(), Error>;
 
     // Obtain an EditorDriver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
 }
 
-struct EditorSourceChange {
-    new_bytes: Rope,
-    edit: Option<InputEdit>,
+enum EditorEvent {
+    OpenedNewSourceFile {
+        buffer: usize,
+        path: PathBuf,
+        bytes: Rope,
+    },
+    ModifiedSourceFile {
+        buffer: usize,
+        code: SourceFileSnapshot,
+        edit: InputEdit,
+    },
 }
 
 // An API for sending commands to an editor. This is defined as a trait to
