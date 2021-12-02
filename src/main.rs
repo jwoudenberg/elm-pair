@@ -25,11 +25,11 @@ pub fn main() {
 fn run() -> Result<(), Error> {
     let latest_code = Arc::new(MVar::new_empty());
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
-    let compilation_candidates =
-        compilation_thread::run(analysis_sender.clone());
+    let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
+    compilation_thread::run(compilation_receiver, analysis_sender.clone());
     run_editor_listener_thread(
-        compilation_candidates,
         latest_code.clone(),
+        compilation_sender,
         analysis_sender,
     );
     run_analysis_loop(latest_code, analysis_receiver)
@@ -41,16 +41,12 @@ fn run_analysis_loop(
 ) -> Result<(), Error>
 where
 {
-    let mut analysis_iterator = AnalysisIterator {
+    AnalysisLoop {
         latest_code,
-        analysis_receiver,
         last_compiling_code: None,
         editor_driver: None,
-    };
-    while analysis_iterator.process_msg_batch()? {
-        analysis_iterator.run_analysis_on_latest_snapshots()?;
     }
-    Ok(())
+    .start(analysis_receiver)
 }
 
 #[derive(Clone)]
@@ -149,10 +145,9 @@ struct SourceFileDiff {
     new: SourceFileSnapshot,
 }
 
-struct AnalysisIterator {
+struct AnalysisLoop {
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: Option<SourceFileSnapshot>,
-    analysis_receiver: Receiver<Msg>,
     editor_driver: Option<Box<dyn EditorDriver>>,
 }
 
@@ -164,8 +159,10 @@ enum Msg {
     CompilationSucceeded(SourceFileSnapshot),
 }
 
-impl AnalysisIterator {
-    fn run_analysis_on_latest_snapshots(&self) -> Result<(), Error> {
+impl MsgLoop<Error> for AnalysisLoop {
+    type Msg = Msg;
+
+    fn on_idle(&mut self) -> Result<(), Error> {
         if let (Some(old), Some(new), Some(editor_driver)) = (
             self.last_compiling_code.clone(),
             self.latest_code.try_read(),
@@ -180,34 +177,7 @@ impl AnalysisIterator {
         Ok(())
     }
 
-    fn process_msg_batch(&mut self) -> Result<bool, Error> {
-        match self.process_msg_batch_helper() {
-            Ok(res) => res,
-            Err(TryRecvError::Empty) => Ok(true),
-            Err(TryRecvError::Disconnected) => Ok(false),
-        }
-    }
-
-    // Keep processing messages until we exhausted the immediate supply.
-    fn process_msg_batch_helper(
-        &mut self,
-    ) -> Result<Result<bool, Error>, TryRecvError> {
-        let mut msg = self.analysis_receiver.recv()?;
-        loop {
-            let res = self.process_msg(msg);
-            match res {
-                Ok(do_continue) => {
-                    if !do_continue {
-                        return Ok(res);
-                    }
-                }
-                Err(_) => return Ok(res),
-            }
-            msg = self.analysis_receiver.try_recv()?;
-        }
-    }
-
-    fn process_msg(&mut self, msg: Msg) -> Result<bool, Error> {
+    fn on_msg(&mut self, msg: Msg) -> Result<bool, Error> {
         match msg {
             Msg::SourceCodeMofied => return Ok(true),
             Msg::ThreadFailed(err) => return Err(err),
@@ -306,16 +276,16 @@ fn report_error(analysis_sender: Sender<Msg>, result: Result<(), Error>) {
 }
 
 fn run_editor_listener_thread(
-    compilation_candidates: compilation_thread::CompilationCandidates,
     latest_code_var: Arc<MVar<SourceFileSnapshot>>,
+    compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<Msg>,
 ) {
     std::thread::spawn(move || {
         crate::report_error(
             analysis_sender.clone(),
             run_editor_listener_loop(
-                compilation_candidates,
                 &latest_code_var,
+                compilation_sender,
                 analysis_sender,
             ),
         )
@@ -323,8 +293,8 @@ fn run_editor_listener_thread(
 }
 
 fn run_editor_listener_loop(
-    compilation_candidates: compilation_thread::CompilationCandidates,
     latest_code_var: &MVar<SourceFileSnapshot>,
+    compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<Msg>,
 ) -> Result<(), Error> {
     let socket_path = "/tmp/elm-pair.sock";
@@ -339,16 +309,16 @@ fn run_editor_listener_loop(
         .map_err(Error::CloningSocketFailed)?;
     let neovim = neovim::Neovim::new(BufReader::new(read_socket), write_socket);
     listen_to_editor(
-        compilation_candidates,
         latest_code_var,
+        compilation_sender,
         analysis_sender,
         neovim,
     )
 }
 
 fn listen_to_editor<E>(
-    mut compilation_candidates: compilation_thread::CompilationCandidates,
     latest_code_var: &MVar<SourceFileSnapshot>,
+    compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<Msg>,
     editor: E,
 ) -> Result<(), Error>
@@ -357,6 +327,7 @@ where
 {
     let driver = editor.driver();
     let boxed = Box::new(driver);
+    let mut revision_of_last_compilation_candidate = None;
     analysis_sender.send(Msg::EditorConnected(boxed))?;
     editor.listen(
         |_buf| {
@@ -378,8 +349,13 @@ where
                     init_source_file_snapshot(bytes)?
                 }
             };
-            if !code.tree.root_node().has_error() {
-                compilation_candidates.push(code.clone());
+            if !code.tree.root_node().has_error()
+                && Some(code.revision) > revision_of_last_compilation_candidate
+            {
+                revision_of_last_compilation_candidate = Some(code.revision);
+                compilation_sender.send(
+                    compilation_thread::Msg::CompilationRequested(code.clone()),
+                )?;
             }
             latest_code_var.write(code);
             analysis_sender.send(Msg::SourceCodeMofied)?;
@@ -976,6 +952,56 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
     );
 }
 
+trait MsgLoop<E> {
+    type Msg;
+
+    // This function is called for every new message that arrives. If we return
+    // a `false` value at any point we stop the loop.
+    fn on_msg(&mut self, msg: Self::Msg) -> Result<bool, E>;
+
+    // After each batch of messages this function is called once to do other
+    // work. After it returns we wait for more messages.
+    fn on_idle(&mut self) -> Result<(), E>;
+
+    // --- Implementation, not for overriding ---
+    fn start(&mut self, mut receiver: Receiver<Self::Msg>) -> Result<(), E> {
+        while self.process_msg_batch(&mut receiver)? {
+            self.on_idle()?;
+        }
+        Ok(())
+    }
+
+    fn process_msg_batch(
+        &mut self,
+        receiver: &mut Receiver<Self::Msg>,
+    ) -> Result<bool, E> {
+        match self.process_msg_batch_helper(receiver) {
+            Ok(res) => res,
+            Err(TryRecvError::Empty) => Ok(true),
+            Err(TryRecvError::Disconnected) => Ok(false),
+        }
+    }
+
+    fn process_msg_batch_helper(
+        &mut self,
+        receiver: &mut Receiver<Self::Msg>,
+    ) -> Result<Result<bool, E>, TryRecvError> {
+        let mut msg = receiver.recv()?;
+        loop {
+            let res = self.on_msg(msg);
+            match res {
+                Ok(do_continue) => {
+                    if !do_continue {
+                        return Ok(res);
+                    }
+                }
+                Err(_) => return Ok(res),
+            }
+            msg = receiver.try_recv()?;
+        }
+    }
+}
+
 // An API for communicatating with an editor.
 trait Editor {
     type Driver: EditorDriver;
@@ -1124,41 +1150,51 @@ fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
 
 mod compilation_thread {
     use crate::sized_stack::SizedStack;
-    use crate::{Error, Msg, SourceFileSnapshot};
-    use std::sync::mpsc::Sender;
-    use std::sync::Arc;
+    use crate::{Error, MsgLoop, SourceFileSnapshot};
+    use std::sync::mpsc::{Receiver, Sender};
 
-    pub struct CompilationCandidates {
-        candidates: Arc<SizedStack<SourceFileSnapshot>>,
-        last_submitted_revision: Option<usize>,
+    pub(crate) enum Msg {
+        CompilationRequested(SourceFileSnapshot),
     }
 
-    impl CompilationCandidates {
-        pub(crate) fn push(&mut self, snapshot: SourceFileSnapshot) {
-            if !is_new_revision(&mut self.last_submitted_revision, &snapshot) {
-                return;
-            }
-            self.candidates.push(snapshot);
+    fn run_compilation_loop(
+        compilation_receiver: Receiver<Msg>,
+        analysis_sender: Sender<crate::Msg>,
+    ) -> Result<(), Error> {
+        CompilationLoop {
+            analysis_sender,
+            last_validated_revision: None,
+            compilation_candidates: SizedStack::with_capacity(
+                crate::MAX_COMPILATION_CANDIDATES,
+            ),
         }
+        .start(compilation_receiver)
     }
 
-    fn run_compilation_loop<F>(
-        candidates: Arc<SizedStack<SourceFileSnapshot>>,
-        analysis_sender: Sender<Msg>,
-        compiles: F,
-    ) -> Result<(), Error>
-    where
-        F: Fn(&SourceFileSnapshot) -> Result<bool, Error>,
-    {
-        let mut last_validated_revision = None;
-        loop {
-            let snapshot = candidates.pop();
-            if !is_new_revision(&mut last_validated_revision, &snapshot) {
-                continue;
+    struct CompilationLoop {
+        analysis_sender: Sender<crate::Msg>,
+        last_validated_revision: Option<usize>,
+        compilation_candidates: SizedStack<SourceFileSnapshot>,
+    }
+
+    impl MsgLoop<Error> for CompilationLoop {
+        type Msg = Msg;
+
+        fn on_msg(&mut self, msg: Msg) -> Result<bool, Error> {
+            let Msg::CompilationRequested(snapshot) = msg;
+            self.compilation_candidates.push(snapshot);
+            Ok(true)
+        }
+
+        fn on_idle(&mut self) -> Result<(), Error> {
+            let snapshot = self.compilation_candidates.pop();
+            if is_new_revision(&mut self.last_validated_revision, &snapshot)
+                && crate::does_snapshot_compile(&snapshot)?
+            {
+                self.analysis_sender
+                    .send(crate::Msg::CompilationSucceeded(snapshot))?;
             }
-            if compiles(&snapshot)? {
-                analysis_sender.send(Msg::CompilationSucceeded(snapshot))?;
-            }
+            Ok(())
         }
     }
 
@@ -1176,25 +1212,16 @@ mod compilation_thread {
         is_new
     }
 
-    pub(crate) fn run(analysis_sender: Sender<Msg>) -> CompilationCandidates {
-        let candidates = Arc::new(SizedStack::with_capacity(
-            crate::MAX_COMPILATION_CANDIDATES,
-        ));
-        let compilation_candidates = CompilationCandidates {
-            candidates: candidates.clone(),
-            last_submitted_revision: None,
-        };
+    pub(crate) fn run(
+        compilation_receiver: Receiver<Msg>,
+        analysis_sender: Sender<crate::Msg>,
+    ) {
         std::thread::spawn(move || {
             crate::report_error(
                 analysis_sender.clone(),
-                run_compilation_loop(
-                    candidates,
-                    analysis_sender,
-                    crate::does_snapshot_compile,
-                ),
+                run_compilation_loop(compilation_receiver, analysis_sender),
             );
         });
-        compilation_candidates
     }
 }
 
