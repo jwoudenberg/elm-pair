@@ -1,6 +1,7 @@
 use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
+use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -306,7 +307,7 @@ where
     let write_socket = read_socket
         .try_clone()
         .map_err(Error::CloningSocketFailed)?;
-    let neovim = neovim::Neovim::new(read_socket, write_socket);
+    let neovim = neovim::Neovim::new(BufReader::new(read_socket), write_socket);
     listen_to_editor(
         thread_error,
         request_compilation,
@@ -1466,15 +1467,14 @@ mod simulation {
         code.remove(start_char..old_end_char);
         code.insert(start_char, &change.new_bytes);
         let new_end_byte = change.start_byte + change.new_bytes.len();
-        let edit = InputEdit {
+        InputEdit {
             start_byte: change.start_byte,
             old_end_byte: change.old_end_byte,
             new_end_byte,
             start_position: crate::byte_to_point(code, change.start_byte),
             old_end_position,
             new_end_position: crate::byte_to_point(code, new_end_byte),
-        };
-        edit
+        }
     }
 
     impl SimulationBuilder {

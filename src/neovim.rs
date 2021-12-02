@@ -2,12 +2,12 @@ use crate::{Edit, InputEdit};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Neovim<R, W> {
-    read: BufReader<R>,
+    read: R,
     write: Arc<Mutex<W>>,
 }
 
@@ -17,7 +17,7 @@ impl<R: Read, W: Write> Neovim<R, W> {
         R: Read,
     {
         Neovim {
-            read: BufReader::new(read),
+            read,
             write: Arc::new(Mutex::new(write)),
         }
     }
@@ -53,7 +53,7 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
 }
 
 struct NeovimListener<R, W, F, G> {
-    read: BufReader<R>,
+    read: R,
     write: Arc<Mutex<W>>,
     load_code_copy: F,
     store_new_code: G,
@@ -134,33 +134,25 @@ where
             changedtick = rmp::decode::read_int(&mut self.read)?,
             firstline = rmp::decode::read_int(&mut self.read)?,
             lastline = rmp::decode::read_int(&mut self.read)?,
-            linedata = {
-                let mut line_count =
-                    rmp::decode::read_array_len(&mut self.read)?;
-                let mut linedata = Vec::with_capacity(line_count as usize);
-                while line_count > 0 {
-                    line_count -= 1;
-                    linedata.push(read_string(&mut self.read)?);
+            _linedata = {
+                if lastline == -1 {
+                    let rope = self.read_rope()?;
+                    (self.store_new_code)(rope, None)?;
+                } else {
+                    let mut code = (self.load_code_copy)()?;
+                    let edit = self.apply_change(
+                        BufChange {
+                            _buf: buf as u64,
+                            _changedtick: changedtick,
+                            firstline,
+                            lastline,
+                        },
+                        &mut code,
+                    )?;
+                    (self.store_new_code)(code, Some(edit))?;
                 }
-                linedata
             }
         );
-        if lastline == -1 {
-            (self.store_new_code)(rope_from_lines(&linedata), None)?;
-        } else {
-            let mut code = (self.load_code_copy)()?;
-            let edit = apply_change(
-                BufChange {
-                    _buf: buf as u64,
-                    _changedtick: changedtick,
-                    firstline,
-                    lastline,
-                    linedata,
-                },
-                &mut code,
-            )?;
-            (self.store_new_code)(code, Some(edit))?;
-        }
         Ok(())
     }
 
@@ -191,34 +183,12 @@ where
         rmp::encode::write_map_len(write, 0)?; // opts
         Ok(())
     }
-}
 
-pub struct BufChange {
-    _buf: u64,
-    _changedtick: u64,
-    firstline: i64,
-    lastline: i64,
-    linedata: Vec<String>,
-}
-
-fn apply_change(
-    change: BufChange,
-    code: &mut Rope,
-) -> Result<InputEdit, Error> {
-    if change.lastline == -1 {
-        let old_end_byte = code.len_bytes();
-        *code = rope_from_lines(&change.linedata);
-        let start_byte = 0;
-        let new_end_byte = code.len_bytes();
-        Ok(InputEdit {
-            start_byte,
-            old_end_byte,
-            new_end_byte,
-            start_position: crate::byte_to_point(code, start_byte),
-            old_end_position: crate::byte_to_point(code, old_end_byte),
-            new_end_position: crate::byte_to_point(code, new_end_byte),
-        })
-    } else {
+    fn apply_change(
+        &mut self,
+        change: BufChange,
+        code: &mut Rope,
+    ) -> Result<InputEdit, Error> {
         let start_line = change.firstline as usize;
         let old_end_line = change.lastline as usize;
         let start_char = code.line_to_char(start_line);
@@ -228,11 +198,21 @@ fn apply_change(
         let mut new_end_byte = start_byte;
         let old_end_position = crate::byte_to_point(code, old_end_byte);
         code.remove(start_char..old_end_char);
-        for line in &change.linedata {
-            code.insert(start_char, line.as_str());
-            new_end_byte += line.len();
-            let new_end_char = code.byte_to_char(new_end_byte);
-            code.insert_char(new_end_char, '\n');
+        let mut remaining_lines = rmp::decode::read_array_len(&mut self.read)?;
+        while remaining_lines > 0 {
+            remaining_lines -= 1;
+            let len = rmp::decode::read_str_len(&mut self.read)?;
+            read_chunks(
+                &mut self.read,
+                len as usize,
+                DecodingError::ReadingString,
+                |chunk| {
+                    code.insert(code.byte_to_char(new_end_byte), chunk);
+                    new_end_byte += chunk.len();
+                    Ok(())
+                },
+            )?;
+            code.insert_char(code.byte_to_char(new_end_byte), '\n');
             new_end_byte += 1;
         }
         Ok(InputEdit {
@@ -244,15 +224,33 @@ fn apply_change(
             new_end_position: crate::byte_to_point(code, new_end_byte),
         })
     }
+
+    fn read_rope(&mut self) -> Result<Rope, DecodingError> {
+        let mut builder = RopeBuilder::new();
+        let mut remaining_lines = rmp::decode::read_array_len(&mut self.read)?;
+        while remaining_lines > 0 {
+            remaining_lines -= 1;
+            let len = rmp::decode::read_str_len(&mut self.read)?;
+            read_chunks(
+                &mut self.read,
+                len as usize,
+                DecodingError::ReadingString,
+                |chunk| {
+                    builder.append(chunk);
+                    Ok(())
+                },
+            )?;
+            builder.append("\n");
+        }
+        Ok(builder.finish())
+    }
 }
 
-fn rope_from_lines(lines: &[String]) -> Rope {
-    let mut builder = RopeBuilder::new();
-    for line in lines {
-        builder.append(line);
-        builder.append("\n");
-    }
-    builder.finish()
+pub struct BufChange {
+    _buf: u64,
+    _changedtick: u64,
+    firstline: i64,
+    lastline: i64,
 }
 
 #[derive(Debug)]
@@ -302,74 +300,33 @@ impl From<rmp::encode::ValueWriteError> for Error {
     }
 }
 
-impl From<rmp::decode::MarkerReadError> for Error {
-    fn from(
-        rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
-    ) -> Error {
-        DecodingError::ReadingMarker(error).into()
-    }
-}
-
 impl From<rmp::decode::ValueReadError> for Error {
     fn from(error: rmp::decode::ValueReadError) -> Error {
-        match error {
-            rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
-                DecodingError::ReadingMarker(sub_error).into()
-            }
-            rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
-                DecodingError::ReadingData(sub_error).into()
-            }
-            rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
-                DecodingError::TypeMismatch(sub_error).into()
-            }
-        }
+        Error::DecodingFailed(error.into())
     }
 }
 
 impl From<rmp::decode::NumValueReadError> for Error {
     fn from(error: rmp::decode::NumValueReadError) -> Error {
-        match error {
-            rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
-                DecodingError::ReadingMarker(sub_error).into()
-            }
-            rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
-                DecodingError::ReadingData(sub_error).into()
-            }
-            rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
-                DecodingError::TypeMismatch(sub_error).into()
-            }
-            rmp::decode::NumValueReadError::OutOfRange => {
-                DecodingError::OutOfRange.into()
-            }
-        }
+        Error::DecodingFailed(error.into())
     }
 }
 
 impl From<rmp::decode::DecodeStringError<'_>> for Error {
     fn from(error: rmp::decode::DecodeStringError) -> Error {
-        match error {
-            rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
-                DecodingError::ReadingMarker(sub_error).into()
-            }
-            rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
-                DecodingError::ReadingData(sub_error).into()
-            }
-            rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
-                DecodingError::TypeMismatch(sub_error).into()
-            }
-            rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
-                DecodingError::BufferCannotHoldString(sub_error).into()
-            }
-            rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
-                DecodingError::InvalidUtf8(sub_error).into()
-            }
-        }
+        Error::DecodingFailed(error.into())
+    }
+}
+
+impl From<rmp::decode::MarkerReadError> for Error {
+    fn from(error: rmp::decode::MarkerReadError) -> Error {
+        Error::DecodingFailed(error.into())
     }
 }
 
 // Skip `count` messagepack options. If one of these objects is an array or
 // map, skip its contents too.
-fn skip_objects<R>(read: &mut R, count: u32) -> Result<(), Error>
+fn skip_objects<R>(read: &mut R, count: u32) -> Result<(), DecodingError>
 where
     R: Read,
 {
@@ -483,7 +440,8 @@ where
     Ok(())
 }
 
-fn read_string<R>(read: &mut R) -> Result<String, Error>
+// TODO: Remove this function
+fn read_string<R>(read: &mut R) -> Result<String, DecodingError>
 where
     R: Read,
 {
@@ -492,10 +450,57 @@ where
     read.read_exact(&mut buffer)
         .map_err(DecodingError::ReadingString)?;
     std::string::String::from_utf8(buffer)
-        .map_err(|err| DecodingError::InvalidUtf8(err.utf8_error()).into())
+        .map_err(|err| DecodingError::InvalidUtf8(err.utf8_error()))
 }
 
-fn read_buf<R>(read: &mut R) -> Result<u8, Error>
+// Reads chunks of string slices of a reader. Used to copy bits of a reader
+// somewhere else without needing intermediate heap allocation.
+fn read_chunks<R, F, G, E>(
+    mut read: R,
+    len: usize,
+    on_error: G,
+    mut on_chunk: F,
+) -> Result<(), E>
+where
+    R: Read,
+    F: FnMut(&str) -> Result<(), E>,
+    G: Fn(std::io::Error) -> E,
+{
+    let mut bytes_remaining = len;
+    let mut buffer_offset = 0;
+    // The size of the buffer is small as to avoid overflowing the stack, but
+    // large enough to contain a single line of code (our typical read load).
+    // That way most typical payloads are moved in one iteration.
+    let mut buffer = [0u8; 100];
+    while bytes_remaining > 0 {
+        let chunk_size = std::cmp::min(buffer.len(), bytes_remaining);
+        let write_slice = &mut buffer[buffer_offset..chunk_size];
+        read.read_exact(write_slice).map_err(&on_error)?;
+        let str = match std::str::from_utf8_mut(&mut buffer[0..chunk_size]) {
+            Ok(str) => str,
+            Err(utf8_error) => {
+                let good_bytes = utf8_error.valid_up_to();
+                unsafe {
+                    std::str::from_utf8_unchecked_mut(
+                        &mut buffer[0..good_bytes],
+                    )
+                }
+            }
+        };
+        let actual_chunk_size = str.len();
+        bytes_remaining -= actual_chunk_size;
+        on_chunk(str)?;
+        let bad_bytes = actual_chunk_size - chunk_size;
+        buffer_offset = 0;
+        while buffer_offset < bad_bytes {
+            buffer[buffer_offset] = buffer[actual_chunk_size + buffer_offset];
+            buffer_offset += 1;
+        }
+    }
+    Ok(())
+}
+
+fn read_buf<R>(read: &mut R) -> Result<u8, DecodingError>
 where
     R: Read,
 {
@@ -620,4 +625,69 @@ mod messagepack {
         };
     }
     pub use read_tuple;
+
+    impl From<rmp::decode::MarkerReadError> for DecodingError {
+        fn from(
+            rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
+        ) -> DecodingError {
+            DecodingError::ReadingMarker(error)
+        }
+    }
+
+    impl From<rmp::decode::ValueReadError> for DecodingError {
+        fn from(error: rmp::decode::ValueReadError) -> DecodingError {
+            match error {
+                rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
+                    DecodingError::ReadingMarker(sub_error)
+                }
+                rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
+                    DecodingError::ReadingData(sub_error)
+                }
+                rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
+                    DecodingError::TypeMismatch(sub_error)
+                }
+            }
+        }
+    }
+
+    impl From<rmp::decode::NumValueReadError> for DecodingError {
+        fn from(error: rmp::decode::NumValueReadError) -> DecodingError {
+            match error {
+                rmp::decode::NumValueReadError::InvalidMarkerRead(
+                    sub_error,
+                ) => DecodingError::ReadingMarker(sub_error),
+                rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
+                    DecodingError::ReadingData(sub_error)
+                }
+                rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
+                    DecodingError::TypeMismatch(sub_error)
+                }
+                rmp::decode::NumValueReadError::OutOfRange => {
+                    DecodingError::OutOfRange
+                }
+            }
+        }
+    }
+
+    impl From<rmp::decode::DecodeStringError<'_>> for DecodingError {
+        fn from(error: rmp::decode::DecodeStringError) -> DecodingError {
+            match error {
+                rmp::decode::DecodeStringError::InvalidMarkerRead(
+                    sub_error,
+                ) => DecodingError::ReadingMarker(sub_error),
+                rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
+                    DecodingError::ReadingData(sub_error)
+                }
+                rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
+                    DecodingError::TypeMismatch(sub_error)
+                }
+                rmp::decode::DecodeStringError::BufferSizeTooSmall(
+                    sub_error,
+                ) => DecodingError::BufferCannotHoldString(sub_error),
+                rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
+                    DecodingError::InvalidUtf8(sub_error)
+                }
+            }
+        }
+    }
 }
