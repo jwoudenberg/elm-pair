@@ -344,17 +344,17 @@ where
                 Err(Error::EditorRequestedNonExistingLocalCopy)
             }
         },
-        |bytes, opt_edit| {
+        |change| {
             if let Some(error) = thread_error.try_take() {
                 return Err(error);
             }
             let latest_code = latest_code_var.try_take();
-            let code = match (latest_code, opt_edit) {
+            let code = match (latest_code, change.edit) {
                 (Some(mut code), Some(edit)) => {
                     apply_source_file_edit(&mut code, edit)?;
                     code
                 }
-                _ => init_source_file_snapshot(bytes)?,
+                _ => init_source_file_snapshot(change.new_bytes)?,
             };
             if !code.tree.root_node().has_error() {
                 request_compilation(code.clone());
@@ -964,10 +964,15 @@ trait Editor {
     ) -> Result<(), Error>
     where
         F: FnMut() -> Result<Rope, Error>,
-        G: FnMut(Rope, Option<InputEdit>) -> Result<(), Error>;
+        G: FnMut(EditorSourceChange) -> Result<(), Error>;
 
     // Obtain an EditorDriver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
+}
+
+struct EditorSourceChange {
+    new_bytes: Rope,
+    edit: Option<InputEdit>,
 }
 
 // An API for sending commands to an editor. This is defined as a trait to

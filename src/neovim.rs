@@ -1,4 +1,4 @@
-use crate::{Edit, InputEdit};
+use crate::{Edit, EditorSourceChange, InputEdit};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
@@ -39,7 +39,7 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
     ) -> Result<(), crate::Error>
     where
         F: FnMut() -> Result<Rope, crate::Error>,
-        G: FnMut(Rope, Option<InputEdit>) -> Result<(), crate::Error>,
+        G: FnMut(EditorSourceChange) -> Result<(), crate::Error>,
     {
         let mut listener = NeovimListener {
             read: self.read,
@@ -64,7 +64,7 @@ where
     R: Read,
     W: Write,
     F: FnMut() -> Result<Rope, crate::Error>,
-    G: FnMut(Rope, Option<InputEdit>) -> Result<(), crate::Error>,
+    G: FnMut(EditorSourceChange) -> Result<(), crate::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
@@ -151,9 +151,12 @@ where
             _linedata = {
                 if lastline == -1 {
                     let rope = self.read_rope()?;
-                    (self.store_new_code)(rope, None)?;
+                    (self.store_new_code)(EditorSourceChange {
+                        new_bytes: rope,
+                        edit: None,
+                    })?;
                 } else {
-                    let mut code = (self.load_code_copy)()?;
+                    let mut bytes = (self.load_code_copy)()?;
                     let edit = self.apply_change(
                         BufChange {
                             _buf: buf as u64,
@@ -161,9 +164,12 @@ where
                             firstline,
                             lastline,
                         },
-                        &mut code,
+                        &mut bytes,
                     )?;
-                    (self.store_new_code)(code, Some(edit))?;
+                    (self.store_new_code)(EditorSourceChange {
+                        new_bytes: bytes,
+                        edit: Some(edit),
+                    })?;
                 }
             }
         );
