@@ -25,7 +25,7 @@ impl<R: Read, W: Write> Neovim<R, W> {
     }
 }
 
-impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
+impl<R: Read, W: 'static + Write + Send> crate::Editor for Neovim<R, W> {
     type Driver = NeovimDriver<W>;
 
     fn driver(&self) -> NeovimDriver<W> {
@@ -540,7 +540,7 @@ pub struct NeovimDriver<W> {
 
 impl<W> crate::EditorDriver for NeovimDriver<W>
 where
-    W: Write,
+    W: 'static + Write + Send,
 {
     fn apply_edits(&self, refactor: Vec<Edit>) -> Result<(), crate::Error> {
         println!("REFACTOR: {:?}", refactor);

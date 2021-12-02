@@ -2,7 +2,7 @@ use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
 use std::io::BufReader;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -24,7 +24,6 @@ pub fn main() {
 
 fn run() -> Result<(), Error> {
     let latest_code = Arc::new(MVar::new_empty());
-    let editor_driver = Arc::new(MVar::new_empty());
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
     let (compilation_candidates, last_compiling_code) =
         compilation_thread::run(analysis_sender.clone());
@@ -32,40 +31,43 @@ fn run() -> Result<(), Error> {
         compilation_candidates,
         latest_code.clone(),
         analysis_sender,
-        editor_driver.clone(),
     );
-    run_analysis_loop(
-        editor_driver,
-        latest_code,
-        last_compiling_code,
-        analysis_receiver,
-    )
+    run_analysis_loop(latest_code, last_compiling_code, analysis_receiver)
 }
 
-fn run_analysis_loop<E>(
-    editor_driver_var: Arc<MVar<E>>,
+fn run_analysis_loop(
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
     analysis_receiver: Receiver<Msg>,
 ) -> Result<(), Error>
 where
-    E: EditorDriver,
 {
-    let editor_driver = editor_driver_var.take();
     let mut analysis_iterator = AnalysisIterator {
         latest_code,
         last_compiling_code,
         analysis_receiver,
+        editor_driver: None,
     };
-    analysis_iterator.try_for_each(|opt_diff| {
-        let diff = opt_diff?;
-        let opt_change = analyze_diff(&diff);
-        if let Some(change) = opt_change {
-            let refactor = elm_refactor(&diff, &change);
-            editor_driver.apply_edits(refactor)?;
+    loop {
+        match analysis_iterator.process_msg_batch()? {
+            LoopOn::Break => return Ok(()),
+            LoopOn::Continue => {}
         }
-        Ok(())
-    })
+        match analysis_iterator.get_diff() {
+            None => {}
+            Some(diff) => {
+                let opt_change = analyze_diff(&diff);
+                if let Some(change) = opt_change {
+                    if let Some(editor_driver) =
+                        &analysis_iterator.editor_driver
+                    {
+                        let refactor = elm_refactor(&diff, &change);
+                        editor_driver.apply_edits(refactor)?;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -150,12 +152,12 @@ enum Error {
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
     EditorRequestedNonExistingLocalCopy,
-    FailedToSendMessage(String),
+    FailedToSendMessage,
 }
 
-impl<T: std::fmt::Debug> From<SendError<T>> for Error {
-    fn from(SendError(msg): SendError<T>) -> Error {
-        Error::FailedToSendMessage(format!("{:?}", msg))
+impl<T> From<SendError<T>> for Error {
+    fn from(err: SendError<T>) -> Error {
+        Error::FailedToSendMessage
     }
 }
 
@@ -168,34 +170,14 @@ struct AnalysisIterator {
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: Arc<MVar<SourceFileSnapshot>>,
     analysis_receiver: Receiver<Msg>,
+    editor_driver: Option<Box<dyn EditorDriver>>,
 }
 
-impl<'a> Iterator for AnalysisIterator {
-    type Item = Result<SourceFileDiff, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.process_msg_batch() {
-                Err(err) => return Some(Err(err)),
-                Ok(LoopOn::Break) => return None,
-                Ok(LoopOn::Continue) => {
-                    if let (Some(old), Some(new)) = (
-                        self.last_compiling_code.try_read(),
-                        self.latest_code.try_read(),
-                    ) {
-                        return Some(Ok(SourceFileDiff { old, new }));
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
 enum Msg {
     NewDiffAvailable,
     ThreadFailed(Error),
     AllEditorsDisconnected,
+    EditorConnected(Box<dyn EditorDriver>),
 }
 
 enum LoopOn {
@@ -204,6 +186,17 @@ enum LoopOn {
 }
 
 impl AnalysisIterator {
+    fn get_diff(&mut self) -> Option<SourceFileDiff> {
+        if let (Some(old), Some(new)) = (
+            self.last_compiling_code.try_read(),
+            self.latest_code.try_read(),
+        ) {
+            Some(SourceFileDiff { old, new })
+        } else {
+            None
+        }
+    }
+
     fn process_msg_batch(&mut self) -> Result<LoopOn, Error> {
         match self.process_msg_batch_helper() {
             Ok(res) => res,
@@ -233,6 +226,10 @@ impl AnalysisIterator {
             Msg::NewDiffAvailable => Ok(LoopOn::Continue),
             Msg::ThreadFailed(err) => Err(err),
             Msg::AllEditorsDisconnected => Ok(LoopOn::Break),
+            Msg::EditorConnected(editor_driver) => {
+                self.editor_driver = Some(editor_driver);
+                Ok(LoopOn::Continue)
+            }
         }
     }
 }
@@ -323,7 +320,6 @@ fn run_editor_listener_thread(
     compilation_candidates: compilation_thread::CompilationCandidates,
     latest_code_var: Arc<MVar<SourceFileSnapshot>>,
     analysis_sender: Sender<Msg>,
-    editor_driver: Arc<MVar<neovim::NeovimDriver<UnixStream>>>,
 ) {
     std::thread::spawn(move || {
         crate::report_error(
@@ -332,7 +328,6 @@ fn run_editor_listener_thread(
                 compilation_candidates,
                 &latest_code_var,
                 analysis_sender,
-                &editor_driver,
             ),
         )
     });
@@ -342,7 +337,6 @@ fn run_editor_listener_loop(
     compilation_candidates: compilation_thread::CompilationCandidates,
     latest_code_var: &MVar<SourceFileSnapshot>,
     analysis_sender: Sender<Msg>,
-    editor_driver: &MVar<neovim::NeovimDriver<UnixStream>>,
 ) -> Result<(), Error> {
     let socket_path = "/tmp/elm-pair.sock";
     let listener =
@@ -359,7 +353,6 @@ fn run_editor_listener_loop(
         compilation_candidates,
         latest_code_var,
         analysis_sender,
-        editor_driver,
         neovim,
     )
 }
@@ -368,13 +361,14 @@ fn listen_to_editor<E>(
     mut compilation_candidates: compilation_thread::CompilationCandidates,
     latest_code_var: &MVar<SourceFileSnapshot>,
     analysis_sender: Sender<Msg>,
-    editor_driver: &MVar<E::Driver>,
     editor: E,
 ) -> Result<(), Error>
 where
     E: Editor,
 {
-    editor_driver.write(editor.driver());
+    let driver = editor.driver();
+    let boxed = Box::new(driver);
+    analysis_sender.send(Msg::EditorConnected(boxed))?;
     editor.listen(
         |_buf| {
             if let Some(code) = latest_code_var.try_take() {
@@ -1026,26 +1020,25 @@ enum EditorEvent {
 
 // An API for sending commands to an editor. This is defined as a trait to
 // support different kinds of editors.
-trait EditorDriver {
+trait EditorDriver: 'static + Send {
     fn apply_edits(&self, edits: Vec<Edit>) -> Result<(), Error>;
 }
 
 // A thread sync structure similar to Haskell's MVar. A variable, potentially
-// empty, that can be shared across threads.
+// empty, that can be shared across threads. Doesn't (currently) do blocking
+// reads and writes though, because this codebase doesn't need it.
 mod mvar {
     use crate::lock;
-    use std::sync::{Condvar, Mutex};
+    use std::sync::Mutex;
 
     pub struct MVar<T> {
         val: Mutex<Option<T>>,
-        full_condvar: Condvar,
     }
 
     impl<T> MVar<T> {
         pub fn new_empty() -> MVar<T> {
             MVar {
                 val: Mutex::new(None),
-                full_condvar: Condvar::new(),
             }
         }
 
@@ -1053,35 +1046,6 @@ mod mvar {
         pub fn write(&self, new: T) {
             let mut val = lock(&self.val);
             *val = Some(new);
-            self.full_condvar.notify_all();
-        }
-
-        // Write a value to an empty MVar. Returns true if the write succeeded,
-        // or false if there already was a value in the MVar.
-        pub fn try_put(&self, new: T) -> bool {
-            let mut val = lock(&self.val);
-            match val.as_ref() {
-                None => {
-                    *val = Some(new);
-                    self.full_condvar.notify_all();
-                    true
-                }
-                Some(_) => false,
-            }
-        }
-
-        // Take the value from the MVar. If the MVar does not contain a value,
-        // block until it does.
-        pub fn take(&self) -> T {
-            let mut opt_val = crate::lock(&self.val);
-            loop {
-                match opt_val.take() {
-                    None {} => {
-                        opt_val = self.full_condvar.wait(opt_val).unwrap()
-                    }
-                    Some(val) => return val,
-                }
-            }
         }
 
         // Take the value from an MVar if it has one, leaving the MVar empty.
