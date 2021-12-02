@@ -1,4 +1,4 @@
-use crate::{Edit, EditorSourceChange, InputEdit};
+use crate::{Edit, InputEdit};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
@@ -25,7 +25,6 @@ impl<R: Read, W: Write> Neovim<R, W> {
 
 impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
     type Driver = NeovimDriver<W>;
-    type SourceChange = BufChange;
 
     fn driver(&self) -> NeovimDriver<W> {
         NeovimDriver {
@@ -33,28 +32,39 @@ impl<R: Read, W: Write> crate::Editor for Neovim<R, W> {
         }
     }
 
-    fn listen<P>(self, on_buf_change: P) -> Result<(), crate::Error>
+    fn listen<F, G>(
+        self,
+        load_code_copy: F,
+        store_new_code: G,
+    ) -> Result<(), crate::Error>
     where
-        P: FnMut(BufChange) -> Result<(), crate::Error>,
+        F: FnMut() -> Result<Rope, crate::Error>,
+        G: FnMut(Rope, Option<InputEdit>) -> Result<(), crate::Error>,
     {
         let mut listener = NeovimListener {
             read: self.read,
             write: self.write,
-            on_buf_change,
+            load_code_copy,
+            store_new_code,
         };
         while listener.parse_msg()? {}
         Ok(())
     }
 }
 
-struct NeovimListener<R, W, P> {
+struct NeovimListener<R, W, F, G> {
     read: BufReader<R>,
     write: Arc<Mutex<W>>,
-    on_buf_change: P,
+    load_code_copy: F,
+    store_new_code: G,
 }
 
-impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
-    NeovimListener<R, W, P>
+impl<R, W, F, G> NeovimListener<R, W, F, G>
+where
+    R: Read,
+    W: Write,
+    F: FnMut() -> Result<Rope, crate::Error>,
+    G: FnMut(Rope, Option<InputEdit>) -> Result<(), crate::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
@@ -135,14 +145,23 @@ impl<R: Read, W: Write, P: FnMut(BufChange) -> Result<(), crate::Error>>
                 linedata
             }
         );
-        (self.on_buf_change)(BufChange {
-            _buf: buf as u64,
-            _changedtick: changedtick,
-            firstline,
-            lastline,
-            linedata,
-        })
-        .map_err(|err| Error::FailedWhileProcessingBufChange(Box::new(err)))
+        if lastline == -1 {
+            (self.store_new_code)(rope_from_lines(&linedata), None)?;
+        } else {
+            let mut code = (self.load_code_copy)()?;
+            let edit = apply_change(
+                BufChange {
+                    _buf: buf as u64,
+                    _changedtick: changedtick,
+                    firstline,
+                    lastline,
+                    linedata,
+                },
+                &mut code,
+            )?;
+            (self.store_new_code)(code, Some(edit))?;
+        }
+        Ok(())
     }
 
     fn parse_buf_changedtick_event(&mut self) -> Result<(), Error> {
@@ -182,58 +201,48 @@ pub struct BufChange {
     linedata: Vec<String>,
 }
 
-impl EditorSourceChange for BufChange {
-    fn apply_first(&self) -> Result<Option<Rope>, crate::Error> {
-        if self.lastline == -1 {
-            Ok(Some(rope_from_lines(&self.linedata)))
-        } else {
-            Err(Error::GotIncrementalUpdateBeforeFullUpdate.into())
+fn apply_change(
+    change: BufChange,
+    code: &mut Rope,
+) -> Result<InputEdit, Error> {
+    if change.lastline == -1 {
+        let old_end_byte = code.len_bytes();
+        *code = rope_from_lines(&change.linedata);
+        let start_byte = 0;
+        let new_end_byte = code.len_bytes();
+        Ok(InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position: crate::byte_to_point(code, start_byte),
+            old_end_position: crate::byte_to_point(code, old_end_byte),
+            new_end_position: crate::byte_to_point(code, new_end_byte),
+        })
+    } else {
+        let start_line = change.firstline as usize;
+        let old_end_line = change.lastline as usize;
+        let start_char = code.line_to_char(start_line);
+        let start_byte = code.line_to_byte(start_line);
+        let old_end_char = code.line_to_char(old_end_line);
+        let old_end_byte = code.line_to_byte(old_end_line);
+        let mut new_end_byte = start_byte;
+        let old_end_position = crate::byte_to_point(code, old_end_byte);
+        code.remove(start_char..old_end_char);
+        for line in &change.linedata {
+            code.insert(start_char, line.as_str());
+            new_end_byte += line.len();
+            let new_end_char = code.byte_to_char(new_end_byte);
+            code.insert_char(new_end_char, '\n');
+            new_end_byte += 1;
         }
-    }
-
-    fn apply(
-        &self,
-        code: &mut Rope,
-    ) -> Result<Option<InputEdit>, crate::Error> {
-        if self.lastline == -1 {
-            let old_end_byte = code.len_bytes();
-            *code = rope_from_lines(&self.linedata);
-            let start_byte = 0;
-            let new_end_byte = code.len_bytes();
-            Ok(Some(InputEdit {
-                start_byte,
-                old_end_byte,
-                new_end_byte,
-                start_position: crate::byte_to_point(code, start_byte),
-                old_end_position: crate::byte_to_point(code, old_end_byte),
-                new_end_position: crate::byte_to_point(code, new_end_byte),
-            }))
-        } else {
-            let start_line = self.firstline as usize;
-            let old_end_line = self.lastline as usize;
-            let start_char = code.line_to_char(start_line);
-            let start_byte = code.line_to_byte(start_line);
-            let old_end_char = code.line_to_char(old_end_line);
-            let old_end_byte = code.line_to_byte(old_end_line);
-            let mut new_end_byte = start_byte;
-            let old_end_position = crate::byte_to_point(code, old_end_byte);
-            code.remove(start_char..old_end_char);
-            for line in &self.linedata {
-                code.insert(start_char, line.as_str());
-                new_end_byte += line.len();
-                let new_end_char = code.byte_to_char(new_end_byte);
-                code.insert_char(new_end_char, '\n');
-                new_end_byte += 1;
-            }
-            Ok(Some(InputEdit {
-                start_byte,
-                old_end_byte,
-                new_end_byte,
-                start_position: crate::byte_to_point(code, start_byte),
-                old_end_position,
-                new_end_position: crate::byte_to_point(code, new_end_byte),
-            }))
-        }
+        Ok(InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position: crate::byte_to_point(code, start_byte),
+            old_end_position,
+            new_end_position: crate::byte_to_point(code, new_end_byte),
+        })
     }
 }
 
@@ -255,7 +264,6 @@ pub(crate) enum Error {
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
     ReceivedErrorEvent(u64, String),
-    GotIncrementalUpdateBeforeFullUpdate,
     FailedWhileProcessingBufChange(Box<crate::Error>),
 }
 
@@ -266,6 +274,12 @@ impl From<Error> for crate::Error {
         } else {
             crate::Error::NeovimMessageDecodingFailed(err)
         }
+    }
+}
+
+impl From<crate::Error> for Error {
+    fn from(err: crate::Error) -> Error {
+        Error::FailedWhileProcessingBufChange(Box::new(err))
     }
 }
 

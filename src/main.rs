@@ -176,6 +176,7 @@ enum Error {
     CompilationFailedToRunElmMake(std::io::Error),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
+    EditorRequestedNonExistingLocalCopy,
 }
 
 struct SourceFileDiff {
@@ -329,57 +330,63 @@ where
     E: Editor,
 {
     editor_driver.write(editor.driver());
-    editor.listen(|change| {
-        if let Some(error) = thread_error.try_take() {
-            return Err(error);
-        }
-        let mut latest_code = latest_code_var.try_take();
-        handle_editor_source_change(&mut latest_code, change)?;
-        if let Some(code) = latest_code {
+    editor.listen(
+        || {
+            if let Some(error) = thread_error.try_take() {
+                return Err(error);
+            }
+            if let Some(code) = latest_code_var.try_take() {
+                Ok(code.bytes)
+            } else {
+                // TODO: let the editor handle this error (so it can request
+                // a refresh).
+                Err(Error::EditorRequestedNonExistingLocalCopy)
+            }
+        },
+        |bytes, opt_edit| {
+            if let Some(error) = thread_error.try_take() {
+                return Err(error);
+            }
+            let latest_code = latest_code_var.try_take();
+            let code = match (latest_code, opt_edit) {
+                (Some(mut code), Some(edit)) => {
+                    apply_source_file_edit(&mut code, edit)?;
+                    code
+                }
+                _ => init_source_file_snapshot(bytes)?,
+            };
             if !code.tree.root_node().has_error() {
                 request_compilation(code.clone());
             }
             latest_code_var.write(code);
             new_diff_available.write(());
-        }
-        Ok(())
-    })
+            Ok(())
+        },
+    )
 }
 
-fn handle_editor_source_change<E>(
-    latest_code: &mut Option<SourceFileSnapshot>,
-    change: E,
-) -> Result<(), Error>
-where
-    E: EditorSourceChange,
-{
-    match latest_code {
-        None => {
-            if let Some(bytes) = change.apply_first()? {
-                *latest_code = Some(SourceFileSnapshot {
-                    tree: parse(None, &bytes)?,
-                    bytes,
-                    revision: 0,
-                    file_data: Arc::new(crate::FileData {
-                        // TODO: put real data here.
-                        path: PathBuf::new(),
-                        project_root: PathBuf::from(
-                            "/home/jasper/dev/elm-pair/tests",
-                        ),
-                        elm_bin: PathBuf::from("elm"),
-                    }),
-                })
-            }
-        }
-        Some(code) => {
-            let opt_edit = change.apply(&mut code.bytes)?;
-            code.revision += 1;
-            if let Some(edit) = opt_edit {
-                code.tree.edit(&edit);
-                reparse_tree(code)?;
-            }
-        }
-    }
+fn init_source_file_snapshot(bytes: Rope) -> Result<SourceFileSnapshot, Error> {
+    let snapshot = SourceFileSnapshot {
+        tree: parse(None, &bytes)?,
+        bytes,
+        revision: 0,
+        file_data: Arc::new(crate::FileData {
+            // TODO: put real data here.
+            path: PathBuf::new(),
+            project_root: PathBuf::from("/home/jasper/dev/elm-pair/tests"),
+            elm_bin: PathBuf::from("elm"),
+        }),
+    };
+    Ok(snapshot)
+}
+
+fn apply_source_file_edit(
+    code: &mut SourceFileSnapshot,
+    edit: InputEdit,
+) -> Result<(), Error> {
+    code.revision += 1;
+    code.tree.edit(&edit);
+    reparse_tree(code)?;
     Ok(())
 }
 
@@ -947,12 +954,16 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
 // An API for communicatating with an editor.
 trait Editor {
     type Driver: EditorDriver;
-    type SourceChange: EditorSourceChange;
 
     // Listen for changes to source files happening in the editor.
-    fn listen<P>(self, on_source_change: P) -> Result<(), Error>
+    fn listen<F, G>(
+        self,
+        load_code_copy: F,
+        store_new_code: G,
+    ) -> Result<(), Error>
     where
-        P: FnMut(Self::SourceChange) -> Result<(), Error>;
+        F: FnMut() -> Result<Rope, Error>,
+        G: FnMut(Rope, Option<InputEdit>) -> Result<(), Error>;
 
     // Obtain an EditorDriver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
@@ -962,16 +973,6 @@ trait Editor {
 // support different kinds of editors.
 trait EditorDriver {
     fn apply_edits(&self, edits: Vec<Edit>) -> Result<(), Error>;
-}
-
-// Represents a change to source code reported by an editor. This can be applied
-// to our local copy of the source code.
-trait EditorSourceChange {
-    // Called when we don't have an existing local copy for a source file yet.
-    fn apply_first(&self) -> Result<Option<Rope>, Error>;
-
-    // Called when we have an existing copy of a source file.
-    fn apply(&self, code: &mut Rope) -> Result<Option<InputEdit>, Error>;
 }
 
 // A thread sync structure similar to Haskell's MVar. A variable, potentially
@@ -1324,7 +1325,7 @@ mod simulation {
         path: &Path,
     ) -> Result<Option<ElmChange>, Error> {
         let simulation = Simulation::from_file(path)?;
-        let mut latest_code = None;
+        let mut latest_code: Option<crate::SourceFileSnapshot> = None;
         let mut last_compiling_code = None;
         let diff_iterator = simulation.msgs.into_iter().filter_map(|msg| {
             let res = {
@@ -1333,11 +1334,18 @@ mod simulation {
                         last_compiling_code = latest_code.clone();
                         Ok(())
                     }
-                    Msg::ReceivedEditorEvent(edit) => {
-                        crate::handle_editor_source_change(
-                            &mut latest_code,
-                            edit,
-                        )
+                    Msg::ReceivedEditorEvent(event) => {
+                        if let Some(code) = &mut latest_code {
+                            let edit = change_source(&mut code.bytes, event);
+                            crate::apply_source_file_edit(code, edit)
+                        } else {
+                            crate::init_source_file_snapshot(initial_source(
+                                event,
+                            ))
+                            .map(|code| {
+                                latest_code = Some(code);
+                            })
+                        }
                     }
                 }
             };
@@ -1442,34 +1450,31 @@ mod simulation {
         old_end_byte: usize,
     }
 
-    impl crate::EditorSourceChange for SimulatedSourceChange {
-        fn apply_first(&self) -> Result<Option<Rope>, crate::Error> {
-            let mut builder = ropey::RopeBuilder::new();
-            builder.append(&self.new_bytes);
-            Ok(Some(builder.finish()))
-        }
+    fn initial_source(change: SimulatedSourceChange) -> Rope {
+        let mut builder = ropey::RopeBuilder::new();
+        builder.append(&change.new_bytes);
+        builder.finish()
+    }
 
-        fn apply(
-            &self,
-            code: &mut Rope,
-        ) -> Result<Option<InputEdit>, crate::Error> {
-            let start_char = code.byte_to_char(self.start_byte);
-            let old_end_char = code.byte_to_char(self.old_end_byte);
-            let old_end_position =
-                crate::byte_to_point(code, self.old_end_byte);
-            code.remove(start_char..old_end_char);
-            code.insert(start_char, &self.new_bytes);
-            let new_end_byte = self.start_byte + self.new_bytes.len();
-            let edit = InputEdit {
-                start_byte: self.start_byte,
-                old_end_byte: self.old_end_byte,
-                new_end_byte,
-                start_position: crate::byte_to_point(code, self.start_byte),
-                old_end_position,
-                new_end_position: crate::byte_to_point(code, new_end_byte),
-            };
-            Ok(Some(edit))
-        }
+    fn change_source(
+        code: &mut Rope,
+        change: SimulatedSourceChange,
+    ) -> InputEdit {
+        let start_char = code.byte_to_char(change.start_byte);
+        let old_end_char = code.byte_to_char(change.old_end_byte);
+        let old_end_position = crate::byte_to_point(code, change.old_end_byte);
+        code.remove(start_char..old_end_char);
+        code.insert(start_char, &change.new_bytes);
+        let new_end_byte = change.start_byte + change.new_bytes.len();
+        let edit = InputEdit {
+            start_byte: change.start_byte,
+            old_end_byte: change.old_end_byte,
+            new_end_byte,
+            start_position: crate::byte_to_point(code, change.start_byte),
+            old_end_position,
+            new_end_position: crate::byte_to_point(code, new_end_byte),
+        };
+        edit
     }
 
     impl SimulationBuilder {
