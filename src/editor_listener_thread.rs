@@ -1,13 +1,32 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
-use crate::{Editor, EditorEvent, Error, MVar, SourceFileSnapshot};
+use crate::{MVar, SourceFileSnapshot};
 use ropey::Rope;
 use std::io::BufReader;
 use std::os::unix::net::UnixListener;
-use std::sync::mpsc::Sender;
+use std::path::PathBuf;
+use std::sync::mpsc::{SendError, Sender};
 use std::sync::Arc;
 use tree_sitter::{InputEdit, Tree};
+
+#[derive(Debug)]
+pub(crate) enum Error {
+    SocketCreationFailed(std::io::Error),
+    AcceptingIncomingSocketConnectionFailed(std::io::Error),
+    CloningSocketFailed(std::io::Error),
+    EditorRequestedNonExistingLocalCopy,
+    TreeSitterParsingFailed,
+    TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
+    NeovimMessageDecodingFailed(neovim::Error),
+    FailedToSendMessage,
+}
+
+impl<T> From<SendError<T>> for Error {
+    fn from(_err: SendError<T>) -> Error {
+        Error::FailedToSendMessage
+    }
+}
 
 pub(crate) fn run(
     latest_code_var: Arc<MVar<SourceFileSnapshot>>,
@@ -31,6 +50,37 @@ pub(crate) fn run(
         analysis_sender,
         neovim,
     )
+}
+
+// An API for communicatating with an editor.
+pub(crate) trait Editor {
+    type Driver: analysis_thread::EditorDriver;
+
+    // Listen for changes to source files happening in the editor.
+    fn listen<F, G>(
+        self,
+        load_code_copy: F,
+        store_new_code: G,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(usize) -> Result<SourceFileSnapshot, Error>,
+        G: FnMut(EditorEvent) -> Result<(), Error>;
+
+    // Obtain an EditorDriver for sending commands to the editor.
+    fn driver(&self) -> Self::Driver;
+}
+
+pub(crate) enum EditorEvent {
+    OpenedNewSourceFile {
+        buffer: usize,
+        path: PathBuf,
+        bytes: Rope,
+    },
+    ModifiedSourceFile {
+        _buffer: usize,
+        code: SourceFileSnapshot,
+        edit: InputEdit,
+    },
 }
 
 fn listen_to_editor<E>(

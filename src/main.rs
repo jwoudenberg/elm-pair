@@ -1,8 +1,7 @@
 use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
-use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tree_sitter::{InputEdit, Node, Tree};
 
@@ -26,7 +25,7 @@ pub fn main() {
     });
 }
 
-fn run() -> Result<(), Error> {
+fn run() -> Result<(), analysis_thread::Error> {
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
     let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
@@ -76,13 +75,6 @@ struct SourceFileSnapshot {
     revision: usize,
 }
 
-struct FileData {
-    // Root of the Elm project containing this source file.
-    project_root: PathBuf,
-    // Absolute path to the `elm` compiler.
-    elm_bin: PathBuf,
-}
-
 // A change made by the user reported by the editor.
 #[derive(Debug)]
 struct Edit {
@@ -103,35 +95,11 @@ fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
     }
 }
 
-#[derive(Debug)]
-enum Error {
-    DidNotFindElmBinaryOnPath,
-    CouldNotReadCurrentWorkingDirectory(std::io::Error),
-    DidNotFindPathEnvVar,
-    NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
-    SocketCreationFailed(std::io::Error),
-    AcceptingIncomingSocketConnectionFailed(std::io::Error),
-    CloningSocketFailed(std::io::Error),
-    NeovimMessageDecodingFailed(editors::neovim::Error),
-    CompilationFailedToCreateTempDir(std::io::Error),
-    CompilationFailedToWriteCodeToTempFile(std::io::Error),
-    CompilationFailedToRunElmMake(std::io::Error),
-    TreeSitterParsingFailed,
-    TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
-    EditorRequestedNonExistingLocalCopy,
-    FailedToSendMessage,
-    NoFileDataStoredForBuffer(usize),
-}
-
-impl<T> From<SendError<T>> for Error {
-    fn from(_err: SendError<T>) -> Error {
-        Error::FailedToSendMessage
-    }
-}
-
-fn spawn_thread<F>(error_channel: Sender<analysis_thread::Msg>, f: F)
+fn spawn_thread<M, E, F>(error_channel: Sender<M>, f: F)
 where
-    F: FnOnce() -> Result<(), Error>,
+    M: Send + 'static,
+    F: FnOnce() -> Result<(), E>,
+    E: Into<M>,
     F: Send + 'static,
 {
     std::thread::spawn(move || {
@@ -139,7 +107,7 @@ where
             Ok(_) => {}
             Err(err) => {
                 error_channel
-                    .send(analysis_thread::Msg::ThreadFailed(err))
+                    .send(err.into())
                     // If sending fails there's nothing more we can do to report
                     // this error, hence the unwrap().
                     .unwrap();
@@ -256,43 +224,6 @@ trait MsgLoop<E> {
     }
 }
 
-// An API for communicatating with an editor.
-trait Editor {
-    type Driver: EditorDriver;
-
-    // Listen for changes to source files happening in the editor.
-    fn listen<F, G>(
-        self,
-        load_code_copy: F,
-        store_new_code: G,
-    ) -> Result<(), Error>
-    where
-        F: FnMut(usize) -> Result<SourceFileSnapshot, Error>,
-        G: FnMut(EditorEvent) -> Result<(), Error>;
-
-    // Obtain an EditorDriver for sending commands to the editor.
-    fn driver(&self) -> Self::Driver;
-}
-
-enum EditorEvent {
-    OpenedNewSourceFile {
-        buffer: usize,
-        path: PathBuf,
-        bytes: Rope,
-    },
-    ModifiedSourceFile {
-        _buffer: usize,
-        code: SourceFileSnapshot,
-        edit: InputEdit,
-    },
-}
-
-// An API for sending commands to an editor. This is defined as a trait to
-// support different kinds of editors.
-trait EditorDriver: 'static + Send {
-    fn apply_edits(&self, edits: Vec<Edit>) -> Result<(), Error>;
-}
-
 // A thread sync structure similar to Haskell's MVar. A variable, potentially
 // empty, that can be shared across threads. Doesn't (currently) do blocking
 // reads and writes though, because this codebase doesn't need it.
@@ -363,32 +294,6 @@ mod sized_stack {
             self.items.pop_front()
         }
     }
-}
-
-fn does_snapshot_compile(
-    file_data: &FileData,
-    snapshot: &SourceFileSnapshot,
-) -> Result<bool, Error> {
-    // Write lates code to temporary file. We don't compile the original source
-    // file, because the version stored on disk is likely ahead or behind the
-    // version in the editor.
-    let mut temp_path = file_data.project_root.join("elm-stuff/elm-pair");
-    std::fs::create_dir_all(&temp_path)
-        .map_err(Error::CompilationFailedToCreateTempDir)?;
-    temp_path.push("Temp.elm");
-    std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
-        .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
-
-    // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&file_data.elm_bin)
-        .arg("make")
-        .arg("--report=json")
-        .arg(temp_path)
-        .current_dir(&file_data.project_root)
-        .output()
-        .map_err(Error::CompilationFailedToRunElmMake)?;
-
-    Ok(output.status.success())
 }
 
 #[cfg(test)]

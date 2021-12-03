@@ -292,7 +292,7 @@ pub fn snake_to_camel(str: &str) -> String {
 
 #[derive(Debug)]
 enum Error {
-    RunningSimulationFailed(crate::Error),
+    RunningSimulationFailed(crate::editor_listener_thread::Error),
     FromFileFailedNoStartSimulationFound,
     CannotParseSimulationLine(String),
     CannotParseLineNumber(String),

@@ -1,4 +1,7 @@
-use crate::{Edit, EditorEvent, InputEdit, SourceFileSnapshot};
+use crate::analysis_thread as analysis;
+use crate::editor_listener_thread as editor_listener;
+use crate::editor_listener_thread::{Editor, EditorEvent};
+use crate::{Edit, InputEdit, SourceFileSnapshot};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
@@ -25,7 +28,7 @@ impl<R: Read, W: Write> Neovim<R, W> {
     }
 }
 
-impl<R: Read, W: 'static + Write + Send> crate::Editor for Neovim<R, W> {
+impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
     type Driver = NeovimDriver<W>;
 
     fn driver(&self) -> NeovimDriver<W> {
@@ -38,10 +41,10 @@ impl<R: Read, W: 'static + Write + Send> crate::Editor for Neovim<R, W> {
         self,
         load_code_copy: F,
         store_new_code: G,
-    ) -> Result<(), crate::Error>
+    ) -> Result<(), editor_listener::Error>
     where
-        F: FnMut(usize) -> Result<SourceFileSnapshot, crate::Error>,
-        G: FnMut(EditorEvent) -> Result<(), crate::Error>,
+        F: FnMut(usize) -> Result<SourceFileSnapshot, editor_listener::Error>,
+        G: FnMut(EditorEvent) -> Result<(), editor_listener::Error>,
     {
         let mut listener = NeovimListener {
             read: self.read,
@@ -67,8 +70,8 @@ impl<R, W, F, G> NeovimListener<R, W, F, G>
 where
     R: Read,
     W: Write,
-    F: FnMut(usize) -> Result<SourceFileSnapshot, crate::Error>,
-    G: FnMut(EditorEvent) -> Result<(), crate::Error>,
+    F: FnMut(usize) -> Result<SourceFileSnapshot, editor_listener::Error>,
+    G: FnMut(EditorEvent) -> Result<(), editor_listener::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
@@ -294,22 +297,22 @@ pub(crate) enum Error {
     UnknownMessageType(u32, u8),
     UnknownEventMethod(String),
     ReceivedErrorEvent(u64, String),
-    FailedWhileProcessingBufChange(Box<crate::Error>),
+    FailedWhileProcessingBufChange(Box<editor_listener::Error>),
     ReceivedLinesEventForUnknownBuffer(usize),
 }
 
-impl From<Error> for crate::Error {
-    fn from(err: Error) -> crate::Error {
+impl From<Error> for editor_listener::Error {
+    fn from(err: Error) -> editor_listener::Error {
         if let Error::FailedWhileProcessingBufChange(original) = err {
             *original
         } else {
-            crate::Error::NeovimMessageDecodingFailed(err)
+            editor_listener::Error::NeovimMessageDecodingFailed(err)
         }
     }
 }
 
-impl From<crate::Error> for Error {
-    fn from(err: crate::Error) -> Error {
+impl From<editor_listener::Error> for Error {
+    fn from(err: editor_listener::Error) -> Error {
         Error::FailedWhileProcessingBufChange(Box::new(err))
     }
 }
@@ -534,20 +537,25 @@ where
     Ok(buf as usize)
 }
 
-pub struct NeovimDriver<W> {
+pub(crate) struct NeovimDriver<W> {
     write: Arc<Mutex<W>>,
 }
 
-impl<W> crate::EditorDriver for NeovimDriver<W>
+impl<W> analysis::EditorDriver for NeovimDriver<W>
 where
     W: 'static + Write + Send,
 {
-    fn apply_edits(&self, refactor: Vec<Edit>) -> Result<(), crate::Error> {
+    fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
         println!("REFACTOR: {:?}", refactor);
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
-        write_refactor(write, refactor)?;
-        Ok(())
+        match write_refactor(write, refactor) {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("Ran into non-fatal error while attempting to send edits to neovim: {:?}", err );
+                false
+            }
+        }
     }
 }
 

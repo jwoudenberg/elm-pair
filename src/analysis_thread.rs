@@ -1,6 +1,7 @@
+use crate::compilation_thread;
+use crate::editor_listener_thread;
 use crate::{
-    byte_to_point, debug_code_slice, Edit, EditorDriver, Error, MVar, MsgLoop,
-    SourceFileSnapshot,
+    byte_to_point, debug_code_slice, Edit, MVar, MsgLoop, SourceFileSnapshot,
 };
 use core::ops::Range;
 use std::sync::mpsc::Receiver;
@@ -13,6 +14,24 @@ pub(crate) enum Msg {
     AllEditorsDisconnected,
     EditorConnected(Box<dyn EditorDriver>),
     CompilationSucceeded(SourceFileSnapshot),
+}
+
+impl From<editor_listener_thread::Error> for Msg {
+    fn from(err: editor_listener_thread::Error) -> Msg {
+        Msg::ThreadFailed(Error::EditorListenerThreadFailed(err))
+    }
+}
+
+impl From<compilation_thread::Error> for Msg {
+    fn from(err: compilation_thread::Error) -> Msg {
+        Msg::ThreadFailed(Error::CompilationThreadFailed(err))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Error {
+    EditorListenerThreadFailed(editor_listener_thread::Error),
+    CompilationThreadFailed(compilation_thread::Error),
 }
 
 pub(crate) fn run(
@@ -35,6 +54,12 @@ struct AnalysisLoop {
     editor_driver: Option<Box<dyn EditorDriver>>,
 }
 
+// An API for sending commands to an editor. This is defined as a trait to
+// support different kinds of editors.
+pub(crate) trait EditorDriver: 'static + Send {
+    fn apply_edits(&self, edits: Vec<Edit>) -> bool;
+}
+
 impl MsgLoop<Error> for AnalysisLoop {
     type Msg = Msg;
 
@@ -47,7 +72,7 @@ impl MsgLoop<Error> for AnalysisLoop {
             let diff = SourceFileDiff { old, new };
             if let Some(change) = analyze_diff(&diff) {
                 let refactor = elm_refactor(&diff, &change);
-                editor_driver.apply_edits(refactor)?;
+                editor_driver.apply_edits(refactor);
             }
         };
         Ok(())
