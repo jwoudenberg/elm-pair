@@ -9,7 +9,7 @@ use tree_sitter::{InputEdit, Node, Tree};
 mod analysis_thread;
 mod compilation_thread;
 mod editor_listener_thread;
-mod neovim;
+mod editors;
 
 #[cfg(test)]
 mod test_support;
@@ -112,7 +112,7 @@ enum Error {
     SocketCreationFailed(std::io::Error),
     AcceptingIncomingSocketConnectionFailed(std::io::Error),
     CloningSocketFailed(std::io::Error),
-    NeovimMessageDecodingFailed(neovim::Error),
+    NeovimMessageDecodingFailed(editors::neovim::Error),
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
     CompilationFailedToRunElmMake(std::io::Error),

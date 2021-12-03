@@ -1,6 +1,6 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
-use crate::neovim;
+use crate::editors::neovim;
 use crate::{Editor, EditorEvent, Error, MVar, SourceFileSnapshot};
 use ropey::Rope;
 use std::io::BufReader;
