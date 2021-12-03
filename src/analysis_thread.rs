@@ -69,12 +69,12 @@ impl MsgLoop<Error> for AnalysisLoop {
     }
 }
 
-pub struct SourceFileDiff {
-    old: SourceFileSnapshot,
-    new: SourceFileSnapshot,
+pub(crate) struct SourceFileDiff {
+    pub old: SourceFileSnapshot,
+    pub new: SourceFileSnapshot,
 }
 
-pub fn analyze_diff(diff: &SourceFileDiff) -> Option<ElmChange> {
+pub(crate) fn analyze_diff(diff: &SourceFileDiff) -> Option<ElmChange> {
     let tree_changes = diff_trees(diff);
     interpret_change(&tree_changes)
 }

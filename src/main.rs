@@ -1,15 +1,14 @@
 use core::ops::Range;
 use mvar::MVar;
 use ropey::Rope;
-use std::io::BufReader;
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tree_sitter::{InputEdit, Node, Tree};
 
 mod analysis_thread;
 mod compilation_thread;
+mod editor_listener_thread;
 mod neovim;
 
 const MAX_COMPILATION_CANDIDATES: usize = 10;
@@ -38,7 +37,7 @@ fn run() -> Result<(), Error> {
     let latest_code_for_editor_listener = latest_code.clone();
     let analysis_sender_for_editor_listener = analysis_sender.clone();
     spawn_thread(analysis_sender.clone(), || {
-        run_editor_listener_loop(
+        editor_listener_thread::run(
             latest_code_for_editor_listener,
             compilation_sender,
             analysis_sender_for_editor_listener,
@@ -146,170 +145,10 @@ where
     });
 }
 
-fn run_editor_listener_loop(
-    latest_code_var: Arc<MVar<SourceFileSnapshot>>,
-    compilation_sender: Sender<compilation_thread::Msg>,
-    analysis_sender: Sender<analysis_thread::Msg>,
-) -> Result<(), Error> {
-    let socket_path = "/tmp/elm-pair.sock";
-    let listener =
-        UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
-    // TODO: Figure out how to deal with multiple connections.
-    let socket = listener.incoming().into_iter().next().unwrap();
-    let read_socket =
-        socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
-    let write_socket = read_socket
-        .try_clone()
-        .map_err(Error::CloningSocketFailed)?;
-    let neovim = neovim::Neovim::new(BufReader::new(read_socket), write_socket);
-    listen_to_editor(
-        &latest_code_var,
-        compilation_sender,
-        analysis_sender,
-        neovim,
-    )
-}
-
-fn listen_to_editor<E>(
-    latest_code_var: &MVar<SourceFileSnapshot>,
-    compilation_sender: Sender<compilation_thread::Msg>,
-    analysis_sender: Sender<analysis_thread::Msg>,
-    editor: E,
-) -> Result<(), Error>
-where
-    E: Editor,
-{
-    let driver = editor.driver();
-    let boxed = Box::new(driver);
-    let mut revision_of_last_compilation_candidate = None;
-    analysis_sender.send(analysis_thread::Msg::EditorConnected(boxed))?;
-    editor.listen(
-        |_buf| {
-            if let Some(code) = latest_code_var.try_take() {
-                Ok(code)
-            } else {
-                // TODO: let the editor handle this error (so it can request
-                // a refresh).
-                Err(Error::EditorRequestedNonExistingLocalCopy)
-            }
-        },
-        |event| {
-            let code = match event {
-                EditorEvent::ModifiedSourceFile { mut code, edit, .. } => {
-                    apply_source_file_edit(&mut code, edit)?;
-                    code
-                }
-                EditorEvent::OpenedNewSourceFile {
-                    bytes,
-                    buffer,
-                    path,
-                } => {
-                    compilation_sender.send(
-                        compilation_thread::Msg::OpenedNewSourceFile {
-                            buffer,
-                            path,
-                        },
-                    )?;
-                    init_source_file_snapshot(buffer, bytes)?
-                }
-            };
-            if !code.tree.root_node().has_error()
-                && Some(code.revision) > revision_of_last_compilation_candidate
-            {
-                revision_of_last_compilation_candidate = Some(code.revision);
-                compilation_sender.send(
-                    compilation_thread::Msg::CompilationRequested(code.clone()),
-                )?;
-            }
-            latest_code_var.write(code);
-            analysis_sender.send(analysis_thread::Msg::SourceCodeModified)?;
-            Ok(())
-        },
-    )?;
-    analysis_sender.send(analysis_thread::Msg::AllEditorsDisconnected)?;
-    Ok(())
-}
-
-fn init_source_file_snapshot(
-    buffer: usize,
-    bytes: Rope,
-) -> Result<SourceFileSnapshot, Error> {
-    let snapshot = SourceFileSnapshot {
-        buffer,
-        tree: parse(None, &bytes)?,
-        bytes,
-        revision: 0,
-    };
-    Ok(snapshot)
-}
-
-fn apply_source_file_edit(
-    code: &mut SourceFileSnapshot,
-    edit: InputEdit,
-) -> Result<(), Error> {
-    code.revision += 1;
-    code.tree.edit(&edit);
-    reparse_tree(code)?;
-    Ok(())
-}
-
-fn find_executable(name: &str) -> Result<PathBuf, Error> {
-    let cwd = std::env::current_dir()
-        .map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
-    let path = std::env::var_os("PATH").ok_or(Error::DidNotFindPathEnvVar)?;
-    let dirs = std::env::split_paths(&path);
-    for dir in dirs {
-        let mut bin_path = cwd.join(dir);
-        bin_path.push(name);
-        if bin_path.is_file() {
-            return Ok(bin_path);
-        };
-    }
-    Err(Error::DidNotFindElmBinaryOnPath)
-}
-
-fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
-    let mut maybe_root = source_file;
-    loop {
-        match maybe_root.parent() {
-            None => {
-                return Err(Error::NoElmJsonFoundInAnyAncestorDirectoryOf(
-                    source_file.to_path_buf(),
-                ));
-            }
-            Some(parent) => {
-                if parent.join("elm.json").exists() {
-                    return Ok(parent);
-                } else {
-                    maybe_root = parent;
-                }
-            }
-        }
-    }
-}
-
-fn reparse_tree(code: &mut SourceFileSnapshot) -> Result<(), Error> {
-    let new_tree = parse(Some(&code.tree), &code.bytes)?;
-    code.tree = new_tree;
-    Ok(())
-}
-
 fn debug_code_slice(code: &SourceFileSnapshot, range: &Range<usize>) -> String {
     let start = code.bytes.byte_to_char(range.start);
     let end = code.bytes.byte_to_char(range.end);
     code.bytes.slice(start..end).to_string()
-}
-
-// TODO: reuse parser.
-fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(tree_sitter_elm::language())
-        .map_err(Error::TreeSitterSettingLanguageFailed)?;
-    match parser.parse(code.bytes().collect::<Vec<u8>>(), prev_tree) {
-        None => Err(Error::TreeSitterParsingFailed),
-        Some(tree) => Ok(tree),
-    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
@@ -635,13 +474,18 @@ mod included_answer_test {
 // it.
 #[cfg(test)]
 mod simulation {
-    use crate::analysis_thread::{analyze_diff, ElmChange, SourceFileDiff}; // TODO: drop dependency on these internals.
     use crate::included_answer_test::assert_eq_answer_in;
     use ropey::Rope;
     use std::collections::VecDeque;
     use std::io::BufRead;
     use std::path::Path;
     use tree_sitter::InputEdit;
+
+    // TODO: drop dependency on these internals.
+    use crate::analysis_thread::{analyze_diff, ElmChange, SourceFileDiff};
+    use crate::editor_listener_thread::{
+        apply_source_file_edit, init_source_file_snapshot,
+    };
 
     #[macro_export]
     macro_rules! simulation_test {
@@ -687,15 +531,12 @@ mod simulation {
                     Msg::ReceivedEditorEvent(event) => {
                         if let Some(code) = &mut latest_code {
                             let edit = change_source(&mut code.bytes, event);
-                            crate::apply_source_file_edit(code, edit)
+                            apply_source_file_edit(code, edit)
                         } else {
-                            crate::init_source_file_snapshot(
-                                0,
-                                initial_source(event),
-                            )
-                            .map(|code| {
-                                latest_code = Some(code);
-                            })
+                            init_source_file_snapshot(0, initial_source(event))
+                                .map(|code| {
+                                    latest_code = Some(code);
+                                })
                         }
                     }
                 }

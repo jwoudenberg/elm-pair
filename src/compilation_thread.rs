@@ -2,7 +2,7 @@ use crate::analysis_thread;
 use crate::sized_stack::SizedStack;
 use crate::{Error, FileData, MsgLoop, SourceFileSnapshot};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 
 pub(crate) enum Msg {
@@ -44,9 +44,8 @@ impl MsgLoop<Error> for CompilationLoop {
                 self.file_data.insert(
                     buffer,
                     FileData {
-                        project_root: crate::find_project_root(&path)?
-                            .to_path_buf(),
-                        elm_bin: crate::find_executable("elm")?,
+                        project_root: find_project_root(&path)?.to_path_buf(),
+                        elm_bin: find_executable("elm")?,
                     },
                 );
             }
@@ -86,4 +85,39 @@ fn is_new_revision(
         *last_checked_revision = Some(code.revision);
     }
     is_new
+}
+
+fn find_executable(name: &str) -> Result<PathBuf, Error> {
+    let cwd = std::env::current_dir()
+        .map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
+    let path = std::env::var_os("PATH").ok_or(Error::DidNotFindPathEnvVar)?;
+    let dirs = std::env::split_paths(&path);
+    for dir in dirs {
+        let mut bin_path = cwd.join(dir);
+        bin_path.push(name);
+        if bin_path.is_file() {
+            return Ok(bin_path);
+        };
+    }
+    Err(Error::DidNotFindElmBinaryOnPath)
+}
+
+fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
+    let mut maybe_root = source_file;
+    loop {
+        match maybe_root.parent() {
+            None => {
+                return Err(Error::NoElmJsonFoundInAnyAncestorDirectoryOf(
+                    source_file.to_path_buf(),
+                ));
+            }
+            Some(parent) => {
+                if parent.join("elm.json").exists() {
+                    return Ok(parent);
+                } else {
+                    maybe_root = parent;
+                }
+            }
+        }
+    }
 }
