@@ -9,7 +9,8 @@ use std::path::Path;
 use tree_sitter::InputEdit;
 
 // TODO: drop dependency on these internals.
-use crate::analysis_thread::{analyze_diff, ElmChange, SourceFileDiff};
+use crate::analysis_thread::elm::ElmChange;
+use crate::analysis_thread::{analyze_diff, SourceFileDiff};
 use crate::editor_listener_thread::{
     apply_source_file_edit, init_source_file_snapshot,
 };

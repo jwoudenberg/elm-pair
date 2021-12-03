@@ -3,10 +3,11 @@ use crate::editor_listener_thread;
 use crate::{
     byte_to_point, debug_code_slice, Edit, MVar, MsgLoop, SourceFileSnapshot,
 };
-use core::ops::Range;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
-use tree_sitter::{Node, Query, QueryCursor, TreeCursor};
+use tree_sitter::{Node, TreeCursor};
+
+pub(crate) mod elm;
 
 pub(crate) enum Msg {
     SourceCodeModified,
@@ -32,6 +33,7 @@ impl From<compilation_thread::Error> for Msg {
 pub(crate) enum Error {
     EditorListenerThreadFailed(editor_listener_thread::Error),
     CompilationThreadFailed(compilation_thread::Error),
+    InvalidQuery(tree_sitter::QueryError),
 }
 
 pub(crate) fn run(
@@ -44,6 +46,7 @@ where
         latest_code,
         last_compiling_code: None,
         editor_driver: None,
+        refactor_engine: elm::RefactorEngine::new()?,
     }
     .start(analysis_receiver)
 }
@@ -52,6 +55,7 @@ struct AnalysisLoop {
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: Option<SourceFileSnapshot>,
     editor_driver: Option<Box<dyn EditorDriver>>,
+    refactor_engine: elm::RefactorEngine,
 }
 
 // An API for sending commands to an editor. This is defined as a trait to
@@ -70,8 +74,9 @@ impl MsgLoop<Error> for AnalysisLoop {
             &self.editor_driver,
         ) {
             let diff = SourceFileDiff { old, new };
-            if let Some(change) = analyze_diff(&diff) {
-                let refactor = elm_refactor(&diff, &change);
+            if let Some(elm_change) = analyze_diff(&diff) {
+                let refactor =
+                    self.refactor_engine.respond_to_change(&diff, &elm_change);
                 editor_driver.apply_edits(refactor);
             }
         };
@@ -99,201 +104,9 @@ pub(crate) struct SourceFileDiff {
     pub new: SourceFileSnapshot,
 }
 
-pub(crate) fn analyze_diff(diff: &SourceFileDiff) -> Option<ElmChange> {
+pub(crate) fn analyze_diff(diff: &SourceFileDiff) -> Option<elm::ElmChange> {
     let tree_changes = diff_trees(diff);
-    interpret_change(&tree_changes)
-}
-
-// TODO: use kind ID's instead of names for pattern matching.
-fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
-    match (
-        attach_kinds(&changes.old_removed).as_slice(),
-        attach_kinds(&changes.new_added).as_slice(),
-    ) {
-        (
-            [("lower_case_identifier", before)],
-            [("lower_case_identifier", after)],
-        ) => Some(ElmChange::NameChanged(
-            debug_code_slice(changes.old_code, &before.byte_range()),
-            debug_code_slice(changes.new_code, &after.byte_range()),
-        )),
-        (
-            [("upper_case_identifier", before)],
-            [("upper_case_identifier", after)],
-        ) => match before.parent()?.kind() {
-            "as_clause" => Some(ElmChange::AsClauseChanged(
-                debug_code_slice(changes.old_code, &before.byte_range()),
-                debug_code_slice(changes.new_code, &after.byte_range()),
-            )),
-            _ => Some(ElmChange::TypeChanged(
-                debug_code_slice(changes.old_code, &before.byte_range()),
-                debug_code_slice(changes.new_code, &after.byte_range()),
-            )),
-        },
-        ([], [("import_clause", after)]) => Some(ElmChange::ImportAdded(
-            debug_code_slice(changes.new_code, &after.byte_range()),
-        )),
-        ([("import_clause", before)], []) => Some(ElmChange::ImportRemoved(
-            debug_code_slice(changes.old_code, &before.byte_range()),
-        )),
-        ([], [("type_declaration", after)]) => Some(ElmChange::TypeAdded(
-            debug_code_slice(changes.new_code, &after.byte_range()),
-        )),
-        ([("type_declaration", before)], []) => Some(ElmChange::TypeRemoved(
-            debug_code_slice(changes.old_code, &before.byte_range()),
-        )),
-        ([], [("type_alias_declaration", after)]) => {
-            Some(ElmChange::TypeAliasAdded(debug_code_slice(
-                changes.new_code,
-                &after.byte_range(),
-            )))
-        }
-        ([("type_alias_declaration", before)], []) => {
-            Some(ElmChange::TypeAliasRemoved(debug_code_slice(
-                changes.old_code,
-                &before.byte_range(),
-            )))
-        }
-        ([], [("field_type", after)]) => Some(ElmChange::FieldAdded(
-            debug_code_slice(changes.new_code, &after.byte_range()),
-        )),
-        ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(
-            debug_code_slice(changes.new_code, &after.byte_range()),
-        )),
-        ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(
-            debug_code_slice(changes.new_code, &after.byte_range()),
-        )),
-        ([("field_type", before)], []) => Some(ElmChange::FieldRemoved(
-            debug_code_slice(changes.old_code, &before.byte_range()),
-        )),
-        ([(",", _), ("field_type", before)], []) => {
-            Some(ElmChange::FieldRemoved(debug_code_slice(
-                changes.old_code,
-                &before.byte_range(),
-            )))
-        }
-        ([("field_type", before), (",", _)], []) => {
-            Some(ElmChange::FieldRemoved(debug_code_slice(
-                changes.old_code,
-                &before.byte_range(),
-            )))
-        }
-        (
-            [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", before)],
-            [("upper_case_identifier", after)],
-        ) => {
-            let name_before =
-                debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after =
-                debug_code_slice(changes.new_code, &after.byte_range());
-            if name_before == name_after {
-                Some(ElmChange::QualifierRemoved(
-                    name_before,
-                    debug_code_slice(changes.old_code, &qualifier.byte_range()),
-                ))
-            } else {
-                None
-            }
-        }
-        (
-            [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", before)],
-            [("lower_case_identifier", after)],
-        ) => {
-            let name_before =
-                debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after =
-                debug_code_slice(changes.new_code, &after.byte_range());
-            if name_before == name_after {
-                Some(ElmChange::QualifierRemoved(
-                    name_before,
-                    debug_code_slice(changes.old_code, &qualifier.byte_range()),
-                ))
-            } else {
-                None
-            }
-        }
-        (
-            [("upper_case_identifier", before)],
-            [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", after)],
-        ) => {
-            let name_before =
-                debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after =
-                debug_code_slice(changes.new_code, &after.byte_range());
-            if name_before == name_after {
-                Some(ElmChange::QualifierAdded(
-                    name_before,
-                    debug_code_slice(changes.new_code, &qualifier.byte_range()),
-                ))
-            } else {
-                None
-            }
-        }
-        (
-            [("lower_case_identifier", before)],
-            [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", after)],
-        ) => {
-            let name_before =
-                debug_code_slice(changes.old_code, &before.byte_range());
-            let name_after =
-                debug_code_slice(changes.new_code, &after.byte_range());
-            if name_before == name_after {
-                Some(ElmChange::QualifierAdded(
-                    name_before,
-                    debug_code_slice(changes.new_code, &qualifier.byte_range()),
-                ))
-            } else {
-                None
-            }
-        }
-        ([("as_clause", before)], []) => Some(ElmChange::AsClauseRemoved(
-            debug_code_slice(
-                changes.old_code,
-                &before.prev_sibling()?.byte_range(),
-            ),
-            debug_code_slice(
-                changes.old_code,
-                &before.child_by_field_name("name")?.byte_range(),
-            ),
-        )),
-        ([], [("as_clause", after)]) => Some(ElmChange::AsClauseAdded(
-            debug_code_slice(
-                changes.new_code,
-                &after.prev_sibling()?.byte_range(),
-            ),
-            debug_code_slice(
-                changes.new_code,
-                &after.child_by_field_name("name")?.byte_range(),
-            ),
-        )),
-        _ => {
-            // debug_print_tree_changes(changes);
-            None
-        }
-    }
-}
-
-fn attach_kinds<'a>(nodes: &'a [Node<'a>]) -> Vec<(&'a str, &'a Node<'a>)> {
-    nodes.iter().map(|node| (node.kind(), node)).collect()
-}
-
-#[derive(Debug)]
-pub enum ElmChange {
-    NameChanged(String, String),
-    TypeChanged(String, String),
-    ImportAdded(String),
-    ImportRemoved(String),
-    FieldAdded(String),
-    FieldRemoved(String),
-    TypeAdded(String),
-    TypeRemoved(String),
-    TypeAliasAdded(String),
-    TypeAliasRemoved(String),
-    QualifierAdded(String, String),
-    QualifierRemoved(String, String),
-    AsClauseAdded(String, String),
-    AsClauseRemoved(String, String),
-    AsClauseChanged(String, String),
+    elm::interpret_change(&tree_changes)
 }
 
 struct TreeChanges<'a> {
@@ -542,90 +355,6 @@ fn have_node_contents_changed(
     let old_bytes = debug_code_slice(old_code, &old.byte_range());
     let new_bytes = debug_code_slice(new_code, &new.byte_range());
     old_bytes != new_bytes
-}
-
-fn elm_refactor(diff: &SourceFileDiff, change: &ElmChange) -> Vec<Edit> {
-    let query_str = r#"
-[(import_clause
-    exposing:
-      (exposing_list
-        [
-          (double_dot)
-          (exposed_value)
-          (exposed_type)
-          (exposed_operator)
-        ] @exposed_value
-      )
- ) @import
-]"#;
-    let query = Query::new(diff.new.tree.language(), query_str).unwrap();
-    match change {
-        ElmChange::QualifierAdded(name, qualifier) => {
-            // debug_print_tree(&diff.new);
-            let mut cursor = QueryCursor::new();
-            let exposed = cursor
-                .matches(&query, diff.new.tree.root_node(), |node| {
-                    debug_code_slice(&diff.new, &node.byte_range())
-                })
-                .find_map(|m| {
-                    let (import, exposed_val) = match m.captures {
-                        [x, y] => (x, y),
-                        _ => panic!("wrong number of capures"),
-                    };
-                    let import_node =
-                        import.node.child_by_field_name("moduleName")?;
-                    let import_name =
-                        debug_code_slice(&diff.new, &import_node.byte_range());
-                    let exposed_name = debug_code_slice(
-                        &diff.new,
-                        &exposed_val.node.byte_range(),
-                    );
-                    if import_name == *qualifier && exposed_name == *name {
-                        Some(exposed_val.node)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap();
-            let range = || {
-                let next = exposed.next_sibling();
-                if let Some(node) = next {
-                    if node.kind() == "," {
-                        return exposed.start_byte()..node.end_byte();
-                    }
-                }
-                let prev = exposed.prev_sibling();
-                if let Some(node) = prev {
-                    if node.kind() == "," {
-                        return node.start_byte()..exposed.end_byte();
-                    }
-                }
-                exposed.byte_range()
-            };
-            vec![mk_edit(&diff.new, &range(), String::new())]
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn mk_edit(
-    code: &SourceFileSnapshot,
-    range: &Range<usize>,
-    new_bytes: String,
-) -> Edit {
-    let new_end_byte = range.start + new_bytes.len();
-    Edit {
-        buffer: code.buffer,
-        new_bytes,
-        input_edit: tree_sitter::InputEdit {
-            start_byte: range.start,
-            old_end_byte: range.end,
-            new_end_byte,
-            start_position: byte_to_point(&code.bytes, range.start),
-            old_end_position: byte_to_point(&code.bytes, range.end),
-            new_end_position: byte_to_point(&code.bytes, new_end_byte),
-        },
-    }
 }
 
 // TODO: remove debug helper when it's no longer needed.
