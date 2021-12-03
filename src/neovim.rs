@@ -183,7 +183,7 @@ where
                         )?;
                         (self.store_new_code)(
                             EditorEvent::ModifiedSourceFile {
-                                buffer,
+                                _buffer: buffer,
                                 code,
                                 edit,
                             },

@@ -51,9 +51,12 @@ where
 
 #[derive(Clone)]
 struct SourceFileSnapshot {
-    // Once calculated the file_data never changes. We wrap it in an `Arc` to
-    // avoid needing to copy it.
-    file_data: Arc<FileData>,
+    // A unique index identifying a source file open in an editor. We're not
+    // using the file path for a couple of reasons:
+    // - It's possible for the same file to be open in multiple editors with
+    //   different unsaved changes each.
+    // - A file path is stringy, so more expensive to copy.
+    buffer: usize,
     // The full contents of the file, stored in a Rope datastructure. This
     // datastructure offers cheap modifications in random locations, and cheap
     // cloning (both of which we'll do a lot).
@@ -67,8 +70,6 @@ struct SourceFileSnapshot {
 }
 
 struct FileData {
-    // Absolute path to this source file.
-    path: PathBuf,
     // Root of the Elm project containing this source file.
     project_root: PathBuf,
     // Absolute path to the `elm` compiler.
@@ -78,8 +79,8 @@ struct FileData {
 // A change made by the user reported by the editor.
 #[derive(Debug)]
 struct Edit {
-    // The file that was changed.
-    file: PathBuf,
+    // The buffer that was changed.
+    buffer: usize,
     // A tree-sitter InputEdit value, describing what part of the file was changed.
     input_edit: InputEdit,
     // Bytes representing the new contents of the file at the location described
@@ -94,7 +95,7 @@ fn mk_edit(
 ) -> Edit {
     let new_end_byte = range.start + new_bytes.len();
     Edit {
-        file: code.file_data.path.clone(),
+        buffer: code.buffer,
         new_bytes,
         input_edit: tree_sitter::InputEdit {
             start_byte: range.start,
@@ -132,6 +133,7 @@ enum Error {
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
     EditorRequestedNonExistingLocalCopy,
     FailedToSendMessage,
+    NoFileDataStoredForBuffer(usize),
 }
 
 impl<T> From<SendError<T>> for Error {
@@ -152,7 +154,7 @@ struct AnalysisLoop {
 }
 
 enum Msg {
-    SourceCodeMofied,
+    SourceCodeModified,
     ThreadFailed(Error),
     AllEditorsDisconnected,
     EditorConnected(Box<dyn EditorDriver>),
@@ -179,9 +181,9 @@ impl MsgLoop<Error> for AnalysisLoop {
 
     fn on_msg(&mut self, msg: Msg) -> Result<bool, Error> {
         match msg {
-            Msg::SourceCodeMofied => return Ok(true),
+            Msg::SourceCodeModified => {}
             Msg::ThreadFailed(err) => return Err(err),
-            Msg::AllEditorsDisconnected => {}
+            Msg::AllEditorsDisconnected => return Ok(false),
             Msg::EditorConnected(editor_driver) => {
                 self.editor_driver = Some(editor_driver);
             }
@@ -345,8 +347,18 @@ where
                     apply_source_file_edit(&mut code, edit)?;
                     code
                 }
-                EditorEvent::OpenedNewSourceFile { bytes, .. } => {
-                    init_source_file_snapshot(bytes)?
+                EditorEvent::OpenedNewSourceFile {
+                    bytes,
+                    buffer,
+                    path,
+                } => {
+                    compilation_sender.send(
+                        compilation_thread::Msg::OpenedNewSourceFile {
+                            buffer,
+                            path,
+                        },
+                    )?;
+                    init_source_file_snapshot(buffer, bytes)?
                 }
             };
             if !code.tree.root_node().has_error()
@@ -358,7 +370,7 @@ where
                 )?;
             }
             latest_code_var.write(code);
-            analysis_sender.send(Msg::SourceCodeMofied)?;
+            analysis_sender.send(Msg::SourceCodeModified)?;
             Ok(())
         },
     )?;
@@ -366,17 +378,15 @@ where
     Ok(())
 }
 
-fn init_source_file_snapshot(bytes: Rope) -> Result<SourceFileSnapshot, Error> {
+fn init_source_file_snapshot(
+    buffer: usize,
+    bytes: Rope,
+) -> Result<SourceFileSnapshot, Error> {
     let snapshot = SourceFileSnapshot {
+        buffer,
         tree: parse(None, &bytes)?,
         bytes,
         revision: 0,
-        file_data: Arc::new(crate::FileData {
-            // TODO: put real data here.
-            path: PathBuf::new(),
-            project_root: PathBuf::from("/home/jasper/dev/elm-pair/tests"),
-            elm_bin: PathBuf::from("elm"),
-        }),
     };
     Ok(snapshot)
 }
@@ -957,6 +967,9 @@ trait MsgLoop<E> {
 
     // This function is called for every new message that arrives. If we return
     // a `false` value at any point we stop the loop.
+    //
+    // This function doesn't return until it has processed at least one message,
+    // and then until it has emptied the current contents of the queue.
     fn on_msg(&mut self, msg: Self::Msg) -> Result<bool, E>;
 
     // After each batch of messages this function is called once to do other
@@ -1027,7 +1040,7 @@ enum EditorEvent {
         bytes: Rope,
     },
     ModifiedSourceFile {
-        buffer: usize,
+        _buffer: usize,
         code: SourceFileSnapshot,
         edit: InputEdit,
     },
@@ -1083,53 +1096,42 @@ mod mvar {
 // before pushing the new element.
 mod sized_stack {
     use std::collections::VecDeque;
-    use std::sync::{Condvar, Mutex};
 
     pub struct SizedStack<T> {
         capacity: usize,
-        items: Mutex<VecDeque<T>>,
-        new_item_condvar: Condvar,
+        items: VecDeque<T>,
     }
 
     impl<T> SizedStack<T> {
         pub fn with_capacity(capacity: usize) -> SizedStack<T> {
             SizedStack {
                 capacity,
-                items: Mutex::new(VecDeque::with_capacity(capacity)),
-                new_item_condvar: Condvar::new(),
+                items: VecDeque::with_capacity(capacity),
             }
         }
 
         // Push an item on the stack.
-        pub fn push(&self, item: T) {
-            let mut items = crate::lock(&self.items);
-            items.truncate(self.capacity - 1);
-            items.push_front(item);
-            self.new_item_condvar.notify_all();
+        pub fn push(&mut self, item: T) {
+            self.items.truncate(self.capacity - 1);
+            self.items.push_front(item);
         }
 
         // Pop an item of the stack. This function blocks until an item becomes
         // available.
-        pub fn pop(&self) -> T {
-            let mut items = crate::lock(&self.items);
-            loop {
-                match items.pop_front() {
-                    None => {
-                        items = self.new_item_condvar.wait(items).unwrap();
-                    }
-                    Some(item) => return item,
-                }
-            }
+        pub fn pop(&mut self) -> Option<T> {
+            self.items.pop_front()
         }
     }
 }
 
-fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
+fn does_snapshot_compile(
+    file_data: &FileData,
+    snapshot: &SourceFileSnapshot,
+) -> Result<bool, Error> {
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
-    let mut temp_path =
-        snapshot.file_data.project_root.join("elm-stuff/elm-pair");
+    let mut temp_path = file_data.project_root.join("elm-stuff/elm-pair");
     std::fs::create_dir_all(&temp_path)
         .map_err(Error::CompilationFailedToCreateTempDir)?;
     temp_path.push("Temp.elm");
@@ -1137,11 +1139,11 @@ fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
         .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
 
     // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&snapshot.file_data.elm_bin)
+    let output = std::process::Command::new(&file_data.elm_bin)
         .arg("make")
         .arg("--report=json")
         .arg(temp_path)
-        .current_dir(&snapshot.file_data.project_root)
+        .current_dir(&file_data.project_root)
         .output()
         .map_err(Error::CompilationFailedToRunElmMake)?;
 
@@ -1150,11 +1152,14 @@ fn does_snapshot_compile(snapshot: &SourceFileSnapshot) -> Result<bool, Error> {
 
 mod compilation_thread {
     use crate::sized_stack::SizedStack;
-    use crate::{Error, MsgLoop, SourceFileSnapshot};
+    use crate::{Error, FileData, MsgLoop, SourceFileSnapshot};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::mpsc::{Receiver, Sender};
 
     pub(crate) enum Msg {
         CompilationRequested(SourceFileSnapshot),
+        OpenedNewSourceFile { buffer: usize, path: PathBuf },
     }
 
     fn run_compilation_loop(
@@ -1167,6 +1172,7 @@ mod compilation_thread {
             compilation_candidates: SizedStack::with_capacity(
                 crate::MAX_COMPILATION_CANDIDATES,
             ),
+            file_data: HashMap::new(),
         }
         .start(compilation_receiver)
     }
@@ -1175,21 +1181,43 @@ mod compilation_thread {
         analysis_sender: Sender<crate::Msg>,
         last_validated_revision: Option<usize>,
         compilation_candidates: SizedStack<SourceFileSnapshot>,
+        file_data: HashMap<usize, FileData>,
     }
 
     impl MsgLoop<Error> for CompilationLoop {
         type Msg = Msg;
 
         fn on_msg(&mut self, msg: Msg) -> Result<bool, Error> {
-            let Msg::CompilationRequested(snapshot) = msg;
-            self.compilation_candidates.push(snapshot);
+            match msg {
+                Msg::CompilationRequested(snapshot) => {
+                    self.compilation_candidates.push(snapshot)
+                }
+                Msg::OpenedNewSourceFile { buffer, path } => {
+                    self.file_data.insert(
+                        buffer,
+                        FileData {
+                            project_root: crate::find_project_root(&path)?
+                                .to_path_buf(),
+                            elm_bin: crate::find_executable("elm")?,
+                        },
+                    );
+                }
+            }
             Ok(true)
         }
 
         fn on_idle(&mut self) -> Result<(), Error> {
-            let snapshot = self.compilation_candidates.pop();
+            let snapshot = match self.compilation_candidates.pop() {
+                None => return Ok(()),
+                Some(code) => code,
+            };
+            let file_data = self
+                .file_data
+                .get(&snapshot.buffer)
+                .ok_or(Error::NoFileDataStoredForBuffer(snapshot.buffer))?;
+
             if is_new_revision(&mut self.last_validated_revision, &snapshot)
-                && crate::does_snapshot_compile(&snapshot)?
+                && crate::does_snapshot_compile(file_data, &snapshot)?
             {
                 self.analysis_sender
                     .send(crate::Msg::CompilationSucceeded(snapshot))?;
@@ -1365,9 +1393,10 @@ mod simulation {
                             let edit = change_source(&mut code.bytes, event);
                             crate::apply_source_file_edit(code, edit)
                         } else {
-                            crate::init_source_file_snapshot(initial_source(
-                                event,
-                            ))
+                            crate::init_source_file_snapshot(
+                                0,
+                                initial_source(event),
+                            )
                             .map(|code| {
                                 latest_code = Some(code);
                             })
