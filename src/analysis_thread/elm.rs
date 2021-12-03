@@ -9,6 +9,12 @@ pub(crate) struct RefactorEngine {
     query_for_exposed_imports: Query,
 }
 
+#[derive(Debug)]
+pub(crate) enum RefactorError {
+    NoneImplementedForThisChange(ElmChange),
+    FailureWhileTraversingTree,
+}
+
 impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
@@ -37,8 +43,8 @@ impl RefactorEngine {
     pub(crate) fn respond_to_change(
         &self,
         diff: &SourceFileDiff,
-        change: &ElmChange,
-    ) -> Vec<Edit> {
+        change: ElmChange,
+    ) -> Result<Vec<Edit>, RefactorError> {
         match change {
             ElmChange::QualifierAdded(name, qualifier) => {
                 // debug_print_tree(&diff.new);
@@ -70,7 +76,7 @@ impl RefactorEngine {
                             None
                         }
                     })
-                    .unwrap();
+                    .ok_or(RefactorError::FailureWhileTraversingTree)?;
                 let range = || {
                     let next = exposed.next_sibling();
                     if let Some(node) = next {
@@ -86,9 +92,9 @@ impl RefactorEngine {
                     }
                     exposed.byte_range()
                 };
-                vec![mk_edit(&diff.new, &range(), String::new())]
+                Ok(vec![mk_edit(&diff.new, &range(), String::new())])
             }
-            _ => Vec::new(),
+            _ => Err(RefactorError::NoneImplementedForThisChange(change)),
         }
     }
 }

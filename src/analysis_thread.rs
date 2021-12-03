@@ -75,9 +75,16 @@ impl MsgLoop<Error> for AnalysisLoop {
         ) {
             let diff = SourceFileDiff { old, new };
             if let Some(elm_change) = analyze_diff(&diff) {
-                let refactor =
-                    self.refactor_engine.respond_to_change(&diff, &elm_change);
-                editor_driver.apply_edits(refactor);
+                match self.refactor_engine.respond_to_change(&diff, elm_change)
+                {
+                    Ok(refactor) => {
+                        editor_driver.apply_edits(refactor);
+                    }
+                    Err(err) => eprintln!(
+                        "Attempt to create refactor failed: {:?}",
+                        err
+                    ),
+                }
             }
         };
         Ok(())
