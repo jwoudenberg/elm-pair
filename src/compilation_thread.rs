@@ -9,7 +9,7 @@ pub(crate) enum Msg {
     OpenedNewSourceFile { buffer: usize, path: PathBuf },
 }
 
-fn run_compilation_loop(
+pub(crate) fn run(
     compilation_receiver: Receiver<Msg>,
     analysis_sender: Sender<crate::Msg>,
 ) -> Result<(), Error> {
@@ -85,16 +85,4 @@ fn is_new_revision(
         *last_checked_revision = Some(code.revision);
     }
     is_new
-}
-
-pub(crate) fn run(
-    compilation_receiver: Receiver<Msg>,
-    analysis_sender: Sender<crate::Msg>,
-) {
-    std::thread::spawn(move || {
-        crate::report_error(
-            analysis_sender.clone(),
-            run_compilation_loop(compilation_receiver, analysis_sender),
-        );
-    });
 }

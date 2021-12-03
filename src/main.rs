@@ -24,15 +24,32 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    let latest_code = Arc::new(MVar::new_empty());
+    // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
     let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
-    compilation_thread::run(compilation_receiver, analysis_sender.clone());
-    run_editor_listener_thread(
-        latest_code.clone(),
-        compilation_sender,
-        analysis_sender,
-    );
+    // We could send code updates over above channels too, but don't because:
+    // 1. It would require cloning a snapshot on every change, which is often.
+    // 2. By using a mutex we can block analysis of a snapshot currently being
+    //    changed, meaning we already know it's no longer current.
+    let latest_code = Arc::new(MVar::new_empty());
+
+    // Start editor listener thread.
+    let latest_code_for_editor_listener = latest_code.clone();
+    let analysis_sender_for_editor_listener = analysis_sender.clone();
+    spawn_thread(analysis_sender.clone(), || {
+        run_editor_listener_loop(
+            latest_code_for_editor_listener,
+            compilation_sender,
+            analysis_sender_for_editor_listener,
+        )
+    });
+
+    // Start compilation thread.
+    spawn_thread(analysis_sender.clone(), || {
+        compilation_thread::run(compilation_receiver, analysis_sender)
+    });
+
+    // Main thread continues as analysis thread.
     run_analysis_loop(latest_code, analysis_receiver)
 }
 
@@ -265,38 +282,27 @@ fn elm_refactor(diff: &SourceFileDiff, change: &ElmChange) -> Vec<Edit> {
     }
 }
 
-fn report_error(analysis_sender: Sender<Msg>, result: Result<(), Error>) {
-    match result {
-        Ok(_) => {}
-        Err(err) => {
-            analysis_sender
-                .send(Msg::ThreadFailed(err))
-                // If sending fails there's nothing more we can do to report
-                // this error, hence the unwrap().
-                .unwrap();
-        }
-    }
-}
-
-fn run_editor_listener_thread(
-    latest_code_var: Arc<MVar<SourceFileSnapshot>>,
-    compilation_sender: Sender<compilation_thread::Msg>,
-    analysis_sender: Sender<Msg>,
-) {
+fn spawn_thread<F>(error_channel: Sender<Msg>, f: F)
+where
+    F: FnOnce() -> Result<(), Error>,
+    F: Send + 'static,
+{
     std::thread::spawn(move || {
-        crate::report_error(
-            analysis_sender.clone(),
-            run_editor_listener_loop(
-                &latest_code_var,
-                compilation_sender,
-                analysis_sender,
-            ),
-        )
+        match f() {
+            Ok(_) => {}
+            Err(err) => {
+                error_channel
+                    .send(Msg::ThreadFailed(err))
+                    // If sending fails there's nothing more we can do to report
+                    // this error, hence the unwrap().
+                    .unwrap();
+            }
+        }
     });
 }
 
 fn run_editor_listener_loop(
-    latest_code_var: &MVar<SourceFileSnapshot>,
+    latest_code_var: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<Msg>,
 ) -> Result<(), Error> {
@@ -312,7 +318,7 @@ fn run_editor_listener_loop(
         .map_err(Error::CloningSocketFailed)?;
     let neovim = neovim::Neovim::new(BufReader::new(read_socket), write_socket);
     listen_to_editor(
-        latest_code_var,
+        &latest_code_var,
         compilation_sender,
         analysis_sender,
         neovim,
