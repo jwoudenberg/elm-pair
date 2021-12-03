@@ -1,3 +1,4 @@
+use crate::analysis_thread;
 use crate::sized_stack::SizedStack;
 use crate::{Error, FileData, MsgLoop, SourceFileSnapshot};
 use std::collections::HashMap;
@@ -11,7 +12,7 @@ pub(crate) enum Msg {
 
 pub(crate) fn run(
     compilation_receiver: Receiver<Msg>,
-    analysis_sender: Sender<crate::Msg>,
+    analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
     CompilationLoop {
         analysis_sender,
@@ -25,7 +26,7 @@ pub(crate) fn run(
 }
 
 struct CompilationLoop {
-    analysis_sender: Sender<crate::Msg>,
+    analysis_sender: Sender<analysis_thread::Msg>,
     last_validated_revision: Option<usize>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
     file_data: HashMap<usize, FileData>,
@@ -67,7 +68,7 @@ impl MsgLoop<Error> for CompilationLoop {
             && crate::does_snapshot_compile(file_data, &snapshot)?
         {
             self.analysis_sender
-                .send(crate::Msg::CompilationSucceeded(snapshot))?;
+                .send(analysis_thread::Msg::CompilationSucceeded(snapshot))?;
         }
         Ok(())
     }
