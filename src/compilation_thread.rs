@@ -1,8 +1,9 @@
 use crate::analysis_thread;
 use crate::sized_stack::SizedStack;
 use crate::{MsgLoop, SourceFileSnapshot};
+use knowledge_base::Query;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SendError, Sender};
 
 pub(crate) enum Msg {
@@ -12,7 +13,7 @@ pub(crate) enum Msg {
 
 #[derive(Debug)]
 pub(crate) enum Error {
-    NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
+    _NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
     DidNotFindElmBinaryOnPath,
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
@@ -40,6 +41,9 @@ pub(crate) fn run(
             crate::MAX_COMPILATION_CANDIDATES,
         ),
         project: HashMap::new(),
+        knowledge_base: KnowledgeBase {
+            project_root: HashMap::new(),
+        },
     }
     .start(compilation_receiver)
 }
@@ -49,6 +53,7 @@ struct CompilationLoop {
     last_validated_revision: Option<usize>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
     project: HashMap<usize, ElmProject>,
+    knowledge_base: KnowledgeBase,
 }
 
 struct ElmProject {
@@ -70,7 +75,11 @@ impl MsgLoop<Error> for CompilationLoop {
                 self.project.insert(
                     buffer,
                     ElmProject {
-                        root: find_project_root(&path)?.to_path_buf(),
+                        // root: find_project_root(&path)?.to_path_buf(),
+                        root: self
+                            .knowledge_base
+                            .ask(&ProjectRoot(path))
+                            .to_path_buf(),
                         elm_bin: find_executable("elm")?,
                     },
                 );
@@ -128,26 +137,6 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
     Err(Error::DidNotFindElmBinaryOnPath)
 }
 
-fn find_project_root(source_file: &Path) -> Result<&Path, Error> {
-    let mut maybe_root = source_file;
-    loop {
-        match maybe_root.parent() {
-            None => {
-                return Err(Error::NoElmJsonFoundInAnyAncestorDirectoryOf(
-                    source_file.to_path_buf(),
-                ));
-            }
-            Some(parent) => {
-                if parent.join("elm.json").exists() {
-                    return Ok(parent);
-                } else {
-                    maybe_root = parent;
-                }
-            }
-        }
-    }
-}
-
 fn does_snapshot_compile(
     project: &ElmProject,
     snapshot: &SourceFileSnapshot,
@@ -172,4 +161,57 @@ fn does_snapshot_compile(
         .map_err(Error::CompilationFailedToRunElmMake)?;
 
     Ok(output.status.success())
+}
+
+#[derive(PartialEq, Clone, Eq, Hash)]
+struct ProjectRoot(PathBuf);
+
+struct KnowledgeBase {
+    project_root: HashMap<ProjectRoot, PathBuf>,
+}
+
+impl Query<ProjectRoot> for KnowledgeBase {
+    type Answer = PathBuf;
+
+    fn store(&mut self) -> &mut HashMap<ProjectRoot, Self::Answer> {
+        &mut self.project_root
+    }
+
+    fn answer(
+        &mut self,
+        ProjectRoot(maybe_root): &ProjectRoot,
+    ) -> Self::Answer {
+        if maybe_root.join("elm.json").exists() {
+            maybe_root.to_owned()
+        } else {
+            // TODO: find a way that queries for multiple file can share a
+            // reference to the same PathBuf.
+            self.ask(&ProjectRoot(maybe_root.parent().unwrap().to_owned()))
+                .to_owned()
+        }
+    }
+}
+
+mod knowledge_base {
+    use std::collections::HashMap;
+
+    pub trait Query<Q>
+    where
+        Q: std::hash::Hash + std::cmp::Eq + Clone + 'static,
+    {
+        type Answer;
+
+        // Functions to implement for concrete query types.
+        fn answer(&mut self, question: &Q) -> Self::Answer;
+        fn store(&mut self) -> &mut HashMap<Q, Self::Answer>;
+
+        // Function to call for making queries.
+        fn ask(&mut self, question: &Q) -> &Self::Answer {
+            if !self.store().contains_key(question) {
+                let answer = self.answer(question);
+                self.store().insert(question.clone(), answer);
+            }
+            self.store().get(question).unwrap()
+        }
+    }
 }
