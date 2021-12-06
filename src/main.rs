@@ -62,7 +62,7 @@ struct SourceFileSnapshot {
     // - It's possible for the same file to be open in multiple editors with
     //   different unsaved changes each.
     // - A file path is stringy, so more expensive to copy.
-    buffer: usize,
+    buffer: Buffer,
     // The full contents of the file, stored in a Rope datastructure. This
     // datastructure offers cheap modifications in random locations, and cheap
     // cloning (both of which we'll do a lot).
@@ -75,11 +75,22 @@ struct SourceFileSnapshot {
     revision: usize,
 }
 
+// A unique identifier for a buffer that elm-pair is tracking in any connected
+// editor. First 32 bits uniquely identify the connected editor, while the last
+// 32 bits identify one of the buffers openen in that particular editor.
+#[derive(Copy, Clone, Debug, Hash, PartialEq)]
+struct Buffer {
+    editor_id: u32,
+    buffer_id: u32,
+}
+
+impl Eq for Buffer {}
+
 // A change made by the user reported by the editor.
 #[derive(Debug)]
 struct Edit {
     // The buffer that was changed.
-    buffer: usize,
+    buffer: Buffer,
     // A tree-sitter InputEdit value, describing what part of the file was changed.
     input_edit: InputEdit,
     // Bytes representing the new contents of the file at the location described

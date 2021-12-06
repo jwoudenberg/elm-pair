@@ -1,7 +1,7 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
-use crate::{MVar, SourceFileSnapshot};
+use crate::{Buffer, MVar, SourceFileSnapshot};
 use ropey::Rope;
 use std::io::BufReader;
 use std::os::unix::net::UnixListener;
@@ -37,13 +37,18 @@ pub(crate) fn run(
     let listener =
         UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
     // TODO: Figure out how to deal with multiple connections.
+    let editor_id = 0;
     let socket = listener.incoming().into_iter().next().unwrap();
     let read_socket =
         socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
     let write_socket = read_socket
         .try_clone()
         .map_err(Error::CloningSocketFailed)?;
-    let neovim = neovim::Neovim::new(BufReader::new(read_socket), write_socket);
+    let neovim = neovim::Neovim::new(
+        BufReader::new(read_socket),
+        write_socket,
+        editor_id,
+    );
     listen_to_editor(
         &latest_code_var,
         compilation_sender,
@@ -63,7 +68,7 @@ pub(crate) trait Editor {
         store_new_code: G,
     ) -> Result<(), Error>
     where
-        F: FnMut(usize) -> Result<SourceFileSnapshot, Error>,
+        F: FnMut(Buffer) -> Result<SourceFileSnapshot, Error>,
         G: FnMut(EditorEvent) -> Result<(), Error>;
 
     // Obtain an EditorDriver for sending commands to the editor.
@@ -72,12 +77,11 @@ pub(crate) trait Editor {
 
 pub(crate) enum EditorEvent {
     OpenedNewSourceFile {
-        buffer: usize,
+        buffer: Buffer,
         path: PathBuf,
         bytes: Rope,
     },
     ModifiedSourceFile {
-        _buffer: usize,
         code: SourceFileSnapshot,
         edit: InputEdit,
     },
@@ -108,14 +112,14 @@ where
         },
         |event| {
             let code = match event {
-                EditorEvent::ModifiedSourceFile { mut code, edit, .. } => {
+                EditorEvent::ModifiedSourceFile { mut code, edit } => {
                     apply_source_file_edit(&mut code, edit)?;
                     code
                 }
                 EditorEvent::OpenedNewSourceFile {
                     bytes,
-                    buffer,
                     path,
+                    buffer,
                 } => {
                     compilation_sender.send(
                         compilation_thread::Msg::OpenedNewSourceFile {
@@ -144,7 +148,7 @@ where
 }
 
 pub(crate) fn init_source_file_snapshot(
-    buffer: usize,
+    buffer: Buffer,
     bytes: Rope,
 ) -> Result<SourceFileSnapshot, Error> {
     let snapshot = SourceFileSnapshot {

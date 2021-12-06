@@ -2,6 +2,7 @@
 // it.
 
 use crate::test_support::included_answer_test::assert_eq_answer_in;
+use crate::Buffer;
 use ropey::Rope;
 use std::collections::VecDeque;
 use std::io::BufRead;
@@ -60,11 +61,16 @@ fn run_simulation_test_helper(path: &Path) -> Result<Option<ElmChange>, Error> {
                         let edit = change_source(&mut code.bytes, event);
                         apply_source_file_edit(code, edit)
                     } else {
-                        init_source_file_snapshot(0, initial_source(event)).map(
-                            |code| {
-                                latest_code = Some(code);
+                        init_source_file_snapshot(
+                            Buffer {
+                                editor_id: 0,
+                                buffer_id: 0,
                             },
+                            initial_source(event),
                         )
+                        .map(|code| {
+                            latest_code = Some(code);
+                        })
                     }
                 }
             }

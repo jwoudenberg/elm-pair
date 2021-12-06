@@ -1,7 +1,7 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread as editor_listener;
 use crate::editor_listener_thread::{Editor, EditorEvent};
-use crate::{Edit, InputEdit, SourceFileSnapshot};
+use crate::{Buffer, Edit, InputEdit, SourceFileSnapshot};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
@@ -12,16 +12,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Neovim<R, W> {
+    editor_id: u32,
     read: R,
     write: Arc<Mutex<W>>,
 }
 
 impl<R: Read, W: Write> Neovim<R, W> {
-    pub fn new(read: R, write: W) -> Self
+    pub fn new(read: R, write: W, editor_id: u32) -> Self
     where
         R: Read,
     {
         Neovim {
+            editor_id,
             read,
             write: Arc::new(Mutex::new(write)),
         }
@@ -43,10 +45,11 @@ impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
         store_new_code: G,
     ) -> Result<(), editor_listener::Error>
     where
-        F: FnMut(usize) -> Result<SourceFileSnapshot, editor_listener::Error>,
+        F: FnMut(Buffer) -> Result<SourceFileSnapshot, editor_listener::Error>,
         G: FnMut(EditorEvent) -> Result<(), editor_listener::Error>,
     {
         let mut listener = NeovimListener {
+            editor_id: self.editor_id,
             read: self.read,
             write: self.write,
             load_code_copy,
@@ -59,18 +62,19 @@ impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
 }
 
 struct NeovimListener<R, W, F, G> {
+    editor_id: u32,
     read: R,
     write: Arc<Mutex<W>>,
     load_code_copy: F,
     store_new_code: G,
-    paths_for_new_buffers: HashMap<usize, PathBuf>,
+    paths_for_new_buffers: HashMap<Buffer, PathBuf>,
 }
 
 impl<R, W, F, G> NeovimListener<R, W, F, G>
 where
     R: Read,
     W: Write,
-    F: FnMut(usize) -> Result<SourceFileSnapshot, editor_listener::Error>,
+    F: FnMut(Buffer) -> Result<SourceFileSnapshot, editor_listener::Error>,
     G: FnMut(EditorEvent) -> Result<(), editor_listener::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
@@ -145,7 +149,10 @@ where
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
         read_tuple!(
             &mut self.read,
-            buf = rmp::decode::read_int(&mut self.read)?,
+            buf = Buffer {
+                editor_id: self.editor_id,
+                buffer_id: rmp::decode::read_int(&mut self.read)?
+            },
             path = {
                 let len = rmp::decode::read_str_len(&mut self.read)?;
                 let mut buffer = vec![0; len as usize];
@@ -162,37 +169,41 @@ where
     fn parse_buf_lines_event(&mut self) -> Result<(), Error> {
         read_tuple!(
             &mut self.read,
-            buffer = read_buf(&mut self.read)?,
+            buffer = Buffer {
+                editor_id: self.editor_id,
+                buffer_id: read_buf(&mut self.read)?,
+            },
             _changedtick = skip_objects(&mut self.read, 1)?,
             firstline = rmp::decode::read_int(&mut self.read)?,
             lastline = rmp::decode::read_int(&mut self.read)?,
-            _linedata =
-                {
-                    if lastline == -1 {
-                        let rope = self.read_rope()?;
-                        (self.store_new_code)(EditorEvent::OpenedNewSourceFile {
-                        bytes: rope,
+            _linedata = {
+                if lastline == -1 {
+                    let rope = self.read_rope()?;
+                    (self.store_new_code)(EditorEvent::OpenedNewSourceFile {
                         buffer,
-                        path: self.paths_for_new_buffers.remove(&buffer).ok_or(
-                            Error::ReceivedLinesEventForUnknownBuffer(buffer),
-                        )?,
-                    })?;
-                    } else {
-                        let mut code = (self.load_code_copy)(buffer)?;
-                        let edit = self.apply_change(
-                            firstline,
-                            lastline,
-                            &mut code.bytes,
-                        )?;
-                        (self.store_new_code)(
-                            EditorEvent::ModifiedSourceFile {
-                                _buffer: buffer,
-                                code,
-                                edit,
-                            },
-                        )?;
-                    }
+                        bytes: rope,
+                        path: self
+                            .paths_for_new_buffers
+                            .remove(&buffer)
+                            .ok_or(
+                                Error::ReceivedLinesEventForUnknownBuffer(
+                                    buffer,
+                                ),
+                            )?,
+                    })
+                } else {
+                    let mut code = (self.load_code_copy)(buffer)?;
+                    let edit = self.apply_change(
+                        firstline,
+                        lastline,
+                        &mut code.bytes,
+                    )?;
+                    (self.store_new_code)(EditorEvent::ModifiedSourceFile {
+                        code,
+                        edit,
+                    })
                 }
+            }
         );
         Ok(())
     }
@@ -206,11 +217,14 @@ where
     fn parse_buf_detach_event(&mut self) -> Result<(), Error> {
         // Re-attach this buffer
         // TODO: consider when we might not want to reattach.
-        read_tuple!(&mut self.read, buf = read_buf(&mut self.read)?);
-        self.nvim_buf_attach(buf)
+        read_tuple!(&mut self.read, buffer_id = read_buf(&mut self.read)?);
+        self.nvim_buf_attach(Buffer {
+            editor_id: self.editor_id,
+            buffer_id,
+        })
     }
 
-    fn nvim_buf_attach(&self, buf: usize) -> Result<(), Error> {
+    fn nvim_buf_attach(&self, buf: Buffer) -> Result<(), Error> {
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
         rmp::encode::write_array_len(write, 3)?;
@@ -218,7 +232,7 @@ where
         write_str(write, "nvim_buf_attach")?;
         // nvim_buf_attach arguments
         rmp::encode::write_array_len(write, 3)?;
-        rmp::encode::write_u32(write, buf as u32)?; //buf
+        rmp::encode::write_u32(write, buf.buffer_id)?; //buf
         rmp::encode::write_bool(write, true)
             .map_err(Error::EncodingFailedWhileWritingData)?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
@@ -298,7 +312,7 @@ pub(crate) enum Error {
     UnknownEventMethod(String),
     ReceivedErrorEvent(u64, String),
     FailedWhileProcessingBufChange(Box<editor_listener::Error>),
-    ReceivedLinesEventForUnknownBuffer(usize),
+    ReceivedLinesEventForUnknownBuffer(Buffer),
 }
 
 impl From<Error> for editor_listener::Error {
@@ -529,12 +543,12 @@ where
     Ok(())
 }
 
-fn read_buf<R>(read: &mut R) -> Result<usize, DecodingError>
+fn read_buf<R>(read: &mut R) -> Result<u32, DecodingError>
 where
     R: Read,
 {
     let (_, buf) = rmp::decode::read_fixext1(read)?;
-    Ok(buf as usize)
+    Ok(buf as u32)
 }
 
 pub(crate) struct NeovimDriver<W> {
@@ -547,9 +561,7 @@ where
 {
     fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
         println!("REFACTOR: {:?}", refactor);
-        let mut write_guard = crate::lock(&self.write);
-        let write = write_guard.deref_mut();
-        match write_refactor(write, refactor) {
+        match self.write_refactor(refactor) {
             Ok(()) => true,
             Err(err) => {
                 eprintln!("Ran into non-fatal error while attempting to send edits to neovim: {:?}", err );
@@ -559,36 +571,39 @@ where
     }
 }
 
-fn write_refactor<W>(write: &mut W, refactor: Vec<Edit>) -> Result<(), Error>
+impl<W> NeovimDriver<W>
 where
     W: Write,
 {
-    rmp::encode::write_array_len(write, 3)?; // msgpack envelope
-    rmp::encode::write_i8(write, 2)?;
-    write_str(write, "nvim_call_atomic")?;
+    fn write_refactor(&self, refactor: Vec<Edit>) -> Result<(), Error> {
+        let mut write_guard = crate::lock(&self.write);
+        let write = write_guard.deref_mut();
+        rmp::encode::write_array_len(write, 3)?; // msgpack envelope
+        rmp::encode::write_i8(write, 2)?;
+        write_str(write, "nvim_call_atomic")?;
 
-    rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
+        rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
 
-    rmp::encode::write_array_len(write, refactor.len() as u32)?; // calls array
-    let buf = 0; // TODO: use a real value here.
-    for edit in refactor {
-        let start = edit.input_edit.start_position;
-        let end = edit.input_edit.old_end_position;
+        rmp::encode::write_array_len(write, refactor.len() as u32)?; // calls array
+        for edit in refactor {
+            let start = edit.input_edit.start_position;
+            let end = edit.input_edit.old_end_position;
 
-        rmp::encode::write_array_len(write, 2)?; // call tuple
-        write_str(write, "nvim_buf_set_text")?;
+            rmp::encode::write_array_len(write, 2)?; // call tuple
+            write_str(write, "nvim_buf_set_text")?;
 
-        rmp::encode::write_array_len(write, 6)?; // nvim_buf_set_text args
-        rmp::encode::write_u8(write, buf)?;
-        rmp::encode::write_u64(write, start.row as u64)?;
-        rmp::encode::write_u64(write, start.column as u64)?;
-        rmp::encode::write_u64(write, end.row as u64)?;
-        rmp::encode::write_u64(write, end.column as u64)?;
+            rmp::encode::write_array_len(write, 6)?; // nvim_buf_set_text args
+            rmp::encode::write_u32(write, edit.buffer.buffer_id)?;
+            rmp::encode::write_u64(write, start.row as u64)?;
+            rmp::encode::write_u64(write, start.column as u64)?;
+            rmp::encode::write_u64(write, end.row as u64)?;
+            rmp::encode::write_u64(write, end.column as u64)?;
 
-        rmp::encode::write_array_len(write, 1)?; // array of lines
-        write_str(write, &edit.new_bytes)?;
+            rmp::encode::write_array_len(write, 1)?; // array of lines
+            write_str(write, &edit.new_bytes)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn write_str<W>(write: &mut W, str: &str) -> Result<(), Error>

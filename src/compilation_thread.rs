@@ -1,6 +1,6 @@
 use crate::analysis_thread;
 use crate::sized_stack::SizedStack;
-use crate::{MsgLoop, SourceFileSnapshot};
+use crate::{Buffer, MsgLoop, SourceFileSnapshot};
 use knowledge_base::Query;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, SendError, Sender};
 
 pub(crate) enum Msg {
     CompilationRequested(SourceFileSnapshot),
-    OpenedNewSourceFile { buffer: usize, path: PathBuf },
+    OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
 }
 
 #[derive(Debug)]
@@ -20,7 +20,7 @@ pub(crate) enum Error {
     CompilationFailedToCreateTempDir(std::io::Error),
     CompilationFailedToWriteCodeToTempFile(std::io::Error),
     CompilationFailedToRunElmMake(std::io::Error),
-    NoElmProjectStoredForBuffer(usize),
+    NoElmProjectStoredForBuffer(Buffer),
     FailedToSendMessage,
 }
 
@@ -52,7 +52,7 @@ struct CompilationLoop {
     analysis_sender: Sender<analysis_thread::Msg>,
     last_validated_revision: Option<usize>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
-    project: HashMap<usize, ElmProject>,
+    project: HashMap<Buffer, ElmProject>,
     knowledge_base: KnowledgeBase,
 }
 
