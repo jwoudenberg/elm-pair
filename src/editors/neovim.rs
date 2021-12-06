@@ -6,8 +6,9 @@ use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::ops::DerefMut;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -17,16 +18,18 @@ pub(crate) struct Neovim<R, W> {
     write: Arc<Mutex<W>>,
 }
 
-impl<R: Read, W: Write> Neovim<R, W> {
-    pub fn new(read: R, write: W, editor_id: u32) -> Self
-    where
-        R: Read,
-    {
-        Neovim {
+impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
+    pub fn from_unix_socket(
+        socket: UnixStream,
+        editor_id: u32,
+    ) -> Result<Self, editor_listener::Error> {
+        let write = socket.try_clone().map_err(Error::CloningSocketFailed)?;
+        let neovim = Neovim {
             editor_id,
-            read,
-            write: Arc::new(Mutex::new(write)),
-        }
+            read: BufReader::new(socket),
+            write: Arc::new(Mutex::new(BufWriter::new(write))),
+        };
+        Ok(neovim)
     }
 }
 
@@ -229,6 +232,9 @@ where
         rmp::encode::write_bool(write, true)
             .map_err(Error::EncodingFailedWhileWritingData)?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
+        write
+            .flush()
+            .map_err(Error::EncodingFailedWhileWritingData)?;
         Ok(())
     }
 }
@@ -337,6 +343,7 @@ impl<R: Read> NeovimEvent<R> {
 
 #[derive(Debug)]
 pub(crate) enum Error {
+    CloningSocketFailed(std::io::Error),
     DecodingFailed(DecodingError),
     EncodingFailedWhileWritingMarker(std::io::Error),
     EncodingFailedWhileWritingData(std::io::Error),
@@ -635,6 +642,9 @@ where
             rmp::encode::write_array_len(write, 1)?; // array of lines
             write_str(write, &edit.new_bytes)?;
         }
+        write
+            .flush()
+            .map_err(Error::EncodingFailedWhileWritingData)?;
         Ok(())
     }
 }

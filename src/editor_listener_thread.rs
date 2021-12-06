@@ -4,7 +4,6 @@ use crate::editors::neovim;
 use crate::{Buffer, MVar, SourceFileSnapshot};
 use ropey::Rope;
 use std::collections::HashMap;
-use std::io::BufReader;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{SendError, Sender};
@@ -15,7 +14,6 @@ use tree_sitter::{InputEdit, Tree};
 pub(crate) enum Error {
     SocketCreationFailed(std::io::Error),
     AcceptingIncomingSocketConnectionFailed(std::io::Error),
-    CloningSocketFailed(std::io::Error),
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
     NeovimMessageDecodingFailed(neovim::Error),
@@ -56,17 +54,13 @@ impl EditorListenerLoop {
             .map_err(Error::SocketCreationFailed)?;
         // TODO: Figure out how to deal with multiple connections.
         let editor_id = 0;
-        let socket = listener.incoming().into_iter().next().unwrap();
-        let read_socket =
-            socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
-        let write_socket = read_socket
-            .try_clone()
-            .map_err(Error::CloningSocketFailed)?;
-        let neovim = neovim::Neovim::new(
-            BufReader::new(read_socket),
-            write_socket,
-            editor_id,
-        );
+        let socket = listener
+            .incoming()
+            .into_iter()
+            .next()
+            .unwrap()
+            .map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
+        let neovim = neovim::Neovim::from_unix_socket(socket, editor_id)?;
         self.listen_to_editor(neovim)
     }
 
