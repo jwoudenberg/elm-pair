@@ -28,33 +28,107 @@ impl<T> From<SendError<T>> for Error {
     }
 }
 
+struct EditorListenerLoop {
+    latest_code_var: Arc<MVar<SourceFileSnapshot>>,
+    compilation_sender: Sender<compilation_thread::Msg>,
+    analysis_sender: Sender<analysis_thread::Msg>,
+}
+
 pub(crate) fn run(
     latest_code_var: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
-    let socket_path = "/tmp/elm-pair.sock";
-    let listener =
-        UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
-    // TODO: Figure out how to deal with multiple connections.
-    let editor_id = 0;
-    let socket = listener.incoming().into_iter().next().unwrap();
-    let read_socket =
-        socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
-    let write_socket = read_socket
-        .try_clone()
-        .map_err(Error::CloningSocketFailed)?;
-    let neovim = neovim::Neovim::new(
-        BufReader::new(read_socket),
-        write_socket,
-        editor_id,
-    );
-    listen_to_editor(
-        &latest_code_var,
+    EditorListenerLoop {
+        latest_code_var,
         compilation_sender,
         analysis_sender,
-        neovim,
-    )
+    }
+    .start()
+}
+
+impl EditorListenerLoop {
+    fn start(self) -> Result<(), Error> {
+        let socket_path = "/tmp/elm-pair.sock";
+        let listener = UnixListener::bind(socket_path)
+            .map_err(Error::SocketCreationFailed)?;
+        // TODO: Figure out how to deal with multiple connections.
+        let editor_id = 0;
+        let socket = listener.incoming().into_iter().next().unwrap();
+        let read_socket =
+            socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
+        let write_socket = read_socket
+            .try_clone()
+            .map_err(Error::CloningSocketFailed)?;
+        let neovim = neovim::Neovim::new(
+            BufReader::new(read_socket),
+            write_socket,
+            editor_id,
+        );
+        self.listen_to_editor(neovim)
+    }
+
+    fn listen_to_editor<E>(&self, editor: E) -> Result<(), Error>
+    where
+        E: Editor,
+    {
+        let driver = editor.driver();
+        let boxed = Box::new(driver);
+        let mut revision_of_last_compilation_candidate = None;
+        self.analysis_sender
+            .send(analysis_thread::Msg::EditorConnected(boxed))?;
+        editor.listen(
+            |_buf| {
+                if let Some(code) = self.latest_code_var.try_take() {
+                    Ok(code)
+                } else {
+                    // TODO: let the editor handle this error (so it can request
+                    // a refresh).
+                    Err(Error::EditorRequestedNonExistingLocalCopy)
+                }
+            },
+            |event| {
+                let code = match event {
+                    EditorEvent::ModifiedSourceFile { mut code, edit } => {
+                        apply_source_file_edit(&mut code, edit)?;
+                        code
+                    }
+                    EditorEvent::OpenedNewSourceFile {
+                        bytes,
+                        path,
+                        buffer,
+                    } => {
+                        self.compilation_sender.send(
+                            compilation_thread::Msg::OpenedNewSourceFile {
+                                buffer,
+                                path,
+                            },
+                        )?;
+                        init_source_file_snapshot(buffer, bytes)?
+                    }
+                };
+                if !code.tree.root_node().has_error()
+                    && Some(code.revision)
+                        > revision_of_last_compilation_candidate
+                {
+                    revision_of_last_compilation_candidate =
+                        Some(code.revision);
+                    self.compilation_sender.send(
+                        compilation_thread::Msg::CompilationRequested(
+                            code.clone(),
+                        ),
+                    )?;
+                }
+                self.latest_code_var.write(code);
+                self.analysis_sender
+                    .send(analysis_thread::Msg::SourceCodeModified)?;
+                Ok(())
+            },
+        )?;
+        self.analysis_sender
+            .send(analysis_thread::Msg::AllEditorsDisconnected)?;
+        Ok(())
+    }
 }
 
 // An API for communicatating with an editor.
@@ -85,66 +159,6 @@ pub(crate) enum EditorEvent {
         code: SourceFileSnapshot,
         edit: InputEdit,
     },
-}
-
-fn listen_to_editor<E>(
-    latest_code_var: &MVar<SourceFileSnapshot>,
-    compilation_sender: Sender<compilation_thread::Msg>,
-    analysis_sender: Sender<analysis_thread::Msg>,
-    editor: E,
-) -> Result<(), Error>
-where
-    E: Editor,
-{
-    let driver = editor.driver();
-    let boxed = Box::new(driver);
-    let mut revision_of_last_compilation_candidate = None;
-    analysis_sender.send(analysis_thread::Msg::EditorConnected(boxed))?;
-    editor.listen(
-        |_buf| {
-            if let Some(code) = latest_code_var.try_take() {
-                Ok(code)
-            } else {
-                // TODO: let the editor handle this error (so it can request
-                // a refresh).
-                Err(Error::EditorRequestedNonExistingLocalCopy)
-            }
-        },
-        |event| {
-            let code = match event {
-                EditorEvent::ModifiedSourceFile { mut code, edit } => {
-                    apply_source_file_edit(&mut code, edit)?;
-                    code
-                }
-                EditorEvent::OpenedNewSourceFile {
-                    bytes,
-                    path,
-                    buffer,
-                } => {
-                    compilation_sender.send(
-                        compilation_thread::Msg::OpenedNewSourceFile {
-                            buffer,
-                            path,
-                        },
-                    )?;
-                    init_source_file_snapshot(buffer, bytes)?
-                }
-            };
-            if !code.tree.root_node().has_error()
-                && Some(code.revision) > revision_of_last_compilation_candidate
-            {
-                revision_of_last_compilation_candidate = Some(code.revision);
-                compilation_sender.send(
-                    compilation_thread::Msg::CompilationRequested(code.clone()),
-                )?;
-            }
-            latest_code_var.write(code);
-            analysis_sender.send(analysis_thread::Msg::SourceCodeModified)?;
-            Ok(())
-        },
-    )?;
-    analysis_sender.send(analysis_thread::Msg::AllEditorsDisconnected)?;
-    Ok(())
 }
 
 pub(crate) fn init_source_file_snapshot(
