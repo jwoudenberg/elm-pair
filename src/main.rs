@@ -253,10 +253,11 @@ mod mvar {
             }
         }
 
-        // Write a value to the MVar, possibly overwriting a previous value.
-        pub fn write(&self, new: T) {
+        // Write a value to the MVar. If the MVar already contained a value, it
+        // is returned.
+        pub fn replace(&self, new: T) -> Option<T> {
             let mut val = lock(&self.val);
-            *val = Some(new);
+            val.replace(new)
         }
 
         // Take the value from an MVar if it has one, leaving the MVar empty.

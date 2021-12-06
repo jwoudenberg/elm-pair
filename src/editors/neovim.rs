@@ -1,6 +1,6 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread as editor_listener;
-use crate::editor_listener_thread::{Editor, EditorEvent};
+use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
 use crate::{Buffer, Edit, InputEdit, SourceFileSnapshot};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
@@ -32,6 +32,7 @@ impl<R: Read, W: Write> Neovim<R, W> {
 
 impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
     type Driver = NeovimDriver<W>;
+    type Event = NeovimEvent<R>;
 
     fn driver(&self) -> NeovimDriver<W> {
         NeovimDriver {
@@ -39,50 +40,47 @@ impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
         }
     }
 
-    fn listen<F, G>(
-        self,
-        load_code_copy: F,
-        store_new_code: G,
-    ) -> Result<(), editor_listener::Error>
+    fn listen<F>(self, on_event: F) -> Result<(), editor_listener::Error>
     where
-        F: FnMut(Buffer) -> Result<SourceFileSnapshot, editor_listener::Error>,
-        G: FnMut(EditorEvent) -> Result<(), editor_listener::Error>,
+        F: FnMut(
+            Buffer,
+            &mut Self::Event,
+        ) -> Result<(), editor_listener::Error>,
     {
         let mut listener = NeovimListener {
             editor_id: self.editor_id,
             read: self.read,
             write: self.write,
-            load_code_copy,
-            store_new_code,
+            on_event,
             paths_for_new_buffers: HashMap::new(),
         };
-        while listener.parse_msg()? {}
+        while let Some(new_listener) = listener.parse_msg()? {
+            listener = new_listener;
+        }
         Ok(())
     }
 }
 
-struct NeovimListener<R, W, F, G> {
+struct NeovimListener<R, W, F> {
     editor_id: u32,
     read: R,
     write: Arc<Mutex<W>>,
-    load_code_copy: F,
-    store_new_code: G,
+    on_event: F,
     paths_for_new_buffers: HashMap<Buffer, PathBuf>,
 }
 
-impl<R, W, F, G> NeovimListener<R, W, F, G>
+impl<R, W, F> NeovimListener<R, W, F>
 where
     R: Read,
     W: Write,
-    F: FnMut(Buffer) -> Result<SourceFileSnapshot, editor_listener::Error>,
-    G: FnMut(EditorEvent) -> Result<(), editor_listener::Error>,
+    F: FnMut(Buffer, &mut NeovimEvent<R>) -> Result<(), editor_listener::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
     // webpack-rpc: https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md
     //
     // TODO handle neovim API versions
-    fn parse_msg(&mut self) -> Result<bool, Error> {
+    fn parse_msg(mut self) -> Result<Option<Self>, Error> {
         let array_len_res = rmp::decode::read_array_len(&mut self.read);
         // There's currently no way to check if there's more to read save by
         // trying to read some bytes and seeing what happens. That's what we
@@ -91,7 +89,7 @@ where
         let array_len = match &array_len_res {
             Err(rmp::decode::ValueReadError::InvalidMarkerRead(io_err)) => {
                 if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
-                    return Ok(false);
+                    return Ok(None);
                 } else {
                     array_len_res?
                 }
@@ -100,14 +98,14 @@ where
         };
         let type_ = rmp::decode::read_int(&mut self.read)?;
         if array_len == 3 && type_ == 2 {
-            self.parse_notification_msg()?;
-            Ok(true)
+            let new_self = self.parse_notification_msg()?;
+            Ok(Some(new_self))
         } else {
             Err(Error::UnknownMessageType(array_len, type_))
         }
     }
 
-    fn parse_notification_msg(&mut self) -> Result<(), Error> {
+    fn parse_notification_msg(mut self) -> Result<Self, Error> {
         let mut buffer = [0u8; 30];
         let len = rmp::decode::read_str_len(&mut self.read)? as usize;
         if len > buffer.len() {
@@ -119,15 +117,20 @@ where
             .read_exact(&mut buffer[0..len])
             .map_err(DecodingError::ReadingString)?;
         match &buffer[0..len] {
-            b"nvim_error_event" => self.parse_error_event(),
-            b"nvim_buf_lines_event" => self.parse_buf_lines_event(),
-            b"nvim_buf_changedtick_event" => self.parse_buf_changedtick_event(),
-            b"nvim_buf_detach_event" => self.parse_buf_detach_event(),
-            b"buffer_opened" => self.parse_buffer_opened(),
-            method => {
-                Err(Error::UnknownEventMethod(to_utf8(method)?.to_owned()))
+            b"nvim_error_event" => self.parse_error_event()?,
+            b"nvim_buf_lines_event" => return self.parse_buf_lines_event(),
+            b"nvim_buf_changedtick_event" => {
+                self.parse_buf_changedtick_event()?
             }
-        }
+            b"nvim_buf_detach_event" => self.parse_buf_detach_event()?,
+            b"buffer_opened" => self.parse_buffer_opened()?,
+            method => {
+                return Err(Error::UnknownEventMethod(
+                    to_utf8(method)?.to_owned(),
+                ))
+            }
+        };
+        Ok(self)
     }
 
     fn parse_error_event(&mut self) -> Result<(), Error> {
@@ -166,7 +169,7 @@ where
         self.nvim_buf_attach(buf)
     }
 
-    fn parse_buf_lines_event(&mut self) -> Result<(), Error> {
+    fn parse_buf_lines_event(mut self) -> Result<Self, Error> {
         read_tuple!(
             &mut self.read,
             buffer = Buffer {
@@ -177,35 +180,25 @@ where
             firstline = rmp::decode::read_int(&mut self.read)?,
             lastline = rmp::decode::read_int(&mut self.read)?,
             _linedata = {
-                if lastline == -1 {
-                    let rope = self.read_rope()?;
-                    (self.store_new_code)(EditorEvent::OpenedNewSourceFile {
-                        buffer,
-                        bytes: rope,
-                        path: self
-                            .paths_for_new_buffers
-                            .remove(&buffer)
-                            .ok_or(
-                                Error::ReceivedLinesEventForUnknownBuffer(
-                                    buffer,
-                                ),
-                            )?,
-                    })
-                } else {
-                    let mut code = (self.load_code_copy)(buffer)?;
-                    let edit = self.apply_change(
-                        firstline,
-                        lastline,
-                        &mut code.bytes,
-                    )?;
-                    (self.store_new_code)(EditorEvent::ModifiedSourceFile {
-                        code,
-                        edit,
-                    })
+                let mut update = NeovimEvent {
+                    editor_id: self.editor_id,
+                    paths_for_new_buffers: self.paths_for_new_buffers,
+                    read: self.read,
+                    firstline,
+                    lastline,
+                    buffer,
+                };
+                (self.on_event)(buffer, &mut update)?;
+                self = NeovimListener {
+                    editor_id: update.editor_id,
+                    paths_for_new_buffers: update.paths_for_new_buffers,
+                    read: update.read,
+                    write: self.write,
+                    on_event: self.on_event,
                 }
             }
         );
-        Ok(())
+        Ok(self)
     }
 
     fn parse_buf_changedtick_event(&mut self) -> Result<(), Error> {
@@ -238,7 +231,47 @@ where
         rmp::encode::write_map_len(write, 0)?; // opts
         Ok(())
     }
+}
+pub(crate) struct NeovimEvent<R> {
+    editor_id: u32,
+    read: R,
+    paths_for_new_buffers: HashMap<Buffer, PathBuf>,
+    firstline: i64,
+    lastline: i64,
+    buffer: Buffer,
+}
 
+impl<R: Read> EditorEvent for NeovimEvent<R> {
+    fn apply_to_buffer(
+        &mut self,
+        opt_code: Option<SourceFileSnapshot>,
+    ) -> Result<BufferChange, editor_listener::Error> {
+        let contains_entire_buffer = self.lastline == -1;
+        if contains_entire_buffer {
+            let rope = self.read_rope()?;
+            Ok(BufferChange::OpenedNewBuffer {
+                buffer: self.buffer,
+                bytes: rope,
+                path: self.paths_for_new_buffers.remove(&self.buffer).ok_or(
+                    Error::ReceivedLinesEventForUnknownBuffer(self.buffer),
+                )?,
+            })
+        } else if let Some(mut code) = opt_code {
+            let edit = self.apply_change(
+                self.firstline,
+                self.lastline,
+                &mut code.bytes,
+            )?;
+            Ok(BufferChange::ModifiedBuffer { code, edit })
+        } else {
+            eprintln!("I received an incremental update from Neovim for a buffer I don't know yet.");
+            // TODO: re-attach buffer to get initial lines event.
+            Ok(BufferChange::NoChanges)
+        }
+    }
+}
+
+impl<R: Read> NeovimEvent<R> {
     fn apply_change(
         &mut self,
         firstline: i64,
@@ -281,7 +314,7 @@ where
         })
     }
 
-    fn read_rope(&mut self) -> Result<Rope, DecodingError> {
+    fn read_rope(&mut self) -> Result<Rope, Error> {
         let mut builder = RopeBuilder::new();
         let mut remaining_lines = rmp::decode::read_array_len(&mut self.read)?;
         while remaining_lines > 0 {

@@ -3,6 +3,7 @@ use crate::compilation_thread;
 use crate::editors::neovim;
 use crate::{Buffer, MVar, SourceFileSnapshot};
 use ropey::Rope;
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -15,7 +16,6 @@ pub(crate) enum Error {
     SocketCreationFailed(std::io::Error),
     AcceptingIncomingSocketConnectionFailed(std::io::Error),
     CloningSocketFailed(std::io::Error),
-    EditorRequestedNonExistingLocalCopy,
     TreeSitterParsingFailed,
     TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
     NeovimMessageDecodingFailed(neovim::Error),
@@ -29,26 +29,28 @@ impl<T> From<SendError<T>> for Error {
 }
 
 struct EditorListenerLoop {
-    latest_code_var: Arc<MVar<SourceFileSnapshot>>,
+    active_buffer: Arc<MVar<SourceFileSnapshot>>,
+    inactive_buffers: HashMap<Buffer, SourceFileSnapshot>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 }
 
 pub(crate) fn run(
-    latest_code_var: Arc<MVar<SourceFileSnapshot>>,
+    active_buffer: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
     EditorListenerLoop {
-        latest_code_var,
+        active_buffer,
         compilation_sender,
         analysis_sender,
+        inactive_buffers: HashMap::new(),
     }
     .start()
 }
 
 impl EditorListenerLoop {
-    fn start(self) -> Result<(), Error> {
+    fn start(mut self) -> Result<(), Error> {
         let socket_path = "/tmp/elm-pair.sock";
         let listener = UnixListener::bind(socket_path)
             .map_err(Error::SocketCreationFailed)?;
@@ -68,7 +70,7 @@ impl EditorListenerLoop {
         self.listen_to_editor(neovim)
     }
 
-    fn listen_to_editor<E>(&self, editor: E) -> Result<(), Error>
+    fn listen_to_editor<E>(&mut self, editor: E) -> Result<(), Error>
     where
         E: Editor,
     {
@@ -77,85 +79,98 @@ impl EditorListenerLoop {
         let mut revision_of_last_compilation_candidate = None;
         self.analysis_sender
             .send(analysis_thread::Msg::EditorConnected(boxed))?;
-        editor.listen(
-            |_buf| {
-                if let Some(code) = self.latest_code_var.try_take() {
-                    Ok(code)
-                } else {
-                    // TODO: let the editor handle this error (so it can request
-                    // a refresh).
-                    Err(Error::EditorRequestedNonExistingLocalCopy)
+        editor.listen(|buffer, update| {
+            let event = update.apply_to_buffer(self.take_buffer(buffer))?;
+            let code = match event {
+                BufferChange::NoChanges => return Ok(()),
+                BufferChange::ModifiedBuffer { mut code, edit } => {
+                    apply_source_file_edit(&mut code, edit)?;
+                    code
                 }
-            },
-            |event| {
-                let code = match event {
-                    EditorEvent::ModifiedSourceFile { mut code, edit } => {
-                        apply_source_file_edit(&mut code, edit)?;
-                        code
-                    }
-                    EditorEvent::OpenedNewSourceFile {
-                        bytes,
-                        path,
-                        buffer,
-                    } => {
-                        self.compilation_sender.send(
-                            compilation_thread::Msg::OpenedNewSourceFile {
-                                buffer,
-                                path,
-                            },
-                        )?;
-                        init_source_file_snapshot(buffer, bytes)?
-                    }
-                };
-                if !code.tree.root_node().has_error()
-                    && Some(code.revision)
-                        > revision_of_last_compilation_candidate
-                {
-                    revision_of_last_compilation_candidate =
-                        Some(code.revision);
+                BufferChange::OpenedNewBuffer {
+                    bytes,
+                    path,
+                    buffer,
+                } => {
                     self.compilation_sender.send(
-                        compilation_thread::Msg::CompilationRequested(
-                            code.clone(),
-                        ),
+                        compilation_thread::Msg::OpenedNewSourceFile {
+                            buffer,
+                            path,
+                        },
                     )?;
+                    init_source_file_snapshot(buffer, bytes)?
                 }
-                self.latest_code_var.write(code);
-                self.analysis_sender
-                    .send(analysis_thread::Msg::SourceCodeModified)?;
-                Ok(())
-            },
-        )?;
+            };
+            if !code.tree.root_node().has_error()
+                && Some(code.revision) > revision_of_last_compilation_candidate
+            {
+                revision_of_last_compilation_candidate = Some(code.revision);
+                self.compilation_sender.send(
+                    compilation_thread::Msg::CompilationRequested(code.clone()),
+                )?;
+            }
+            self.put_active_buffer(code);
+            self.analysis_sender
+                .send(analysis_thread::Msg::SourceCodeModified)?;
+            Ok(())
+        })?;
         self.analysis_sender
             .send(analysis_thread::Msg::AllEditorsDisconnected)?;
         Ok(())
+    }
+
+    fn take_buffer(&mut self, buffer: Buffer) -> Option<SourceFileSnapshot> {
+        if let Some(code) = self.active_buffer.try_take() {
+            if code.buffer == buffer {
+                return Some(code);
+            } else {
+                self.inactive_buffers.insert(code.buffer, code);
+            }
+        }
+        self.inactive_buffers.remove(&buffer)
+    }
+
+    fn put_active_buffer(&mut self, code: SourceFileSnapshot) {
+        if let Some(prev_active) = self.active_buffer.replace(code) {
+            self.inactive_buffers
+                .insert(prev_active.buffer, prev_active);
+        }
     }
 }
 
 // An API for communicatating with an editor.
 pub(crate) trait Editor {
     type Driver: analysis_thread::EditorDriver;
+    type Event: EditorEvent;
 
     // Listen for changes to source files happening in the editor.
-    fn listen<F, G>(
-        self,
-        load_code_copy: F,
-        store_new_code: G,
-    ) -> Result<(), Error>
+    fn listen<F>(self, on_event: F) -> Result<(), Error>
     where
-        F: FnMut(Buffer) -> Result<SourceFileSnapshot, Error>,
-        G: FnMut(EditorEvent) -> Result<(), Error>;
+        F: FnMut(Buffer, &mut Self::Event) -> Result<(), Error>;
 
     // Obtain an EditorDriver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
 }
 
-pub(crate) enum EditorEvent {
-    OpenedNewSourceFile {
+// A notification of an editor change. To get to the actual change we have to
+// pass the existing source code for this file to `apply_to_buffer`. This allows
+// the editor integration to copy new source code directly into the existing
+// code.
+pub(crate) trait EditorEvent {
+    fn apply_to_buffer(
+        &mut self,
+        code: Option<SourceFileSnapshot>,
+    ) -> Result<BufferChange, Error>;
+}
+
+pub(crate) enum BufferChange {
+    NoChanges,
+    OpenedNewBuffer {
         buffer: Buffer,
         path: PathBuf,
         bytes: Rope,
     },
-    ModifiedSourceFile {
+    ModifiedBuffer {
         code: SourceFileSnapshot,
         edit: InputEdit,
     },
