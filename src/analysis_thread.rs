@@ -1,8 +1,10 @@
 use crate::compilation_thread;
 use crate::editor_listener_thread;
 use crate::{
-    byte_to_point, debug_code_slice, Edit, MVar, MsgLoop, SourceFileSnapshot,
+    byte_to_point, debug_code_slice, Buffer, Edit, MVar, MsgLoop,
+    SourceFileSnapshot,
 };
+use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use tree_sitter::{Node, TreeCursor};
@@ -44,7 +46,7 @@ where
 {
     AnalysisLoop {
         latest_code,
-        last_compiling_code: None,
+        last_compiling_code: HashMap::new(),
         editor_driver: None,
         refactor_engine: elm::RefactorEngine::new()?,
     }
@@ -53,27 +55,18 @@ where
 
 struct AnalysisLoop {
     latest_code: Arc<MVar<SourceFileSnapshot>>,
-    last_compiling_code: Option<SourceFileSnapshot>,
+    last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: Option<Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
-}
-
-// An API for sending commands to an editor. This is defined as a trait to
-// support different kinds of editors.
-pub(crate) trait EditorDriver: 'static + Send {
-    fn apply_edits(&self, edits: Vec<Edit>) -> bool;
 }
 
 impl MsgLoop<Error> for AnalysisLoop {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
-        if let (Some(old), Some(new), Some(editor_driver)) = (
-            self.last_compiling_code.clone(),
-            self.latest_code.try_read(),
-            &self.editor_driver,
-        ) {
-            let diff = SourceFileDiff { old, new };
+        if let (Some(diff), Some(editor_driver)) =
+            (self.source_file_diff(), &self.editor_driver)
+        {
             if let Some(elm_change) = analyze_diff(&diff) {
                 match self.refactor_engine.respond_to_change(&diff, elm_change)
                 {
@@ -99,11 +92,26 @@ impl MsgLoop<Error> for AnalysisLoop {
                 self.editor_driver = Some(editor_driver);
             }
             Msg::CompilationSucceeded(snapshot) => {
-                self.last_compiling_code = Some(snapshot);
+                self.last_compiling_code.insert(snapshot.buffer, snapshot);
             }
         }
         Ok(true)
     }
+}
+
+impl AnalysisLoop {
+    fn source_file_diff(&self) -> Option<SourceFileDiff> {
+        let new = self.latest_code.try_read()?;
+        let old = self.last_compiling_code.get(&new.buffer)?.clone();
+        let diff = SourceFileDiff { old, new };
+        Some(diff)
+    }
+}
+
+// An API for sending commands to an editor. This is defined as a trait to
+// support different kinds of editors.
+pub(crate) trait EditorDriver: 'static + Send {
+    fn apply_edits(&self, edits: Vec<Edit>) -> bool;
 }
 
 pub(crate) struct SourceFileDiff {
