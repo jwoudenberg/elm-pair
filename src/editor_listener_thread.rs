@@ -38,36 +38,32 @@ pub(crate) fn run(
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
-    EditorListenerLoop {
-        active_buffer,
-        compilation_sender,
-        analysis_sender,
-        inactive_buffers: HashMap::new(),
+    let socket_path = "/tmp/elm-pair.sock";
+    let listener =
+        UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
+    for (editor_id, socket) in listener.incoming().into_iter().enumerate() {
+        let active_buffer = active_buffer.clone();
+        let compilation_sender = compilation_sender.clone();
+        let analysis_sender = analysis_sender.clone();
+        crate::spawn_thread(analysis_sender.clone(), move || {
+            let socket = socket
+                .map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
+            let neovim =
+                neovim::Neovim::from_unix_socket(socket, editor_id as u32)?;
+            EditorListenerLoop {
+                active_buffer,
+                compilation_sender,
+                analysis_sender,
+                inactive_buffers: HashMap::new(),
+            }
+            .start(neovim)
+        });
     }
-    .start()
+    Ok(())
 }
 
 impl EditorListenerLoop {
-    fn start(mut self) -> Result<(), Error> {
-        let socket_path = "/tmp/elm-pair.sock";
-        let listener = UnixListener::bind(socket_path)
-            .map_err(Error::SocketCreationFailed)?;
-        // TODO: Figure out how to deal with multiple connections.
-        let editor_id = 0;
-        let socket = listener
-            .incoming()
-            .into_iter()
-            .next()
-            .unwrap()
-            .map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
-        let neovim = neovim::Neovim::from_unix_socket(socket, editor_id)?;
-        self.listen_to_editor(neovim)
-    }
-
-    fn listen_to_editor<E>(&mut self, editor: E) -> Result<(), Error>
-    where
-        E: Editor,
-    {
+    fn start<E: Editor>(&mut self, editor: E) -> Result<(), Error> {
         let driver = editor.driver();
         let boxed = Box::new(driver);
         let mut revision_of_last_compilation_candidate = None;
