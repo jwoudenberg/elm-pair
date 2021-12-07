@@ -6,7 +6,6 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
 use tree_sitter::{Node, TreeCursor};
 
 pub(crate) mod elm;
@@ -39,7 +38,7 @@ pub(crate) enum Error {
 }
 
 pub(crate) fn run(
-    latest_code: Arc<MVar<SourceFileSnapshot>>,
+    latest_code: &MVar<SourceFileSnapshot>,
     analysis_receiver: Receiver<Msg>,
 ) -> Result<(), Error>
 where
@@ -53,14 +52,14 @@ where
     .start(analysis_receiver)
 }
 
-struct AnalysisLoop {
-    latest_code: Arc<MVar<SourceFileSnapshot>>,
+struct AnalysisLoop<'a> {
+    latest_code: &'a MVar<SourceFileSnapshot>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
 }
 
-impl MsgLoop<Error> for AnalysisLoop {
+impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
@@ -110,7 +109,7 @@ impl MsgLoop<Error> for AnalysisLoop {
     }
 }
 
-impl AnalysisLoop {
+impl<'a> AnalysisLoop<'a> {
     fn source_file_diff(&self) -> Option<(SourceFileDiff, &dyn EditorDriver)> {
         let new = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();

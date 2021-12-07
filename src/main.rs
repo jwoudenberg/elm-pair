@@ -52,7 +52,7 @@ fn run() -> Result<(), analysis_thread::Error> {
     });
 
     // Main thread continues as analysis thread.
-    analysis_thread::run(latest_code, analysis_receiver)
+    analysis_thread::run(&latest_code, analysis_receiver)
 }
 
 #[derive(Clone)]
