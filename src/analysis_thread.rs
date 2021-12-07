@@ -73,6 +73,7 @@ impl MsgLoop<Error> for AnalysisLoop {
                 match self.refactor_engine.respond_to_change(&diff, elm_change)
                 {
                     Ok(refactor) => {
+                        eprintln!("[info] applying refactor to editor");
                         editor_driver.apply_edits(refactor);
                     }
                     Err(err) => {
@@ -113,6 +114,9 @@ impl AnalysisLoop {
     fn source_file_diff(&self) -> Option<(SourceFileDiff, &dyn EditorDriver)> {
         let new = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();
+        if new.revision <= old.revision {
+            return None;
+        }
         let editor_driver = self.editor_driver.get(&new.buffer.editor_id)?;
         let diff = SourceFileDiff { old, new };
         Some((diff, editor_driver.as_ref()))

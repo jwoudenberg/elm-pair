@@ -78,7 +78,11 @@ impl EditorListenerLoop {
         editor_id: u32,
         editor: E,
     ) -> Result<(), Error> {
-        eprintln!("[info] editor with id {:?} connected", editor_id);
+        eprintln!(
+            "[info] editor {} connected and given id {:?}",
+            editor.name(),
+            editor_id
+        );
         let driver = editor.driver();
         let boxed = Box::new(driver);
         let mut last_compiled_candidates = HashMap::new();
@@ -157,6 +161,8 @@ pub(crate) trait Editor {
 
     // Obtain an EditorDriver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
+
+    fn name(&self) -> &'static str;
 }
 
 // A notification of an editor change. To get to the actual change we have to

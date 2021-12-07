@@ -43,6 +43,10 @@ impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
         }
     }
 
+    fn name(&self) -> &'static str {
+        "neovim"
+    }
+
     fn listen<F>(self, on_event: F) -> Result<(), editor_listener::Error>
     where
         F: FnMut(
@@ -602,7 +606,6 @@ where
     W: 'static + Write + Send,
 {
     fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
-        eprintln!("[info] sending refactor to neovim");
         match self.write_refactor(refactor) {
             Ok(()) => true,
             Err(err) => {
