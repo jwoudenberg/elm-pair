@@ -56,19 +56,23 @@ pub(crate) fn run(
                 analysis_sender,
                 inactive_buffers: HashMap::new(),
             }
-            .start(neovim)
+            .start(editor_id as u32, neovim)
         });
     }
     Ok(())
 }
 
 impl EditorListenerLoop {
-    fn start<E: Editor>(&mut self, editor: E) -> Result<(), Error> {
+    fn start<E: Editor>(
+        &mut self,
+        editor_id: u32,
+        editor: E,
+    ) -> Result<(), Error> {
         let driver = editor.driver();
         let boxed = Box::new(driver);
-        let mut revision_of_last_compilation_candidate = None;
+        let mut last_compiled_candidates = HashMap::new();
         self.analysis_sender
-            .send(analysis_thread::Msg::EditorConnected(boxed))?;
+            .send(analysis_thread::Msg::EditorConnected(editor_id, boxed))?;
         editor.listen(|buffer, update| {
             let event = update.apply_to_buffer(self.take_buffer(buffer))?;
             let code = match event {
@@ -92,9 +96,9 @@ impl EditorListenerLoop {
                 }
             };
             if !code.tree.root_node().has_error()
-                && Some(code.revision) > revision_of_last_compilation_candidate
+                && Some(&code.revision) > last_compiled_candidates.get(&buffer)
             {
-                revision_of_last_compilation_candidate = Some(code.revision);
+                last_compiled_candidates.insert(buffer, code.revision);
                 self.compilation_sender.send(
                     compilation_thread::Msg::CompilationRequested(code.clone()),
                 )?;

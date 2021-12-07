@@ -15,7 +15,7 @@ pub(crate) enum Msg {
     SourceCodeModified,
     ThreadFailed(Error),
     AllEditorsDisconnected,
-    EditorConnected(Box<dyn EditorDriver>),
+    EditorConnected(u32, Box<dyn EditorDriver>),
     CompilationSucceeded(SourceFileSnapshot),
 }
 
@@ -47,7 +47,7 @@ where
     AnalysisLoop {
         latest_code,
         last_compiling_code: HashMap::new(),
-        editor_driver: None,
+        editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new()?,
     }
     .start(analysis_receiver)
@@ -56,7 +56,7 @@ where
 struct AnalysisLoop {
     latest_code: Arc<MVar<SourceFileSnapshot>>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
-    editor_driver: Option<Box<dyn EditorDriver>>,
+    editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
 }
 
@@ -64,9 +64,7 @@ impl MsgLoop<Error> for AnalysisLoop {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
-        if let (Some(diff), Some(editor_driver)) =
-            (self.source_file_diff(), &self.editor_driver)
-        {
+        if let Some((diff, editor_driver)) = self.source_file_diff() {
             if let Some(elm_change) = analyze_diff(&diff) {
                 match self.refactor_engine.respond_to_change(&diff, elm_change)
                 {
@@ -88,8 +86,8 @@ impl MsgLoop<Error> for AnalysisLoop {
             Msg::SourceCodeModified => {}
             Msg::ThreadFailed(err) => return Err(err),
             Msg::AllEditorsDisconnected => return Ok(false),
-            Msg::EditorConnected(editor_driver) => {
-                self.editor_driver = Some(editor_driver);
+            Msg::EditorConnected(editor_id, editor_driver) => {
+                self.editor_driver.insert(editor_id, editor_driver);
             }
             Msg::CompilationSucceeded(snapshot) => {
                 self.last_compiling_code.insert(snapshot.buffer, snapshot);
@@ -100,11 +98,12 @@ impl MsgLoop<Error> for AnalysisLoop {
 }
 
 impl AnalysisLoop {
-    fn source_file_diff(&self) -> Option<SourceFileDiff> {
+    fn source_file_diff(&self) -> Option<(SourceFileDiff, &dyn EditorDriver)> {
         let new = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();
+        let editor_driver = self.editor_driver.get(&new.buffer.editor_id)?;
         let diff = SourceFileDiff { old, new };
-        Some(diff)
+        Some((diff, editor_driver.as_ref()))
     }
 }
 

@@ -36,7 +36,7 @@ pub(crate) fn run(
 ) -> Result<(), Error> {
     CompilationLoop {
         analysis_sender,
-        last_validated_revision: None,
+        last_checked_revisions: HashMap::new(),
         compilation_candidates: SizedStack::with_capacity(
             crate::MAX_COMPILATION_CANDIDATES,
         ),
@@ -50,7 +50,7 @@ pub(crate) fn run(
 
 struct CompilationLoop {
     analysis_sender: Sender<analysis_thread::Msg>,
-    last_validated_revision: Option<usize>,
+    last_checked_revisions: HashMap<Buffer, usize>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
     project: HashMap<Buffer, ElmProject>,
     knowledge_base: KnowledgeBase,
@@ -98,7 +98,7 @@ impl MsgLoop<Error> for CompilationLoop {
             .get(&snapshot.buffer)
             .ok_or(Error::NoElmProjectStoredForBuffer(snapshot.buffer))?;
 
-        if is_new_revision(&mut self.last_validated_revision, &snapshot)
+        if is_new_revision(&mut self.last_checked_revisions, &snapshot)
             && does_snapshot_compile(project, &snapshot)?
         {
             self.analysis_sender
@@ -109,15 +109,15 @@ impl MsgLoop<Error> for CompilationLoop {
 }
 
 fn is_new_revision(
-    last_checked_revision: &mut Option<usize>,
+    last_checked_revisions: &mut HashMap<Buffer, usize>,
     code: &SourceFileSnapshot,
 ) -> bool {
-    let is_new = match last_checked_revision {
+    let is_new = match last_checked_revisions.get(&code.buffer) {
         None => true,
         Some(old) => code.revision > *old,
     };
     if is_new {
-        *last_checked_revision = Some(code.revision);
+        last_checked_revisions.insert(code.buffer, code.revision);
     }
     is_new
 }
