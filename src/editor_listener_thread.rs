@@ -61,8 +61,7 @@ pub(crate) fn spawn_editor_thread(
     socket: UnixStream,
 ) {
     crate::spawn_thread(analysis_sender.clone(), move || {
-        let neovim =
-            neovim::Neovim::from_unix_socket(socket, editor_id as u32)?;
+        let neovim = neovim::Neovim::from_unix_socket(socket, editor_id)?;
         EditorListenerLoop {
             active_buffer,
             compilation_sender,
@@ -79,6 +78,7 @@ impl EditorListenerLoop {
         editor_id: u32,
         editor: E,
     ) -> Result<(), Error> {
+        eprintln!("[info] editor with id {:?} connected", editor_id);
         let driver = editor.driver();
         let boxed = Box::new(driver);
         let mut last_compiled_candidates = HashMap::new();
@@ -97,6 +97,7 @@ impl EditorListenerLoop {
                     path,
                     buffer,
                 } => {
+                    eprintln!("[info] new buffer opened: {:?}", buffer);
                     self.compilation_sender.send(
                         compilation_thread::Msg::OpenedNewSourceFile {
                             buffer,
@@ -121,6 +122,7 @@ impl EditorListenerLoop {
         })?;
         self.analysis_sender
             .send(analysis_thread::Msg::EditorDisconnected(editor_id))?;
+        eprintln!("[info] editor with id {:?} disconnected", editor_id);
         Ok(())
     }
 

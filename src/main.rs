@@ -19,7 +19,7 @@ pub fn main() {
     std::process::exit(match run() {
         Ok(()) => 0,
         Err(err) => {
-            eprintln!("error: {:?}", err);
+            eprintln!("[fatal] encountered unexpected error: {:?}", err);
             1
         }
     });

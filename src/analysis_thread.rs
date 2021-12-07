@@ -65,16 +65,19 @@ impl MsgLoop<Error> for AnalysisLoop {
 
     fn on_idle(&mut self) -> Result<(), Error> {
         if let Some((diff, editor_driver)) = self.source_file_diff() {
+            eprintln!(
+                "[info] diffing revision {:?} against {:?} for buffer {:?}",
+                diff.new.revision, diff.old.revision, diff.old.buffer
+            );
             if let Some(elm_change) = analyze_diff(&diff) {
                 match self.refactor_engine.respond_to_change(&diff, elm_change)
                 {
                     Ok(refactor) => {
                         editor_driver.apply_edits(refactor);
                     }
-                    Err(err) => eprintln!(
-                        "Attempt to create refactor failed: {:?}",
-                        err
-                    ),
+                    Err(err) => {
+                        eprintln!("[warn] failed to create refactor: {:?}", err)
+                    }
                 }
             }
         };

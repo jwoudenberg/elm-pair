@@ -98,11 +98,16 @@ impl MsgLoop<Error> for CompilationLoop {
             .get(&snapshot.buffer)
             .ok_or(Error::NoElmProjectStoredForBuffer(snapshot.buffer))?;
 
-        if is_new_revision(&mut self.last_checked_revisions, &snapshot)
-            && does_snapshot_compile(project, &snapshot)?
-        {
-            self.analysis_sender
-                .send(analysis_thread::Msg::CompilationSucceeded(snapshot))?;
+        if is_new_revision(&mut self.last_checked_revisions, &snapshot) {
+            eprintln!(
+                "[info] running compilation for revision {:?} of buffer {:?}",
+                snapshot.revision, snapshot.buffer
+            );
+            if does_snapshot_compile(project, &snapshot)? {
+                self.analysis_sender.send(
+                    analysis_thread::Msg::CompilationSucceeded(snapshot),
+                )?;
+            }
         }
         Ok(())
     }

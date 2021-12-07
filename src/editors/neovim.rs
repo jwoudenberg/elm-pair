@@ -270,7 +270,9 @@ impl<R: Read> EditorEvent for NeovimEvent<R> {
             )?;
             Ok(BufferChange::ModifiedBuffer { code, edit })
         } else {
-            eprintln!("I received an incremental update from Neovim for a buffer I don't know yet.");
+            eprintln!(
+                "[warn] received incremental buffer update before full update"
+            );
             // TODO: re-attach buffer to get initial lines event.
             Ok(BufferChange::NoChanges)
         }
@@ -600,11 +602,14 @@ where
     W: 'static + Write + Send,
 {
     fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
-        println!("REFACTOR: {:?}", refactor);
+        eprintln!("[info] sending refactor to neovim");
         match self.write_refactor(refactor) {
             Ok(()) => true,
             Err(err) => {
-                eprintln!("Ran into non-fatal error while attempting to send edits to neovim: {:?}", err );
+                eprintln!(
+                    "[warn] failed sending refactor to neovim: {:?}",
+                    err
+                );
                 false
             }
         }
