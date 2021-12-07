@@ -7,6 +7,7 @@ use tree_sitter::{Node, Query, QueryCursor};
 
 pub(crate) struct RefactorEngine {
     query_for_exposed_imports: Query,
+    query_for_unqualified_values: Query,
 }
 
 #[derive(Debug)]
@@ -36,6 +37,15 @@ impl RefactorEngine {
                   ) @import
                 ]"#,
             )?,
+            query_for_unqualified_values: mk_query(
+                r#"
+                [ (value_qid
+                     .
+                     (lower_case_identifier) @val
+                  )
+                ]"#,
+            )?,
+            // [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", before)],
         };
         Ok(engine)
     }
@@ -47,6 +57,7 @@ impl RefactorEngine {
     ) -> Result<Vec<Edit>, RefactorError> {
         match change {
             ElmChange::QualifierAdded(name, qualifier) => {
+                let mut edits = Vec::new();
                 let mut cursor = QueryCursor::new();
                 let exposed = cursor
                     .matches(
@@ -99,11 +110,46 @@ impl RefactorEngine {
                     }
                     exposed.byte_range()
                 };
-                Ok(vec![mk_edit(&diff.new, &range(), String::new())])
+                edits.push(mk_edit(&diff.new, &range(), String::new()));
+
+                cursor
+                    .matches(
+                        &self.query_for_unqualified_values,
+                        diff.new.tree.root_node(),
+                        &diff.new,
+                    )
+                    .for_each(|match_| {
+                        let node = match match_.captures {
+                            [capture] => capture.node,
+                            _ => panic!("wrong number of capures"),
+                        };
+                        if name
+                            == debug_code_slice(&diff.new, &node.byte_range())
+                        {
+                            edits.push(mk_edit(
+                                &diff.new,
+                                &(node.start_byte()..node.start_byte()),
+                                format!("{}.", qualifier),
+                            ))
+                        }
+                    });
+                Ok(edits)
             }
             _ => Err(RefactorError::NoneImplementedForThisChange(change)),
         }
+        .map(sort_edits)
     }
+}
+
+// Sort edits in reverse order of where they change the source file. This
+// ensures when we apply the edits in sorted order that earlier edits don't
+// move the area of affect of later edits.
+//
+// We're assuming here that the areas of operation of different edits never
+// overlap.
+fn sort_edits(mut edits: Vec<Edit>) -> Vec<Edit> {
+    edits.sort_by(|x, y| y.input_edit.start_byte.cmp(&x.input_edit.start_byte));
+    edits
 }
 
 #[derive(Debug)]
