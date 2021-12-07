@@ -75,6 +75,45 @@ struct SourceFileSnapshot {
     revision: usize,
 }
 
+impl<'a> tree_sitter::TextProvider<'a> for &'a SourceFileSnapshot {
+    type I = Chunks<'a>;
+
+    fn text(&mut self, node: Node<'_>) -> Chunks<'a> {
+        let range = node.byte_range();
+        let (chunks, first_chunk_start_byte, _, _) =
+            self.bytes.chunks_at_byte(range.start);
+        Chunks {
+            chunks,
+            skip_start: range.start - first_chunk_start_byte,
+            remaining: range.len(),
+        }
+    }
+}
+
+struct Chunks<'a> {
+    chunks: ropey::iter::Chunks<'a>,
+    skip_start: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for Chunks<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining > 0 {
+            let chunk = self.chunks.next()?;
+            let slice = chunk
+                [self.skip_start..std::cmp::min(self.remaining, chunk.len())]
+                .as_bytes();
+            self.skip_start = 0;
+            self.remaining -= slice.len();
+            Some(slice)
+        } else {
+            None
+        }
+    }
+}
+
 // A unique identifier for a buffer that elm-pair is tracking in any connected
 // editor. First 32 bits uniquely identify the connected editor, while the last
 // 32 bits identify one of the buffers openen in that particular editor.

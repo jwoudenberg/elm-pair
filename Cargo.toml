@@ -10,8 +10,8 @@ edition = "2018"
 byteorder = "^1.4.3"
 rmp = "^0.8.10"
 ropey = "^1.3.1"
-tree-sitter = "^0.19.5"
-tree-sitter-elm = "^5.3.7"
+tree-sitter = "^0.20.1"
+tree-sitter-elm = { git = "https://github.com/jwoudenberg/tree-sitter-elm" }
 
 [[bin]]
 name = "elm-pair"

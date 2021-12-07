@@ -25,9 +25,9 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "cc"
-version = "1.0.71"
+version = "1.0.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79c2681d6594606957bbb8631c4b90a7fcaaa72cdb714743a437b156d6a7eedd"
+checksum = "22a9137b95ea06864e018375b72adfb7db6e6f68cfc8df5a04d00288050485ee"
 
 [[package]]
 name = "elm-pair"
@@ -99,9 +99,9 @@ checksum = "1ecab6c735a6bb4139c0caafd0cc3635748bbb3acf4550e8138122099251f309"
 
 [[package]]
 name = "tree-sitter"
-version = "0.19.5"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad726ec26496bf4c083fff0f43d4eb3a2ad1bba305323af5ff91383c0b6ecac0"
+checksum = "9394e9dbfe967b5f3d6ab79e302e78b5fb7b530c368d634ff3b8d67ede138bf1"
 dependencies = [
  "cc",
  "regex",
@@ -110,8 +110,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-elm"
 version = "5.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02613a9994e9bfa4706079b06b27cecc27c2e545ffe1209bd287ccb81003cf98"
+source = "git+https://github.com/jwoudenberg/tree-sitter-elm#26a993134595647b6711e2f57e203a2b726c0b80"
 dependencies = [
  "cc",
  "tree-sitter",

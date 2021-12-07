@@ -53,7 +53,7 @@ impl RefactorEngine {
                     .matches(
                         &self.query_for_exposed_imports,
                         diff.new.tree.root_node(),
-                        |node| debug_code_slice(&diff.new, &node.byte_range()),
+                        &diff.new,
                     )
                     .find_map(|m| {
                         let (import, exposed_val) = match m.captures {
