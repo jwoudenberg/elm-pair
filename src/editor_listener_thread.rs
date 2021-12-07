@@ -4,7 +4,7 @@ use crate::editors::neovim;
 use crate::{Buffer, MVar, SourceFileSnapshot};
 use ropey::Rope;
 use std::collections::HashMap;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{SendError, Sender};
 use std::sync::Arc;
@@ -42,24 +42,35 @@ pub(crate) fn run(
     let listener =
         UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
     for (editor_id, socket) in listener.incoming().into_iter().enumerate() {
-        let active_buffer = active_buffer.clone();
-        let compilation_sender = compilation_sender.clone();
-        let analysis_sender = analysis_sender.clone();
-        crate::spawn_thread(analysis_sender.clone(), move || {
-            let socket = socket
-                .map_err(Error::AcceptingIncomingSocketConnectionFailed)?;
-            let neovim =
-                neovim::Neovim::from_unix_socket(socket, editor_id as u32)?;
-            EditorListenerLoop {
-                active_buffer,
-                compilation_sender,
-                analysis_sender,
-                inactive_buffers: HashMap::new(),
-            }
-            .start(editor_id as u32, neovim)
-        });
+        spawn_editor_thread(
+            active_buffer.clone(),
+            compilation_sender.clone(),
+            analysis_sender.clone(),
+            editor_id as u32,
+            socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?,
+        );
     }
     Ok(())
+}
+
+pub(crate) fn spawn_editor_thread(
+    active_buffer: Arc<MVar<SourceFileSnapshot>>,
+    compilation_sender: Sender<compilation_thread::Msg>,
+    analysis_sender: Sender<analysis_thread::Msg>,
+    editor_id: u32,
+    socket: UnixStream,
+) {
+    crate::spawn_thread(analysis_sender.clone(), move || {
+        let neovim =
+            neovim::Neovim::from_unix_socket(socket, editor_id as u32)?;
+        EditorListenerLoop {
+            active_buffer,
+            compilation_sender,
+            analysis_sender,
+            inactive_buffers: HashMap::new(),
+        }
+        .start(editor_id as u32, neovim)
+    });
 }
 
 impl EditorListenerLoop {
@@ -109,7 +120,7 @@ impl EditorListenerLoop {
             Ok(())
         })?;
         self.analysis_sender
-            .send(analysis_thread::Msg::AllEditorsDisconnected)?;
+            .send(analysis_thread::Msg::EditorDisconnected(editor_id))?;
         Ok(())
     }
 

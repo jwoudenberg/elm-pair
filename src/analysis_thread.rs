@@ -14,8 +14,8 @@ pub(crate) mod elm;
 pub(crate) enum Msg {
     SourceCodeModified,
     ThreadFailed(Error),
-    AllEditorsDisconnected,
     EditorConnected(u32, Box<dyn EditorDriver>),
+    EditorDisconnected(u32),
     CompilationSucceeded(SourceFileSnapshot),
 }
 
@@ -85,12 +85,21 @@ impl MsgLoop<Error> for AnalysisLoop {
         match msg {
             Msg::SourceCodeModified => {}
             Msg::ThreadFailed(err) => return Err(err),
-            Msg::AllEditorsDisconnected => return Ok(false),
             Msg::EditorConnected(editor_id, editor_driver) => {
                 self.editor_driver.insert(editor_id, editor_driver);
             }
+            Msg::EditorDisconnected(editor_id) => {
+                self.editor_driver.remove(&editor_id);
+                self.last_compiling_code
+                    .retain(|buffer, _| buffer.editor_id != editor_id);
+                if self.editor_driver.is_empty() {
+                    return Ok(false);
+                }
+            }
             Msg::CompilationSucceeded(snapshot) => {
-                self.last_compiling_code.insert(snapshot.buffer, snapshot);
+                if self.editor_driver.contains_key(&snapshot.buffer.editor_id) {
+                    self.last_compiling_code.insert(snapshot.buffer, snapshot);
+                }
             }
         }
         Ok(true)
