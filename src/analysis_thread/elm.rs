@@ -1,8 +1,5 @@
-use crate::analysis_thread::{
-    byte_to_point, Error, SourceFileDiff, SourceFileSnapshot, TreeChanges,
-};
-use crate::{debug_code_slice, Edit};
-use core::ops::Range;
+use crate::analysis_thread::{Edit, Error, SourceFileDiff, TreeChanges};
+use crate::debug_code_slice;
 use tree_sitter::{Node, Query, QueryCursor};
 
 pub(crate) struct RefactorEngine {
@@ -110,7 +107,7 @@ impl RefactorEngine {
                     }
                     exposed.byte_range()
                 };
-                edits.push(mk_edit(&diff.new, &range(), String::new()));
+                edits.push(Edit::new(&diff.new, &range(), String::new()));
 
                 cursor
                     .matches(
@@ -126,7 +123,7 @@ impl RefactorEngine {
                         if name
                             == debug_code_slice(&diff.new, &node.byte_range())
                         {
-                            edits.push(mk_edit(
+                            edits.push(Edit::new(
                                 &diff.new,
                                 &(node.start_byte()..node.start_byte()),
                                 format!("{}.", qualifier),
@@ -344,24 +341,4 @@ pub(in crate::analysis_thread) fn interpret_change(
 
 fn attach_kinds<'a>(nodes: &'a [Node<'a>]) -> Vec<(&'a str, &'a Node<'a>)> {
     nodes.iter().map(|node| (node.kind(), node)).collect()
-}
-
-fn mk_edit(
-    code: &SourceFileSnapshot,
-    range: &Range<usize>,
-    new_bytes: String,
-) -> Edit {
-    let new_end_byte = range.start + new_bytes.len();
-    Edit {
-        buffer: code.buffer,
-        new_bytes,
-        input_edit: tree_sitter::InputEdit {
-            start_byte: range.start,
-            old_end_byte: range.end,
-            new_end_byte,
-            start_position: byte_to_point(&code.bytes, range.start),
-            old_end_position: byte_to_point(&code.bytes, range.end),
-            new_end_position: byte_to_point(&code.bytes, new_end_byte),
-        },
-    }
 }

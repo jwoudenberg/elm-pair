@@ -1,8 +1,7 @@
 use crate::compilation_thread;
 use crate::editor_listener_thread;
 use crate::{
-    byte_to_point, debug_code_slice, Buffer, Edit, MVar, MsgLoop,
-    SourceFileSnapshot,
+    debug_code_slice, Buffer, Edit, MVar, MsgLoop, SourceFileSnapshot,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;

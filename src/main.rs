@@ -137,6 +137,28 @@ struct Edit {
     new_bytes: String,
 }
 
+impl Edit {
+    fn new(
+        code: &SourceFileSnapshot,
+        range: &Range<usize>,
+        new_bytes: String,
+    ) -> Edit {
+        let new_end_byte = range.start + new_bytes.len();
+        Edit {
+            buffer: code.buffer,
+            new_bytes,
+            input_edit: tree_sitter::InputEdit {
+                start_byte: range.start,
+                old_end_byte: range.end,
+                new_end_byte,
+                start_position: byte_to_point(&code.bytes, range.start),
+                old_end_position: byte_to_point(&code.bytes, range.end),
+                new_end_position: byte_to_point(&code.bytes, new_end_byte),
+            },
+        }
+    }
+}
+
 fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
     let row = code.byte_to_line(byte);
     tree_sitter::Point {
