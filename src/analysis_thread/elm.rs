@@ -47,7 +47,6 @@ impl RefactorEngine {
     ) -> Result<Vec<Edit>, RefactorError> {
         match change {
             ElmChange::QualifierAdded(name, qualifier) => {
-                // debug_print_tree(&diff.new);
                 let mut cursor = QueryCursor::new();
                 let exposed = cursor
                     .matches(
@@ -81,13 +80,21 @@ impl RefactorEngine {
                     let next = exposed.next_sibling();
                     if let Some(node) = next {
                         if node.kind() == "," {
-                            return exposed.start_byte()..node.end_byte();
+                            let end_byte = match node.next_sibling() {
+                                Some(next) => next.start_byte(),
+                                None => node.end_byte(),
+                            };
+                            return exposed.start_byte()..end_byte;
                         }
                     }
                     let prev = exposed.prev_sibling();
                     if let Some(node) = prev {
                         if node.kind() == "," {
-                            return node.start_byte()..exposed.end_byte();
+                            let start_byte = match node.prev_sibling() {
+                                Some(prev) => prev.end_byte(),
+                                None => node.start_byte(),
+                            };
+                            return start_byte..exposed.end_byte();
                         }
                     }
                     exposed.byte_range()
