@@ -3,4 +3,4 @@
 
 # Watch source files and recompile when any change.
 
-git ls-files | grep .rs | entr -c cargo clippy
+git ls-files | grep .rs | entr -c cargo clippy --tests
