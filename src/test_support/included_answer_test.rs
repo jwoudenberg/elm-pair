@@ -25,10 +25,14 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
         Some((_, expected_output_prefixed)) => {
             let expected_output = expected_output_prefixed
                 .lines()
-                .map(|x| x.strip_prefix(&prefix).unwrap_or(x))
+                .map(|x| {
+                    x.strip_prefix(&prefix)
+                        .or_else(|| x.strip_prefix(&prefix.trim_end()))
+                        .unwrap_or(x)
+                })
                 .collect::<Vec<&str>>()
                 .join("\n");
-            assert_eq!(output.trim_end(), expected_output.trim_end())
+            assert_eq!(output.trim_end(), expected_output)
         }
     }
 }

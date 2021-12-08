@@ -14,9 +14,9 @@ addStrings str1 str2 =
 
 -- === expected output below ===
 -- module Math exposing (..)
--- 
+--
 -- import String exposing (fromInt)
--- 
+--
 -- addStrings : String -> String -> Maybe String
 -- addStrings str1 str2 =
 --   Maybe.map2 (\int1 int2 -> fromInt (int1 + int2)) (String.toInt str1) (String.toInt str2)
