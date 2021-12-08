@@ -1,20 +1,26 @@
 module Math exposing (..)
 
-import Dict exposing (Dict)
+import Process exposing (kill, Id)
+import Task exposing (Task)
 
-timesTwo : Dict k Int -> Dict k Int
-timesTwo = Dict.map (\k v -> v * 2)
+kill2 : Id -> Id -> Task x ()
+kill2 proc1 proc2 =
+  kill proc1
+    |> Task.andThen(\_ -> kill proc2)
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 5 Dict
--- INSERT Dict.
+-- MOVE CURSOR TO LINE 6 Id
+-- INSERT Process.
 -- END SIMULATION
 
 
 -- === expected output below ===
 -- module Math exposing (..)
 --
--- import Dict
+-- import Process exposing (kill)
+-- import Task exposing (Task)
 --
--- timesTwo : Dict.Dict k Int -> Dict.Dict k Int
--- timesTwo = Dict.map (\k v -> v * 2)
+-- kill2 : Process.Id -> Process.Id -> Task x ()
+-- kill2 proc1 proc2 =
+--   kill proc1
+--     |> Task.andThen(\_ -> kill proc2)
