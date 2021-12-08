@@ -165,8 +165,8 @@ fn apply_edit_helper(
     new_bytes: &str,
 ) {
     let start_char = bytes.byte_to_char(start_byte);
-    let end_char = bytes.byte_to_char(old_end_byte);
-    bytes.remove(start_char..end_char);
+    let old_end_char = bytes.byte_to_char(old_end_byte);
+    bytes.remove(start_char..old_end_char);
     bytes.insert(start_char, new_bytes);
 }
 

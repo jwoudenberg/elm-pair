@@ -136,14 +136,10 @@ impl SimulationBuilder {
     }
 
     fn delete(mut self, str: &str) -> Self {
-        self.add_edit(
-            &(self.current_position..self.current_position),
-            str.to_owned(),
-        );
         let str_rope = Rope::from_str(str);
         let range = self.current_position
             ..(self.current_position + str_rope.len_chars());
-        self.add_edit(&range, str.to_owned());
+        self.add_edit(&range, String::new());
         self
     }
 
