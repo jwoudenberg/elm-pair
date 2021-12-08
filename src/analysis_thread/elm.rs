@@ -23,17 +23,17 @@ impl RefactorEngine {
         let engine = RefactorEngine {
             query_for_exposed_imports: mk_query(
                 r#"
-                [ (import_clause
-                    exposing:
-                      (exposing_list
-                        [ (double_dot)
-                          (exposed_value)
-                          (exposed_type)
-                          (exposed_operator)
-                        ] @exposed_value
-                      )
-                  ) @import
-                ]"#,
+                (import_clause
+                  exposing:
+                    (exposing_list
+                      [ (double_dot)
+                        (exposed_value)
+                        (exposed_type)
+                        (exposed_operator)
+                      ] @exposed_value
+                    )
+                ) @import
+                "#,
             )?,
             query_for_unqualified_values: mk_query(
                 r#"
@@ -41,9 +41,12 @@ impl RefactorEngine {
                      .
                      (lower_case_identifier) @val
                   )
+                  (upper_case_qid
+                     .
+                     (upper_case_identifier) @val
+                  )
                 ]"#,
             )?,
-            // [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", before)],
         };
         Ok(engine)
     }
