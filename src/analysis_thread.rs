@@ -1,8 +1,7 @@
 use crate::compilation_thread;
 use crate::editor_listener_thread;
-use crate::{
-    debug_code_slice, Buffer, Edit, MVar, MsgLoop, SourceFileSnapshot,
-};
+use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
+use crate::{debug_code_slice, MVar, MsgLoop};
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
@@ -33,7 +32,13 @@ impl From<compilation_thread::Error> for Msg {
 pub(crate) enum Error {
     EditorListenerThreadFailed(editor_listener_thread::Error),
     CompilationThreadFailed(compilation_thread::Error),
-    InvalidQuery(tree_sitter::QueryError),
+    AnalyzingElm(crate::analysis_thread::elm::Error),
+}
+
+impl From<crate::analysis_thread::elm::Error> for Error {
+    fn from(err: crate::analysis_thread::elm::Error) -> Error {
+        Error::AnalyzingElm(err)
+    }
 }
 
 pub(crate) fn run(
@@ -67,16 +72,15 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 "[info] diffing revision {:?} against {:?} for buffer {:?}",
                 diff.new.revision, diff.old.revision, diff.old.buffer
             );
-            if let Some(elm_change) = analyze_diff(&diff) {
-                match self.refactor_engine.respond_to_change(&diff, elm_change)
-                {
-                    Ok(refactor) => {
-                        eprintln!("[info] applying refactor to editor");
-                        editor_driver.apply_edits(refactor);
-                    }
-                    Err(err) => {
-                        eprintln!("[warn] failed to create refactor: {:?}", err)
-                    }
+            let tree_changes = diff_trees(&diff);
+            match self.refactor_engine.respond_to_change(&diff, &tree_changes) {
+                Ok(Some(refactor)) => {
+                    eprintln!("[info] applying refactor to editor");
+                    editor_driver.apply_edits(refactor);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("[warn] failed to create refactor: {:?}", err)
                 }
             }
         };
@@ -127,14 +131,9 @@ pub(crate) trait EditorDriver: 'static + Send {
     fn apply_edits(&self, edits: Vec<Edit>) -> bool;
 }
 
-pub(crate) struct SourceFileDiff {
+struct SourceFileDiff {
     pub old: SourceFileSnapshot,
     pub new: SourceFileSnapshot,
-}
-
-pub(crate) fn analyze_diff(diff: &SourceFileDiff) -> Option<elm::ElmChange> {
-    let tree_changes = diff_trees(diff);
-    elm::interpret_change(&tree_changes)
 }
 
 struct TreeChanges<'a> {
@@ -383,17 +382,4 @@ fn have_node_contents_changed(
     let old_bytes = debug_code_slice(old_code, &old.byte_range());
     let new_bytes = debug_code_slice(new_code, &new.byte_range());
     old_bytes != new_bytes
-}
-
-// TODO: remove debug helper when it's no longer needed.
-#[allow(dead_code)]
-fn debug_print_tree_changes(changes: &TreeChanges) {
-    println!("REMOVED NODES:");
-    for node in &changes.old_removed {
-        crate::debug_print_node(changes.old_code, 2, node);
-    }
-    println!("ADDED NODES:");
-    for node in &changes.new_added {
-        crate::debug_print_node(changes.new_code, 2, node);
-    }
 }

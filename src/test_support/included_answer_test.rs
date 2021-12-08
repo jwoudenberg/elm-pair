@@ -24,14 +24,23 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
         }
         Some((_, expected_output_prefixed)) => {
             let expected_output = expected_output_prefixed
-                .trim_end()
                 .lines()
                 .map(|x| x.strip_prefix(&prefix).unwrap_or(x))
                 .collect::<Vec<&str>>()
                 .join("\n");
-            assert_eq!(output, expected_output)
+            assert_eq!(output.trim_end(), expected_output.trim_end())
         }
     }
+}
+
+pub fn snake_to_camel(str: &str) -> String {
+    str.split('_')
+        .map(|word| {
+            let (first, rest) = word.split_at(1);
+            first.to_uppercase() + rest
+        })
+        .collect::<Vec<String>>()
+        .join("")
 }
 
 fn assert_ok<A, E: std::fmt::Debug>(result: Result<A, E>) -> A {

@@ -1,21 +1,21 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
-use crate::{Buffer, MVar, SourceFileSnapshot};
+use crate::support::source_code::{Buffer, ParseError, SourceFileSnapshot};
+use crate::MVar;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{SendError, Sender};
 use std::sync::Arc;
-use tree_sitter::{InputEdit, Tree};
+use tree_sitter::InputEdit;
 
 #[derive(Debug)]
 pub(crate) enum Error {
     SocketCreationFailed(std::io::Error),
     AcceptingIncomingSocketConnectionFailed(std::io::Error),
-    TreeSitterParsingFailed,
-    TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
+    ParsingSourceCodeFailed(ParseError),
     NeovimMessageDecodingFailed(neovim::Error),
     FailedToSendMessage,
 }
@@ -23,6 +23,12 @@ pub(crate) enum Error {
 impl<T> From<SendError<T>> for Error {
     fn from(_err: SendError<T>) -> Error {
         Error::FailedToSendMessage
+    }
+}
+
+impl From<ParseError> for Error {
+    fn from(err: ParseError) -> Error {
+        Error::ParsingSourceCodeFailed(err)
     }
 }
 
@@ -93,7 +99,7 @@ impl EditorListenerLoop {
             let code = match event {
                 BufferChange::NoChanges => return Ok(()),
                 BufferChange::ModifiedBuffer { mut code, edit } => {
-                    apply_source_file_edit(&mut code, edit)?;
+                    code.apply_edit(edit)?;
                     code
                 }
                 BufferChange::OpenedNewBuffer {
@@ -108,7 +114,7 @@ impl EditorListenerLoop {
                             path,
                         },
                     )?;
-                    init_source_file_snapshot(buffer, bytes)?
+                    SourceFileSnapshot::new(buffer, bytes)?
                 }
             };
             if !code.tree.root_node().has_error()
@@ -187,45 +193,4 @@ pub(crate) enum BufferChange {
         code: SourceFileSnapshot,
         edit: InputEdit,
     },
-}
-
-pub(crate) fn init_source_file_snapshot(
-    buffer: Buffer,
-    bytes: Rope,
-) -> Result<SourceFileSnapshot, Error> {
-    let snapshot = SourceFileSnapshot {
-        buffer,
-        tree: parse(None, &bytes)?,
-        bytes,
-        revision: 0,
-    };
-    Ok(snapshot)
-}
-
-pub(crate) fn apply_source_file_edit(
-    code: &mut SourceFileSnapshot,
-    edit: InputEdit,
-) -> Result<(), Error> {
-    code.revision += 1;
-    code.tree.edit(&edit);
-    reparse_tree(code)?;
-    Ok(())
-}
-
-fn reparse_tree(code: &mut SourceFileSnapshot) -> Result<(), Error> {
-    let new_tree = parse(Some(&code.tree), &code.bytes)?;
-    code.tree = new_tree;
-    Ok(())
-}
-
-// TODO: reuse parser.
-fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(tree_sitter_elm::language())
-        .map_err(Error::TreeSitterSettingLanguageFailed)?;
-    match parser.parse(code.bytes().collect::<Vec<u8>>(), prev_tree) {
-        None => Err(Error::TreeSitterParsingFailed),
-        Some(tree) => Ok(tree),
-    }
 }

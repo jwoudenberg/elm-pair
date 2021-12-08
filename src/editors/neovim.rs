@@ -1,7 +1,9 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread as editor_listener;
 use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
-use crate::{Buffer, Edit, InputEdit, SourceFileSnapshot};
+use crate::support::source_code::{
+    byte_to_point, Buffer, Edit, SourceFileSnapshot,
+};
 use byteorder::ReadBytesExt;
 use messagepack::{read_tuple, DecodingError};
 use ropey::{Rope, RopeBuilder};
@@ -11,6 +13,7 @@ use std::ops::DerefMut;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tree_sitter::InputEdit;
 
 pub(crate) struct Neovim<R, W> {
     editor_id: u32,
@@ -297,7 +300,7 @@ impl<R: Read> NeovimEvent<R> {
         let old_end_char = code.line_to_char(old_end_line);
         let old_end_byte = code.line_to_byte(old_end_line);
         let mut new_end_byte = start_byte;
-        let old_end_position = crate::byte_to_point(code, old_end_byte);
+        let old_end_position = byte_to_point(code, old_end_byte);
         code.remove(start_char..old_end_char);
         let mut remaining_lines = rmp::decode::read_array_len(&mut self.read)?;
         while remaining_lines > 0 {
@@ -320,9 +323,9 @@ impl<R: Read> NeovimEvent<R> {
             start_byte,
             old_end_byte,
             new_end_byte,
-            start_position: crate::byte_to_point(code, start_byte),
+            start_position: byte_to_point(code, start_byte),
             old_end_position,
-            new_end_position: crate::byte_to_point(code, new_end_byte),
+            new_end_position: byte_to_point(code, new_end_byte),
         })
     }
 

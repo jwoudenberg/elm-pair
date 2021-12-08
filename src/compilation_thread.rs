@@ -1,6 +1,7 @@
 use crate::analysis_thread;
 use crate::sized_stack::SizedStack;
-use crate::{Buffer, MsgLoop, SourceFileSnapshot};
+use crate::support::source_code::{Buffer, SourceFileSnapshot};
+use crate::MsgLoop;
 use knowledge_base::Query;
 use std::collections::HashMap;
 use std::path::PathBuf;

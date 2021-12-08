@@ -1,5 +1,6 @@
-use crate::analysis_thread::{Edit, Error, SourceFileDiff, TreeChanges};
+use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::debug_code_slice;
+use crate::support::source_code::Edit;
 use tree_sitter::{Node, Query, QueryCursor};
 
 pub(crate) struct RefactorEngine {
@@ -8,9 +9,9 @@ pub(crate) struct RefactorEngine {
 }
 
 #[derive(Debug)]
-pub(crate) enum RefactorError {
-    NoneImplementedForThisChange(ElmChange),
+pub(crate) enum Error {
     FailureWhileTraversingTree,
+    InvalidQuery(tree_sitter::QueryError),
 }
 
 impl RefactorEngine {
@@ -47,12 +48,17 @@ impl RefactorEngine {
         Ok(engine)
     }
 
-    pub(crate) fn respond_to_change(
+    pub(in crate::analysis_thread) fn respond_to_change(
         &self,
         diff: &SourceFileDiff,
-        change: ElmChange,
-    ) -> Result<Vec<Edit>, RefactorError> {
-        match change {
+        tree_changes: &TreeChanges,
+    ) -> Result<Option<Vec<Edit>>, Error> {
+        let change = match interpret_change(tree_changes) {
+            Some(change) => change,
+            None => return Ok(None),
+        };
+
+        let edits = match change {
             ElmChange::QualifierAdded(name, qualifier) => {
                 let mut edits = Vec::new();
                 let mut cursor = QueryCursor::new();
@@ -83,7 +89,7 @@ impl RefactorEngine {
                             None
                         }
                     })
-                    .ok_or(RefactorError::FailureWhileTraversingTree)?;
+                    .ok_or(Error::FailureWhileTraversingTree)?;
                 let range = || {
                     let next = exposed.next_sibling();
                     if let Some(node) = next {
@@ -107,7 +113,12 @@ impl RefactorEngine {
                     }
                     exposed.byte_range()
                 };
-                edits.push(Edit::new(&diff.new, &range(), String::new()));
+                edits.push(Edit::new(
+                    diff.new.buffer,
+                    &mut diff.new.bytes.clone(),
+                    &range(),
+                    String::new(),
+                ));
 
                 cursor
                     .matches(
@@ -124,17 +135,18 @@ impl RefactorEngine {
                             == debug_code_slice(&diff.new, &node.byte_range())
                         {
                             edits.push(Edit::new(
-                                &diff.new,
+                                diff.new.buffer,
+                                &mut diff.new.bytes.clone(),
                                 &(node.start_byte()..node.start_byte()),
                                 format!("{}.", qualifier),
                             ))
                         }
                     });
-                Ok(edits)
+                Ok(Some(edits))
             }
-            _ => Err(RefactorError::NoneImplementedForThisChange(change)),
-        }
-        .map(sort_edits)
+            _ => Ok(None),
+        }?;
+        Ok(edits.map(sort_edits))
     }
 }
 
@@ -169,9 +181,7 @@ pub(crate) enum ElmChange {
 }
 
 // TODO: use kind ID's instead of names for pattern matching.
-pub(in crate::analysis_thread) fn interpret_change(
-    changes: &TreeChanges,
-) -> Option<ElmChange> {
+fn interpret_change(changes: &TreeChanges) -> Option<ElmChange> {
     match (
         attach_kinds(&changes.old_removed).as_slice(),
         attach_kinds(&changes.new_added).as_slice(),
@@ -341,4 +351,98 @@ pub(in crate::analysis_thread) fn interpret_change(
 
 fn attach_kinds<'a>(nodes: &'a [Node<'a>]) -> Vec<(&'a str, &'a Node<'a>)> {
     nodes.iter().map(|node| (node.kind(), node)).collect()
+}
+
+// TODO: remove debug helper when it's no longer needed.
+#[allow(dead_code)]
+fn debug_print_tree_changes(changes: &TreeChanges) {
+    println!("REMOVED NODES:");
+    for node in &changes.old_removed {
+        crate::debug_print_node(changes.old_code, 2, node);
+    }
+    println!("ADDED NODES:");
+    for node in &changes.new_added {
+        crate::debug_print_node(changes.new_code, 2, node);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::analysis_thread::elm::RefactorEngine;
+    use crate::analysis_thread::{diff_trees, SourceFileDiff};
+    use crate::test_support::included_answer_test as ia_test;
+    use crate::test_support::simulation::Simulation;
+    use crate::{Buffer, SourceFileSnapshot};
+    use std::path::Path;
+
+    macro_rules! simulation_test {
+        ($name:ident) => {
+            #[test]
+            fn $name() {
+                let mut path = std::path::PathBuf::new();
+                path.push("./tests");
+                let module_name = ia_test::snake_to_camel(stringify!($name));
+                path.push(module_name + ".elm");
+                println!("Run simulation {:?}", &path);
+                run_simulation_test(&path);
+            }
+        };
+    }
+
+    pub fn run_simulation_test(path: &Path) {
+        match run_simulation_test_helper(path) {
+            Err(err) => panic!("simulation failed with: {:?}", err),
+            Ok(res) => ia_test::assert_eq_answer_in(&res, path),
+        }
+    }
+
+    fn run_simulation_test_helper(path: &Path) -> Result<String, Error> {
+        let simulation = Simulation::from_file(path)?;
+        let buffer = Buffer {
+            buffer_id: 0,
+            editor_id: 0,
+        };
+        let old = SourceFileSnapshot::new(buffer, simulation.start_bytes)?;
+        let new = SourceFileSnapshot::new(buffer, simulation.end_bytes)?;
+        let diff = SourceFileDiff { old, new };
+        let tree_changes = diff_trees(&diff);
+        let refactor_engine = RefactorEngine::new()?;
+        match refactor_engine.respond_to_change(&diff, &tree_changes)? {
+            None => Ok("No refactor for this change.".to_owned()),
+            Some(refactor) => {
+                let mut post_refactor = diff.new.bytes;
+                for edit in refactor {
+                    edit.apply(&mut post_refactor)
+                }
+                Ok(post_refactor.to_string())
+            }
+        }
+    }
+
+    simulation_test!(add_module_qualifier_to_variable);
+
+    #[derive(Debug)]
+    enum Error {
+        RunningSimulation(crate::test_support::simulation::Error),
+        ParsingSourceCode(crate::support::source_code::ParseError),
+        AnalyzingElm(crate::analysis_thread::elm::Error),
+    }
+
+    impl From<crate::test_support::simulation::Error> for Error {
+        fn from(err: crate::test_support::simulation::Error) -> Error {
+            Error::RunningSimulation(err)
+        }
+    }
+
+    impl From<crate::support::source_code::ParseError> for Error {
+        fn from(err: crate::support::source_code::ParseError) -> Error {
+            Error::ParsingSourceCode(err)
+        }
+    }
+
+    impl From<crate::analysis_thread::elm::Error> for Error {
+        fn from(err: crate::analysis_thread::elm::Error) -> Error {
+            Error::AnalyzingElm(err)
+        }
+    }
 }

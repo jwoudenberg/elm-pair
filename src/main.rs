@@ -1,14 +1,15 @@
 use core::ops::Range;
 use mvar::MVar;
-use ropey::Rope;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tree_sitter::{InputEdit, Node, Tree};
+use support::source_code::{Buffer, SourceFileSnapshot};
+use tree_sitter::Node;
 
 mod analysis_thread;
 mod compilation_thread;
 mod editor_listener_thread;
 mod editors;
+mod support;
 
 #[cfg(test)]
 mod test_support;
@@ -53,118 +54,6 @@ fn run() -> Result<(), analysis_thread::Error> {
 
     // Main thread continues as analysis thread.
     analysis_thread::run(&latest_code, analysis_receiver)
-}
-
-#[derive(Clone)]
-struct SourceFileSnapshot {
-    // A unique index identifying a source file open in an editor. We're not
-    // using the file path for a couple of reasons:
-    // - It's possible for the same file to be open in multiple editors with
-    //   different unsaved changes each.
-    // - A file path is stringy, so more expensive to copy.
-    buffer: Buffer,
-    // The full contents of the file, stored in a Rope datastructure. This
-    // datastructure offers cheap modifications in random locations, and cheap
-    // cloning (both of which we'll do a lot).
-    bytes: Rope,
-    // The tree-sitter concrete syntax tree representing the code in `bytes`.
-    // This tree by itself is not enough to recover the source code, which is
-    // why we also keep the original source code in `bytes`.
-    tree: Tree,
-    // A number that gets incremented for each change to this snapshot.
-    revision: usize,
-}
-
-impl<'a> tree_sitter::TextProvider<'a> for &'a SourceFileSnapshot {
-    type I = Chunks<'a>;
-
-    fn text(&mut self, node: Node<'_>) -> Chunks<'a> {
-        let range = node.byte_range();
-        let (chunks, first_chunk_start_byte, _, _) =
-            self.bytes.chunks_at_byte(range.start);
-        Chunks {
-            chunks,
-            skip_start: range.start - first_chunk_start_byte,
-            remaining: range.len(),
-        }
-    }
-}
-
-struct Chunks<'a> {
-    chunks: ropey::iter::Chunks<'a>,
-    skip_start: usize,
-    remaining: usize,
-}
-
-impl<'a> Iterator for Chunks<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining > 0 {
-            let chunk = self.chunks.next()?;
-            let slice = chunk
-                [self.skip_start..std::cmp::min(self.remaining, chunk.len())]
-                .as_bytes();
-            self.skip_start = 0;
-            self.remaining -= slice.len();
-            Some(slice)
-        } else {
-            None
-        }
-    }
-}
-
-// A unique identifier for a buffer that elm-pair is tracking in any connected
-// editor. First 32 bits uniquely identify the connected editor, while the last
-// 32 bits identify one of the buffers openen in that particular editor.
-#[derive(Copy, Clone, Debug, Hash, PartialEq)]
-struct Buffer {
-    editor_id: u32,
-    buffer_id: u32,
-}
-
-impl Eq for Buffer {}
-
-// A change made by the user reported by the editor.
-#[derive(Debug)]
-struct Edit {
-    // The buffer that was changed.
-    buffer: Buffer,
-    // A tree-sitter InputEdit value, describing what part of the file was changed.
-    input_edit: InputEdit,
-    // Bytes representing the new contents of the file at the location described
-    // by `input_edit`.
-    new_bytes: String,
-}
-
-impl Edit {
-    fn new(
-        code: &SourceFileSnapshot,
-        range: &Range<usize>,
-        new_bytes: String,
-    ) -> Edit {
-        let new_end_byte = range.start + new_bytes.len();
-        Edit {
-            buffer: code.buffer,
-            new_bytes,
-            input_edit: tree_sitter::InputEdit {
-                start_byte: range.start,
-                old_end_byte: range.end,
-                new_end_byte,
-                start_position: byte_to_point(&code.bytes, range.start),
-                old_end_position: byte_to_point(&code.bytes, range.end),
-                new_end_position: byte_to_point(&code.bytes, new_end_byte),
-            },
-        }
-    }
-}
-
-fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
-    let row = code.byte_to_line(byte);
-    tree_sitter::Point {
-        row,
-        column: code.byte_to_char(byte) - code.line_to_char(row),
-    }
 }
 
 fn spawn_thread<M, E, F>(error_channel: Sender<M>, f: F)
@@ -367,40 +256,4 @@ mod sized_stack {
             self.items.pop_front()
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::test_support::simulation::simulation_test;
-
-    simulation_test!(change_record_field_name);
-    simulation_test!(add_field_to_record);
-    simulation_test!(add_field_to_front_of_record);
-    simulation_test!(add_field_to_empty_record);
-    simulation_test!(remove_field_from_record);
-    simulation_test!(remove_only_field_from_record);
-    simulation_test!(remove_field_from_front_of_record);
-    simulation_test!(add_import);
-    simulation_test!(remove_import);
-    simulation_test!(add_as_clause_to_import);
-    simulation_test!(remove_as_clause_from_import);
-    simulation_test!(change_as_clause_on_import);
-    simulation_test!(change_argument_name_at_definition_site);
-    simulation_test!(change_argument_name_at_usage_site);
-    simulation_test!(change_let_binding_name_at_definition_site);
-    simulation_test!(change_let_binding_name_at_usage_site);
-    simulation_test!(change_function_name_in_type_definition);
-    simulation_test!(change_function_name_at_definition_site);
-    simulation_test!(change_function_name_at_usage_site);
-    simulation_test!(change_type_name_at_definition_site);
-    simulation_test!(change_type_name_at_usage_site);
-    simulation_test!(add_type_definition);
-    simulation_test!(remove_type_definition);
-    simulation_test!(add_type_alias_definition);
-    simulation_test!(remove_type_alias_definition);
-    simulation_test!(add_module_qualifier_to_variable);
-    simulation_test!(remove_module_qualifier_from_variable);
-    simulation_test!(add_module_qualifier_to_type);
-    simulation_test!(remove_module_qualifier_from_type);
-    simulation_test!(no_interpretation_when_back_at_compiling_state);
 }
