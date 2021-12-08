@@ -73,7 +73,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 diff.new.revision, diff.old.revision, diff.old.buffer
             );
             let tree_changes = diff_trees(&diff);
-            match self.refactor_engine.respond_to_change(&diff, &tree_changes) {
+            match self.refactor_engine.respond_to_change(&diff, tree_changes) {
                 Ok(Some(refactor)) => {
                     eprintln!("[info] applying refactor to editor");
                     editor_driver.apply_edits(refactor);

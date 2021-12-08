@@ -626,6 +626,8 @@ impl<W> NeovimDriver<W>
 where
     W: Write,
 {
+    // TODO: Send back changedtick, and let Neovim apply update only when it
+    // hasn't changed.
     fn write_refactor(&self, refactor: Vec<Edit>) -> Result<(), Error> {
         let mut write_guard = crate::lock(&self.write);
         let write = write_guard.deref_mut();
