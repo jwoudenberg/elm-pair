@@ -64,20 +64,27 @@ impl RefactorEngine {
         let mut edits = Vec::new();
         let mut cursor = QueryCursor::new();
         match change {
-            ElmChange::QualifierAdded(name, qualifier) => {
+            ElmChange::QualifierAdded {
+                qualifier,
+                base_name,
+            } => {
+                let base_name_str =
+                    debug_code_slice(&diff.new, &base_name.byte_range());
+                let qualifier_str =
+                    debug_code_slice(&diff.new, &qualifier.byte_range());
                 self.remove_from_exposed_list(
                     &mut edits,
                     &mut cursor,
                     diff,
-                    &name,
-                    &qualifier,
+                    &base_name_str,
+                    &qualifier_str,
                 )?;
                 self.remove_qualifier_from_name(
                     &mut edits,
                     &mut cursor,
                     diff,
-                    &name,
-                    &qualifier,
+                    &base_name_str,
+                    &qualifier_str,
                 )?;
             }
             ElmChange::ExposedValueRemoved(node) => {
@@ -268,7 +275,10 @@ pub(crate) enum ElmChange<'a> {
     TypeRemoved(String),
     TypeAliasAdded(String),
     TypeAliasRemoved(String),
-    QualifierAdded(String, String),
+    QualifierAdded {
+        qualifier: Node<'a>,
+        base_name: Node<'a>,
+    },
     QualifierRemoved(String, String),
     AsClauseAdded(String, String),
     AsClauseRemoved(String, String),
@@ -404,10 +414,10 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
             let name_after =
                 debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
-                Some(ElmChange::QualifierAdded(
-                    name_before,
-                    debug_code_slice(changes.new_code, &qualifier.byte_range()),
-                ))
+                Some(ElmChange::QualifierAdded {
+                    qualifier: *qualifier,
+                    base_name: *after,
+                })
             } else {
                 None
             }
@@ -421,10 +431,10 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
             let name_after =
                 debug_code_slice(changes.new_code, &after.byte_range());
             if name_before == name_after {
-                Some(ElmChange::QualifierAdded(
-                    name_before,
-                    debug_code_slice(changes.new_code, &qualifier.byte_range()),
-                ))
+                Some(ElmChange::QualifierAdded {
+                    qualifier: *qualifier,
+                    base_name: *after,
+                })
             } else {
                 None
             }
