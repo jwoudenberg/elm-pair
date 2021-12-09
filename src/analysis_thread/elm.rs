@@ -402,10 +402,28 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
                 changes.old_code.slice(&before.byte_range()),
             ))
         }
-        ([("exposed_value", before)], [])
-        | ([(",", _), ("exposed_value", before)], [])
-        | ([("exposed_value", before), (",", _)], []) => {
-            Some(ElmChange::ExposedValuesRemoved(vec![*before]))
+        ([("exposed_value", before), rest @ ..], after)
+        | ([(",", _), ("exposed_value", before), rest @ ..], after) => {
+            match after {
+                [] => {}
+                [("exposed_value", node)]
+                    if changes.new_code.slice(&node.byte_range()) == "" => {}
+                _ => return None,
+            }
+            let mut removed_nodes = vec![*before];
+            let mut rest = rest;
+            while !rest.is_empty() {
+                match rest {
+                    [] => break,
+                    [(",", _), new_rest @ ..] => rest = new_rest,
+                    [("exposed_value", node), new_rest @ ..] => {
+                        removed_nodes.push(*node);
+                        rest = new_rest;
+                    }
+                    _ => return None,
+                }
+            }
+            Some(ElmChange::ExposedValuesRemoved(removed_nodes))
         }
         (
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", before)],

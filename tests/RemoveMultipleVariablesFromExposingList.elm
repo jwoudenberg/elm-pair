@@ -7,7 +7,7 @@ addStrings str1 str2 =
   Maybe.map2 (\int1 int2 -> fromInt (int1 + int2)) (toInt str1) (toInt str2)
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 3 ,
+-- MOVE CURSOR TO LINE 3 toInt
 -- DELETE toInt, fromInt
 -- END SIMULATION
 
@@ -15,7 +15,7 @@ addStrings str1 str2 =
 -- === expected output below ===
 -- module Math exposing (..)
 --
--- import String exposing (fromInt)
+-- import String exposing ()
 --
 -- addStrings : String -> String -> Maybe String
 -- addStrings str1 str2 =
