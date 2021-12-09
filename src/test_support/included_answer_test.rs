@@ -38,7 +38,17 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
                 .map(|x| x.trim_end())
                 .collect::<Vec<&str>>()
                 .join("\n");
-            assert_eq!(actual_output, expected_output)
+            if actual_output != expected_output {
+                eprintln!("Actual output does not match expected");
+                eprintln!();
+                eprintln!("--- actual ----");
+                eprintln!("{}", actual_output);
+                eprintln!();
+                eprintln!("--- expected ----");
+                eprintln!("{}", expected_output);
+                eprintln!();
+                panic!()
+            }
         }
     }
 }
