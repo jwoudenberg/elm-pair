@@ -1,6 +1,6 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::debug_code_slice;
-use crate::support::source_code::Edit;
+use crate::support::source_code::{Edit, SourceFileSnapshot};
 use tree_sitter::{Node, Query, QueryCursor};
 
 pub(crate) struct RefactorEngine {
@@ -99,6 +99,33 @@ impl RefactorEngine {
                     &qualifier,
                 )?;
             }
+            ElmChange::ExposingListRemoved(node) => {
+                let qualifier = debug_code_slice(
+                    &diff.old,
+                    &node
+                        .parent()
+                        .unwrap()
+                        .child_by_field_name("moduleName")
+                        .unwrap()
+                        .byte_range(),
+                );
+                self.get_exposed_vals_of_import(
+                    &mut cursor,
+                    &diff.old,
+                    &qualifier,
+                )?
+                .into_iter()
+                .try_for_each(|node| {
+                    let name = debug_code_slice(&diff.old, &node.byte_range());
+                    self.remove_qualifier_from_name(
+                        &mut edits,
+                        &mut cursor,
+                        diff,
+                        &name,
+                        &qualifier,
+                    )
+                })?;
+            }
             _ => {}
         };
         if edits.is_empty() {
@@ -106,6 +133,37 @@ impl RefactorEngine {
         } else {
             Ok(Some(sort_edits(edits)))
         }
+    }
+
+    // TODO: make this return an iterator.
+    fn get_exposed_vals_of_import<'a>(
+        &'_ self,
+        cursor: &'_ mut QueryCursor,
+        code: &'a SourceFileSnapshot,
+        module: &'_ str,
+    ) -> Result<Vec<Node<'a>>, Error> {
+        let iterator = cursor
+            .matches(
+                &self.query_for_exposed_imports,
+                code.tree.root_node(),
+                code,
+            )
+            .filter_map(|m| {
+                let (import, exposed_val) = match m.captures {
+                    [x, y] => (x, y),
+                    _ => panic!("wrong number of capures"),
+                };
+                let import_node =
+                    import.node.child_by_field_name("moduleName")?;
+                let import_name =
+                    debug_code_slice(code, &import_node.byte_range());
+                if import_name == module {
+                    Some(exposed_val.node)
+                } else {
+                    None
+                }
+            });
+        Ok(iterator.collect())
     }
 
     fn remove_from_exposed_list(
@@ -116,28 +174,11 @@ impl RefactorEngine {
         name: &str,
         qualifier: &str,
     ) -> Result<(), Error> {
-        let exposed = cursor
-            .matches(
-                &self.query_for_exposed_imports,
-                diff.new.tree.root_node(),
-                &diff.new,
-            )
-            .find_map(|m| {
-                let (import, exposed_val) = match m.captures {
-                    [x, y] => (x, y),
-                    _ => panic!("wrong number of capures"),
-                };
-                let import_node =
-                    import.node.child_by_field_name("moduleName")?;
-                let import_name =
-                    debug_code_slice(&diff.new, &import_node.byte_range());
-                let exposed_name =
-                    debug_code_slice(&diff.new, &exposed_val.node.byte_range());
-                if import_name == *qualifier && exposed_name == *name {
-                    Some(exposed_val.node)
-                } else {
-                    None
-                }
+        let exposed = self
+            .get_exposed_vals_of_import(cursor, &diff.new, qualifier)?
+            .into_iter()
+            .find(|node| {
+                name == debug_code_slice(&diff.new, &node.byte_range())
             })
             .ok_or(Error::FailureWhileTraversingTree)?;
         let range = || {
@@ -233,10 +274,12 @@ pub(crate) enum ElmChange<'a> {
     AsClauseRemoved(String, String),
     AsClauseChanged(String, String),
     ExposedValueRemoved(Node<'a>),
+    ExposingListRemoved(Node<'a>),
 }
 
 // TODO: use kind ID's instead of names for pattern matching.
 fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
+    // debug_print_tree_changes(&changes);
     match (
         attach_kinds(changes.old_removed).as_slice(),
         attach_kinds(changes.new_added).as_slice(),
@@ -406,10 +449,10 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
                 &after.child_by_field_name("name")?.byte_range(),
             ),
         )),
-        _ => {
-            // debug_print_tree_changes(changes);
-            None
+        ([("exposing_list", before)], []) => {
+            Some(ElmChange::ExposingListRemoved(*before))
         }
+        _ => None,
     }
 }
 
