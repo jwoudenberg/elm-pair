@@ -1,7 +1,7 @@
 use crate::compilation_thread;
 use crate::editor_listener_thread;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
-use crate::{debug_code_slice, MVar, MsgLoop};
+use crate::{MVar, MsgLoop};
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
@@ -379,7 +379,7 @@ fn have_node_contents_changed(
     old: &Node,
     new: &Node,
 ) -> bool {
-    let old_bytes = debug_code_slice(old_code, &old.byte_range());
-    let new_bytes = debug_code_slice(new_code, &new.byte_range());
+    let old_bytes = old_code.slice(&old.byte_range());
+    let new_bytes = new_code.slice(&new.byte_range());
     old_bytes != new_bytes
 }

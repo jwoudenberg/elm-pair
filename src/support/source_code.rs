@@ -1,5 +1,5 @@
 use core::ops::Range;
-use ropey::Rope;
+use ropey::{Rope, RopeSlice};
 use tree_sitter::{InputEdit, Node, Tree};
 
 // A unique identifier for a buffer that elm-pair is tracking in any connected
@@ -56,6 +56,12 @@ impl SourceFileSnapshot {
         let new_tree = parse(Some(&self.tree), &self.bytes)?;
         self.tree = new_tree;
         Ok(())
+    }
+
+    pub(crate) fn slice(&self, range: &Range<usize>) -> RopeSlice {
+        let start = self.bytes.byte_to_char(range.start);
+        let end = self.bytes.byte_to_char(range.end);
+        self.bytes.slice(start..end)
     }
 }
 

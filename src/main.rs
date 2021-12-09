@@ -1,4 +1,3 @@
-use core::ops::Range;
 use mvar::MVar;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -77,12 +76,6 @@ where
     });
 }
 
-fn debug_code_slice(code: &SourceFileSnapshot, range: &Range<usize>) -> String {
-    let start = code.bytes.byte_to_char(range.start);
-    let end = code.bytes.byte_to_char(range.end);
-    code.bytes.slice(start..end).to_string()
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
     // `mutex.lock()` only fails if the lock is 'poisoned', meaning another
     // thread panicked while accessing it. In this program we have no intent
@@ -127,7 +120,7 @@ fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
         "  ".repeat(indent),
         node.kind(),
         node.start_position().row + 1,
-        debug_code_slice(code, &node.byte_range()),
+        code.slice(&node.byte_range()).to_string(),
         if node.has_changes() { " (changed)" } else { "" },
     );
 }
