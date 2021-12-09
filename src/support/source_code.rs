@@ -81,38 +81,20 @@ impl<'a> tree_sitter::TextProvider<'a> for &'a SourceFileSnapshot {
     type I = Chunks<'a>;
 
     fn text(&mut self, node: Node<'_>) -> Chunks<'a> {
-        let range = node.byte_range();
-        let (chunks, first_chunk_start_byte, _, _) =
-            self.bytes.chunks_at_byte(range.start);
-        Chunks {
-            chunks,
-            skip_start: range.start - first_chunk_start_byte,
-            remaining: range.len(),
-        }
+        let chunks = self.bytes.slice(node.byte_range()).chunks();
+        Chunks { chunks }
     }
 }
 
 pub(crate) struct Chunks<'a> {
     chunks: ropey::iter::Chunks<'a>,
-    skip_start: usize,
-    remaining: usize,
 }
 
 impl<'a> Iterator for Chunks<'a> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining > 0 {
-            let chunk = self.chunks.next()?;
-            let slice = chunk
-                [self.skip_start..std::cmp::min(self.remaining, chunk.len())]
-                .as_bytes();
-            self.skip_start = 0;
-            self.remaining -= slice.len();
-            Some(slice)
-        } else {
-            None
-        }
+        self.chunks.next().map(str::as_bytes)
     }
 }
 
