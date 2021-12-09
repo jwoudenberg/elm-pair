@@ -29,10 +29,16 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
                     x.strip_prefix(&prefix)
                         .or_else(|| x.strip_prefix(&prefix.trim_end()))
                         .unwrap_or(x)
+                        .trim_end()
                 })
                 .collect::<Vec<&str>>()
                 .join("\n");
-            assert_eq!(output.trim_end(), expected_output)
+            let actual_output = output
+                .lines()
+                .map(|x| x.trim_end())
+                .collect::<Vec<&str>>()
+                .join("\n");
+            assert_eq!(actual_output, expected_output)
         }
     }
 }
