@@ -66,7 +66,7 @@ impl Simulation {
                     builder = builder.insert(&strs.join(" "))
                 }
                 ["DELETE", strs @ ..] => {
-                    builder = builder.delete(&strs.join(" "))
+                    builder = builder.delete(&strs.join(" "))?
                 }
                 _ => return Err(Error::CannotParseSimulationLine(line)),
             };
@@ -135,12 +135,19 @@ impl SimulationBuilder {
         self
     }
 
-    fn delete(mut self, str: &str) -> Self {
-        let str_rope = Rope::from_str(str);
+    fn delete(mut self, to_delete: &str) -> Result<Self, Error> {
+        let str_rope = Rope::from_str(to_delete);
         let range = self.current_position
             ..(self.current_position + str_rope.len_chars());
+        let at_cursor = self.current_bytes.slice(range.clone());
+        if at_cursor != to_delete {
+            return Err(Error::TextToDeleteDoesNotMatchStringAtCursor {
+                to_delete: to_delete.to_owned(),
+                at_cursor: at_cursor.to_string(),
+            });
+        }
         self.add_edit(&range, String::new());
-        self
+        Ok(self)
     }
 
     fn finish(self) -> Simulation {
@@ -165,6 +172,10 @@ pub(crate) enum Error {
     MoveCursorDidNotFindWordOnLine,
     FailureWhileNavigatingSimulationRope(ropey::Error),
     GettingRopeSlice,
+    TextToDeleteDoesNotMatchStringAtCursor {
+        to_delete: String,
+        at_cursor: String,
+    },
 }
 
 impl From<ropey::Error> for Error {

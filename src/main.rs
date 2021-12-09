@@ -116,10 +116,9 @@ fn debug_print_tree_helper(
 
 fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
     println!(
-        "{}[{} {:?}] {:?}{}",
+        "{}[{}] {:?}{}",
         "  ".repeat(indent),
         node.kind(),
-        node.start_position().row + 1,
         code.slice(&node.byte_range()).to_string(),
         if node.has_changes() { " (changed)" } else { "" },
     );
