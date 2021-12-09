@@ -1,7 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::support::source_code::{Edit, SourceFileSnapshot};
 use ropey::RopeSlice;
-use tree_sitter::{Node, Query, QueryCursor};
+use tree_sitter::{Node, Query, QueryCursor, TreeCursor};
 
 pub(crate) struct RefactorEngine {
     query_for_exposed_imports: Query,
@@ -24,14 +24,7 @@ impl RefactorEngine {
             query_for_exposed_imports: mk_query(
                 r#"
                 (import_clause
-                  exposing:
-                    (exposing_list
-                      [ (double_dot)
-                        (exposed_value)
-                        (exposed_type)
-                        (exposed_operator)
-                      ] @exposed_value
-                    )
+                  moduleName: (upper_case_qid) @name
                 ) @import
                 "#,
             )?,
@@ -86,21 +79,19 @@ impl RefactorEngine {
                 )?;
             }
             ElmChange::ExposedValueRemoved(node) => {
-                let name = diff.old.slice(&node.byte_range());
-                let mod_name_node = node
+                let import_name = node
                     .parent()
-                    .unwrap()
+                    .ok_or(Error::FailureWhileTraversingTree)?
                     .parent()
-                    .unwrap()
+                    .ok_or(Error::FailureWhileTraversingTree)?
                     .child_by_field_name("moduleName")
-                    .unwrap();
-                let qualifier = diff.old.slice(&mod_name_node.byte_range());
+                    .ok_or(Error::FailureWhileTraversingTree)?;
                 self.remove_qualifier_from_name(
                     &mut edits,
                     &mut cursor,
                     diff,
-                    &name,
-                    &qualifier,
+                    &diff.old.slice(&node.byte_range()),
+                    &diff.old.slice(&import_name.byte_range()),
                 )?;
             }
             ElmChange::ExposingListRemoved(node) => {
@@ -112,22 +103,20 @@ impl RefactorEngine {
                         .unwrap()
                         .byte_range(),
                 );
-                self.get_exposed_vals_of_import(
-                    &mut cursor,
-                    &diff.old,
-                    &qualifier,
-                )?
-                .into_iter()
-                .try_for_each(|node| {
-                    let name = diff.old.slice(&node.byte_range());
-                    self.remove_qualifier_from_name(
-                        &mut edits,
-                        &mut cursor,
-                        diff,
-                        &name,
-                        &qualifier,
-                    )
-                })?;
+                self.imports(&mut cursor, &diff.old)
+                    .find(|import| import.name() == qualifier)
+                    .ok_or(Error::FailureWhileTraversingTree)?
+                    .exposed_list()
+                    .try_for_each(|exposed| {
+                        let mut val_cursor = QueryCursor::new();
+                        self.remove_qualifier_from_name(
+                            &mut edits,
+                            &mut val_cursor,
+                            diff,
+                            &exposed.name(),
+                            &qualifier,
+                        )
+                    })?;
             }
             _ => {}
         };
@@ -138,36 +127,6 @@ impl RefactorEngine {
         }
     }
 
-    // TODO: make this return an iterator.
-    fn get_exposed_vals_of_import<'a>(
-        &'_ self,
-        cursor: &'_ mut QueryCursor,
-        code: &'a SourceFileSnapshot,
-        module: &RopeSlice<'_>,
-    ) -> Result<Vec<Node<'a>>, Error> {
-        let iterator = cursor
-            .matches(
-                &self.query_for_exposed_imports,
-                code.tree.root_node(),
-                code,
-            )
-            .filter_map(|m| {
-                let (import, exposed_val) = match m.captures {
-                    [x, y] => (x, y),
-                    _ => panic!("wrong number of capures"),
-                };
-                let import_node =
-                    import.node.child_by_field_name("moduleName")?;
-                let import_name = code.slice(&import_node.byte_range());
-                if import_name == *module {
-                    Some(exposed_val.node)
-                } else {
-                    None
-                }
-            });
-        Ok(iterator.collect())
-    }
-
     fn remove_from_exposed_list(
         &self,
         edits: &mut Vec<Edit>,
@@ -176,11 +135,15 @@ impl RefactorEngine {
         name: &RopeSlice,
         qualifier: &RopeSlice,
     ) -> Result<(), Error> {
-        let exposed = self
-            .get_exposed_vals_of_import(cursor, &diff.new, qualifier)?
-            .into_iter()
-            .find(|node| *name == diff.new.slice(&node.byte_range()))
+        let imports = self
+            .imports(cursor, &diff.new)
+            .find(|import| import.name() == *qualifier)
             .ok_or(Error::FailureWhileTraversingTree)?;
+        let exposed = imports
+            .exposed_list()
+            .find(|exposed| *name == exposed.name())
+            .ok_or(Error::FailureWhileTraversingTree)?
+            .node;
         let range = || {
             let next = exposed.next_sibling();
             if let Some(node) = next {
@@ -242,6 +205,102 @@ impl RefactorEngine {
                 }
             });
         Ok(())
+    }
+
+    fn imports<'a, 'tree>(
+        &'a self,
+        cursor: &'a mut QueryCursor,
+        code: &'tree SourceFileSnapshot,
+    ) -> Imports<'a, 'tree> {
+        let matches = cursor.matches(
+            &self.query_for_exposed_imports,
+            code.tree.root_node(),
+            code,
+        );
+        Imports { code, matches }
+    }
+}
+
+struct Imports<'a, 'tree> {
+    code: &'tree SourceFileSnapshot,
+    matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
+}
+
+impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
+    type Item = Import<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (root_node, name_node) = match self.matches.next()?.captures {
+            [root, name] => (root.node, name.node),
+            _ => return None,
+        };
+        Some(Import {
+            code: self.code,
+            root_node,
+            name_node,
+        })
+    }
+}
+
+struct Import<'a> {
+    code: &'a SourceFileSnapshot,
+    root_node: Node<'a>,
+    name_node: Node<'a>,
+}
+
+impl Import<'_> {
+    fn name(&self) -> RopeSlice {
+        self.code.slice(&self.name_node.byte_range())
+    }
+
+    fn exposed_list(&self) -> ExposedList {
+        let cursor =
+            self.root_node
+                .child_by_field_name("exposing")
+                .and_then(|node| {
+                    let mut cursor = node.walk();
+                    if cursor.goto_first_child() {
+                        Some(cursor)
+                    } else {
+                        None
+                    }
+                });
+        ExposedList {
+            code: self.code,
+            cursor,
+        }
+    }
+}
+
+struct ExposedList<'a> {
+    code: &'a SourceFileSnapshot,
+    cursor: Option<TreeCursor<'a>>,
+}
+
+impl<'a> Iterator for ExposedList<'a> {
+    type Item = Exposed<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let cursor = self.cursor.as_mut()?;
+        let node = cursor.node();
+        if !cursor.goto_next_sibling() {
+            self.cursor = None
+        }
+        Some(Exposed {
+            code: self.code,
+            node,
+        })
+    }
+}
+
+struct Exposed<'a> {
+    code: &'a SourceFileSnapshot,
+    node: Node<'a>,
+}
+
+impl Exposed<'_> {
+    fn name(&self) -> RopeSlice {
+        self.code.slice(&self.node.byte_range())
     }
 }
 
