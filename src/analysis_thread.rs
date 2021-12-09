@@ -179,8 +179,12 @@ fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         };
         let first_old_changed = old.node();
         let first_new_changed = new.node();
-        let (old_removed_count, new_added_count) =
-            count_changed_siblings(old_code, new_code, &old, &new);
+        let (old_removed_count, new_added_count) = count_changed_siblings(
+            old_code,
+            new_code,
+            &mut old.clone(),
+            &mut new.clone(),
+        );
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
@@ -297,12 +301,9 @@ fn collect_remaining_siblings(mut cursor: TreeCursor) -> Vec<Node> {
 fn count_changed_siblings<'a>(
     old_code: &'a SourceFileSnapshot,
     new_code: &'a SourceFileSnapshot,
-    old: &'a TreeCursor,
-    new: &'a TreeCursor,
+    old: &'a mut TreeCursor,
+    new: &'a mut TreeCursor,
 ) -> (usize, usize) {
-    let mut old_sibling = old.node();
-    let mut new_sibling = new.node();
-
     // We initialize the counts at 1, because we assume the node we're currenly
     // on is the first changed node.
     let mut old_siblings_removed = 1;
@@ -310,25 +311,23 @@ fn count_changed_siblings<'a>(
 
     // Walk forward, basically counting all remaining old and new siblings.
     loop {
-        match old_sibling.next_sibling() {
-            None => break,
-            Some(next) => {
-                old_siblings_removed += 1;
-                old_sibling = next;
-            }
+        if old.goto_next_sibling() {
+            old_siblings_removed += 1;
+        } else {
+            break;
         }
     }
     loop {
-        match new_sibling.next_sibling() {
-            None => break,
-            Some(next) => {
-                new_siblings_added += 1;
-                new_sibling = next;
-            }
+        if new.goto_next_sibling() {
+            new_siblings_added += 1;
+        } else {
+            break;
         }
     }
 
     // Walk backwards again until we encounter a changed node.
+    let mut old_sibling = old.node();
+    let mut new_sibling = new.node();
     loop {
         if has_node_changed(old_code, new_code, &old_sibling, &new_sibling)
             || old_siblings_removed == 0
