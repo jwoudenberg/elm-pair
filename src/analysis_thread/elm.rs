@@ -78,21 +78,23 @@ impl RefactorEngine {
                     &qualifier_str,
                 )?;
             }
-            ElmChange::ExposedValueRemoved(node) => {
-                let import_name = node
-                    .parent()
-                    .ok_or(Error::FailureWhileTraversingTree)?
-                    .parent()
-                    .ok_or(Error::FailureWhileTraversingTree)?
-                    .child_by_field_name("moduleName")
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-                self.remove_qualifier_from_name(
-                    &mut edits,
-                    &mut cursor,
-                    diff,
-                    &diff.old.slice(&node.byte_range()),
-                    &diff.old.slice(&import_name.byte_range()),
-                )?;
+            ElmChange::ExposedValuesRemoved(nodes) => {
+                nodes.into_iter().try_for_each(|node| {
+                    let import_name = node
+                        .parent()
+                        .ok_or(Error::FailureWhileTraversingTree)?
+                        .parent()
+                        .ok_or(Error::FailureWhileTraversingTree)?
+                        .child_by_field_name("moduleName")
+                        .ok_or(Error::FailureWhileTraversingTree)?;
+                    self.remove_qualifier_from_name(
+                        &mut edits,
+                        &mut cursor,
+                        diff,
+                        &diff.old.slice(&node.byte_range()),
+                        &diff.old.slice(&import_name.byte_range()),
+                    )
+                })?;
             }
             ElmChange::ExposingListRemoved(node) => {
                 let qualifier = diff.old.slice(
@@ -335,7 +337,7 @@ pub(crate) enum ElmChange<'a> {
     AsClauseAdded(RopeSlice<'a>, RopeSlice<'a>),
     AsClauseRemoved(RopeSlice<'a>, RopeSlice<'a>),
     AsClauseChanged(RopeSlice<'a>, RopeSlice<'a>),
-    ExposedValueRemoved(Node<'a>),
+    ExposedValuesRemoved(Vec<Node<'a>>),
     ExposingListRemoved(Node<'a>),
 }
 
@@ -388,53 +390,28 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
                 changes.old_code.slice(&before.byte_range()),
             ))
         }
-        ([], [("field_type", after)]) => Some(ElmChange::FieldAdded(
-            changes.new_code.slice(&after.byte_range()),
-        )),
-        ([], [(",", _), ("field_type", after)]) => Some(ElmChange::FieldAdded(
-            changes.new_code.slice(&after.byte_range()),
-        )),
-        ([], [("field_type", after), (",", _)]) => Some(ElmChange::FieldAdded(
-            changes.new_code.slice(&after.byte_range()),
-        )),
-        ([("field_type", before)], []) => Some(ElmChange::FieldRemoved(
-            changes.old_code.slice(&before.byte_range()),
-        )),
-        ([(",", _), ("field_type", before)], []) => {
+        ([], [("field_type", after)])
+        | ([], [(",", _), ("field_type", after)])
+        | ([], [("field_type", after), (",", _)]) => Some(
+            ElmChange::FieldAdded(changes.new_code.slice(&after.byte_range())),
+        ),
+        ([("field_type", before)], [])
+        | ([(",", _), ("field_type", before)], [])
+        | ([("field_type", before), (",", _)], []) => {
             Some(ElmChange::FieldRemoved(
                 changes.old_code.slice(&before.byte_range()),
             ))
         }
-        ([("field_type", before), (",", _)], []) => {
-            Some(ElmChange::FieldRemoved(
-                changes.old_code.slice(&before.byte_range()),
-            ))
-        }
-        ([("exposed_value", before)], []) => {
-            Some(ElmChange::ExposedValueRemoved(*before))
-        }
-        ([(",", _), ("exposed_value", before)], []) => {
-            Some(ElmChange::ExposedValueRemoved(*before))
-        }
-        ([("exposed_value", before), (",", _)], []) => {
-            Some(ElmChange::ExposedValueRemoved(*before))
+        ([("exposed_value", before)], [])
+        | ([(",", _), ("exposed_value", before)], [])
+        | ([("exposed_value", before), (",", _)], []) => {
+            Some(ElmChange::ExposedValuesRemoved(vec![*before]))
         }
         (
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", before)],
             [("upper_case_identifier", after)],
-        ) => {
-            let name_before = changes.old_code.slice(&before.byte_range());
-            let name_after = changes.new_code.slice(&after.byte_range());
-            if name_before == name_after {
-                Some(ElmChange::QualifierRemoved(
-                    name_before,
-                    changes.old_code.slice(&qualifier.byte_range()),
-                ))
-            } else {
-                None
-            }
-        }
-        (
+        )
+        | (
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", before)],
             [("lower_case_identifier", after)],
         ) => {
@@ -452,19 +429,8 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
         (
             [("upper_case_identifier", before)],
             [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", after)],
-        ) => {
-            let name_before = changes.old_code.slice(&before.byte_range());
-            let name_after = changes.new_code.slice(&after.byte_range());
-            if name_before == name_after {
-                Some(ElmChange::QualifierAdded {
-                    qualifier: *qualifier,
-                    base_name: *after,
-                })
-            } else {
-                None
-            }
-        }
-        (
+        )
+        | (
             [("lower_case_identifier", before)],
             [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", after)],
         ) => {
