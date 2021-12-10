@@ -25,6 +25,7 @@ impl RefactorEngine {
                 r#"
                 (import_clause
                   moduleName: (module_identifier) @name
+                  exposing: (exposing_list)? @exposing
                 ) @import
                 "#,
             )?,
@@ -95,7 +96,6 @@ impl RefactorEngine {
                     .find(|import| import.name() == import_name)
                     .ok_or(Error::FailureWhileTraversingTree)?;
                 let new_exposed_count = import.exposed_list().count();
-                println!("HIHI {:?}", new_exposed_count);
                 if new_exposed_count == 0 {
                     self.remove_exposed_list(&mut edits, &diff.new, &import);
                 }
@@ -147,7 +147,7 @@ impl RefactorEngine {
         code: &SourceFileSnapshot,
         import: &Import,
     ) {
-        match import.root_node.child_by_field_name("exposing") {
+        match import.exposed_list_node {
             None => {}
             Some(node) => edits.push(Edit::new(
                 code.buffer,
@@ -180,7 +180,6 @@ impl RefactorEngine {
             .ok_or(Error::FailureWhileTraversingTree)?
             .node;
         exposed_list_length += exposed_list.count();
-        println!("FOO {:?}", exposed_list_length);
         if exposed_list_length == 1 {
             self.remove_exposed_list(edits, &diff.new, &import);
         } else {
@@ -271,22 +270,24 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
     type Item = Import<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (root_node, name_node) = match self.matches.next()?.captures {
-            [root, name] => (root.node, name.node),
-            _ => return None,
-        };
+        let captures = self.matches.next()?.captures;
+        let _root_node = captures.get(0)?.node;
+        let name_node = captures.get(1)?.node;
+        let exposed_list_node = captures.get(2).map(|capture| capture.node);
         Some(Import {
             code: self.code,
-            root_node,
+            _root_node,
             name_node,
+            exposed_list_node,
         })
     }
 }
 
 struct Import<'a> {
     code: &'a SourceFileSnapshot,
-    root_node: Node<'a>,
+    _root_node: Node<'a>,
     name_node: Node<'a>,
+    exposed_list_node: Option<Node<'a>>,
 }
 
 impl Import<'_> {
@@ -295,17 +296,14 @@ impl Import<'_> {
     }
 
     fn exposed_list(&self) -> ExposedList {
-        let cursor =
-            self.root_node
-                .child_by_field_name("exposing")
-                .and_then(|node| {
-                    let mut cursor = node.walk();
-                    if cursor.goto_first_child() {
-                        Some(cursor)
-                    } else {
-                        None
-                    }
-                });
+        let cursor = self.exposed_list_node.and_then(|node| {
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                Some(cursor)
+            } else {
+                None
+            }
+        });
         ExposedList {
             code: self.code,
             cursor,
