@@ -15,7 +15,7 @@ addStrings str1 str2 =
 -- === expected output below ===
 -- module Math exposing (..)
 --
--- import String exposing ( fromInt)
+-- import String as Str exposing ( fromInt)
 --
 -- addStrings : String -> String -> Maybe String
 -- addStrings str1 str2 =

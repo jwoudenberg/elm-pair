@@ -4,7 +4,7 @@ use ropey::RopeSlice;
 use tree_sitter::{Node, Query, QueryCursor, TreeCursor};
 
 pub(crate) struct RefactorEngine {
-    query_for_exposed_imports: Query,
+    query_for_imports: Query,
     query_for_unqualified_values: Query,
 }
 
@@ -21,12 +21,16 @@ impl RefactorEngine {
             Query::new(language, query_string).map_err(Error::InvalidQuery)
         };
         let engine = RefactorEngine {
-            query_for_exposed_imports: mk_query(
+            query_for_imports: mk_query(
                 r#"
                 (import_clause
                   moduleName: (module_identifier) @name
-                  exposing: (exposing_list)? @exposing
-                ) @import
+                  asClause:
+                    (as_clause
+                      name: (module_name_segment) @as_clause
+                    )?
+                  exposing: (exposing_list)? @exposing_list
+                ) @root
                 "#,
             )?,
             query_for_unqualified_values: mk_query(
@@ -80,6 +84,7 @@ impl RefactorEngine {
                 )?;
             }
             ElmChange::ExposedValuesRemoved(nodes) => {
+                // Find the name of the import in the old code.
                 let first =
                     nodes.get(0).ok_or(Error::FailureWhileTraversingTree)?;
                 let import_name_node = first
@@ -91,6 +96,8 @@ impl RefactorEngine {
                     .ok_or(Error::FailureWhileTraversingTree)?;
                 let import_name =
                     diff.old.slice(&import_name_node.byte_range());
+
+                // Modify the import in the new code with the name just found.
                 let import = self
                     .imports(&mut cursor, &diff.new)
                     .find(|import| import.name() == import_name)
@@ -99,27 +106,28 @@ impl RefactorEngine {
                 if new_exposed_count == 0 {
                     self.remove_exposed_list(&mut edits, &diff.new, &import);
                 }
+                let mut exposed_cursor = QueryCursor::new();
                 nodes.into_iter().try_for_each(|node| {
                     self.remove_qualifier_from_name(
                         &mut edits,
-                        &mut cursor,
+                        &mut exposed_cursor,
                         diff,
                         &diff.old.slice(&node.byte_range()),
-                        &import_name,
+                        &import.aliased_name(),
                     )
                 })?;
             }
             ElmChange::ExposingListRemoved(node) => {
-                let qualifier = diff.old.slice(
-                    &node
-                        .parent()
-                        .unwrap()
-                        .child_by_field_name("moduleName")
-                        .unwrap()
-                        .byte_range(),
-                );
-                self.imports(&mut cursor, &diff.old)
-                    .find(|import| import.name() == qualifier)
+                let import_node =
+                    node.parent().ok_or(Error::FailureWhileTraversingTree)?;
+                let import = self
+                    .imports_in(&mut cursor, &diff.old, import_node)
+                    .next()
+                    .ok_or(Error::FailureWhileTraversingTree)?;
+                let qualifier = import.aliased_name();
+                let mut cursor_2 = QueryCursor::new();
+                self.imports(&mut cursor_2, &diff.old)
+                    .find(|import| import.aliased_name() == qualifier)
                     .ok_or(Error::FailureWhileTraversingTree)?
                     .exposed_list()
                     .try_for_each(|exposed| {
@@ -147,7 +155,7 @@ impl RefactorEngine {
         code: &SourceFileSnapshot,
         import: &Import,
     ) {
-        match import.exposed_list_node {
+        match import.exposing_list_node {
             None => {}
             Some(node) => edits.push(Edit::new(
                 code.buffer,
@@ -168,7 +176,7 @@ impl RefactorEngine {
     ) -> Result<(), Error> {
         let import = self
             .imports(cursor, &diff.new)
-            .find(|import| import.name() == *qualifier)
+            .find(|import| import.aliased_name() == *qualifier)
             .ok_or(Error::FailureWhileTraversingTree)?;
         let mut exposed_list = import.exposed_list();
         let mut exposed_list_length = 0;
@@ -252,33 +260,58 @@ impl RefactorEngine {
         cursor: &'a mut QueryCursor,
         code: &'tree SourceFileSnapshot,
     ) -> Imports<'a, 'tree> {
-        let matches = cursor.matches(
-            &self.query_for_exposed_imports,
-            code.tree.root_node(),
+        self.imports_in(cursor, code, code.tree.root_node())
+    }
+
+    fn imports_in<'a, 'tree>(
+        &'a self,
+        cursor: &'a mut QueryCursor,
+        code: &'tree SourceFileSnapshot,
+        node: Node<'tree>,
+    ) -> Imports<'a, 'tree> {
+        let query_for_imports = &self.query_for_imports;
+        let matches = cursor.matches(query_for_imports, node, code);
+        Imports {
             code,
-        );
-        Imports { code, matches }
+            matches,
+            query_for_imports,
+        }
     }
 }
 
+// TODO: put this code next to the query responsible for it.
 struct Imports<'a, 'tree> {
     code: &'tree SourceFileSnapshot,
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
+    query_for_imports: &'a Query,
 }
 
 impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
     type Item = Import<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let captures = self.matches.next()?.captures;
-        let _root_node = captures.get(0)?.node;
-        let name_node = captures.get(1)?.node;
-        let exposed_list_node = captures.get(2).map(|capture| capture.node);
+        let mut nodes: [Option<Node>; 4] = [None; 4];
+        self.matches.next()?.captures.iter().for_each(|capture| {
+            nodes[capture.index as usize] = Some(capture.node)
+        });
         Some(Import {
             code: self.code,
-            _root_node,
-            name_node,
-            exposed_list_node,
+            _root_node: nodes[self
+                .query_for_imports
+                .capture_index_for_name("root")?
+                as usize]?,
+            name_node: nodes[self
+                .query_for_imports
+                .capture_index_for_name("name")?
+                as usize]?,
+            as_clause_node: nodes[self
+                .query_for_imports
+                .capture_index_for_name("as_clause")?
+                as usize],
+            exposing_list_node: nodes[self
+                .query_for_imports
+                .capture_index_for_name("exposing_list")?
+                as usize],
         })
     }
 }
@@ -287,7 +320,8 @@ struct Import<'a> {
     code: &'a SourceFileSnapshot,
     _root_node: Node<'a>,
     name_node: Node<'a>,
-    exposed_list_node: Option<Node<'a>>,
+    as_clause_node: Option<Node<'a>>,
+    exposing_list_node: Option<Node<'a>>,
 }
 
 impl Import<'_> {
@@ -295,8 +329,13 @@ impl Import<'_> {
         self.code.slice(&self.name_node.byte_range())
     }
 
+    fn aliased_name(&self) -> RopeSlice {
+        let name_node = self.as_clause_node.unwrap_or(self.name_node);
+        self.code.slice(&name_node.byte_range())
+    }
+
     fn exposed_list(&self) -> ExposedList {
-        let cursor = self.exposed_list_node.and_then(|node| {
+        let cursor = self.exposing_list_node.and_then(|node| {
             let mut cursor = node.walk();
             if cursor.goto_first_child() {
                 Some(cursor)
