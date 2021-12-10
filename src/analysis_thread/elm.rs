@@ -79,20 +79,33 @@ impl RefactorEngine {
                 )?;
             }
             ElmChange::ExposedValuesRemoved(nodes) => {
+                let first =
+                    nodes.get(0).ok_or(Error::FailureWhileTraversingTree)?;
+                let import_name_node = first
+                    .parent()
+                    .ok_or(Error::FailureWhileTraversingTree)?
+                    .parent()
+                    .ok_or(Error::FailureWhileTraversingTree)?
+                    .child_by_field_name("moduleName")
+                    .ok_or(Error::FailureWhileTraversingTree)?;
+                let import_name =
+                    diff.old.slice(&import_name_node.byte_range());
+                let import = self
+                    .imports(&mut cursor, &diff.new)
+                    .find(|import| import.name() == import_name)
+                    .ok_or(Error::FailureWhileTraversingTree)?;
+                let new_exposed_count = import.exposed_list().count();
+                println!("HIHI {:?}", new_exposed_count);
+                if new_exposed_count == 0 {
+                    self.remove_exposed_list(&mut edits, &diff.new, &import);
+                }
                 nodes.into_iter().try_for_each(|node| {
-                    let import_name = node
-                        .parent()
-                        .ok_or(Error::FailureWhileTraversingTree)?
-                        .parent()
-                        .ok_or(Error::FailureWhileTraversingTree)?
-                        .child_by_field_name("moduleName")
-                        .ok_or(Error::FailureWhileTraversingTree)?;
                     self.remove_qualifier_from_name(
                         &mut edits,
                         &mut cursor,
                         diff,
                         &diff.old.slice(&node.byte_range()),
-                        &diff.old.slice(&import_name.byte_range()),
+                        &import_name,
                     )
                 })?;
             }
@@ -312,7 +325,23 @@ impl<'a> Iterator for ExposedList<'a> {
         let cursor = self.cursor.as_mut()?;
         while cursor.goto_next_sibling() {
             let node = cursor.node();
-            if node.is_named() {
+            // When the programmer emptied out an exposing list entirely, so
+            // only `exposing ()` remains, then the tree-sitter-elm parse result
+            // will contain a single, empty `exposed_val` node, containing
+            // another node marked 'missing'. This is not-unreasonable, given
+            // an empty exposed list isn't valid Elm.
+            //
+            // For our purposes here we'd like to treat that exposed-list as
+            // empty, so we can easily check for emptiness and then remove it.
+            // Because the 'missing' node is wrapped inside a regular node, we
+            // cannot use `is_missing()` on the outer nodes we see here, so we
+            // check for length instead.
+            //
+            // We might consider tweaking the grammer to either put the
+            // 'missing' state on the outside node, or maybe even remove the
+            // wrapping entirely. Then this check likely wouldn't need this huge
+            // comment explaining it.
+            if node.is_named() && !node.byte_range().is_empty() {
                 return Some(Exposed {
                     code: self.code,
                     node,
