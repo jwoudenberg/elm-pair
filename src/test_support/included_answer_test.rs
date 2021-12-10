@@ -8,8 +8,7 @@ use std::path::Path;
 
 pub fn assert_eq_answer_in(output: &str, path: &Path) {
     let prefix = "-- ";
-    let separator =
-        "\n\n".to_owned() + prefix + "=== expected output below ===\n";
+    let separator = prefix.to_owned() + "=== expected output below ===\n";
     let contents = assert_ok(std::fs::read_to_string(path));
     match contents.split_once(&separator) {
         None => {

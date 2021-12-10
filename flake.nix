@@ -18,6 +18,7 @@
             pkgs.lua53Packages.luacheck
             pkgs.cargo
             pkgs.elmPackages.elm
+            pkgs.elmPackages.elm-format
             pkgs.rustc
             pkgs.rustfmt
             pkgs.clippy
