@@ -509,11 +509,14 @@ mod tests {
     }
 
     simulation_test!(add_module_qualifier_to_variable);
+    simulation_test!(add_module_alias_as_qualifier_to_variable);
     simulation_test!(add_module_qualifier_to_type);
     simulation_test!(add_module_qualifier_to_type_with_same_name);
-    simulation_test!(remove_variable_from_exposing_list);
-    simulation_test!(remove_multiple_variables_from_exposing_list);
-    simulation_test!(remove_exposing_clause);
+    simulation_test!(remove_variable_from_exposing_list_of_import);
+    simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
+    simulation_test!(remove_multiple_values_from_exposing_list_of_import);
+    simulation_test!(remove_exposing_clause_from_import);
+    simulation_test!(remove_exposing_clause_from_import_with_as_clause);
 
     #[derive(Debug)]
     enum Error {
