@@ -1,49 +1,27 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::support::source_code::{Edit, SourceFileSnapshot};
 use ropey::RopeSlice;
-use tree_sitter::{Node, Query, QueryCursor, TreeCursor};
+use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
 pub(crate) struct RefactorEngine {
-    query_for_imports: Query,
-    query_for_unqualified_values: Query,
+    query_for_imports: ImportsQuery,
+    query_for_unqualified_values: UnqualifiedValuesQuery,
 }
 
 #[derive(Debug)]
 pub(crate) enum Error {
     FailureWhileTraversingTree,
     InvalidQuery(tree_sitter::QueryError),
+    MissingCaptureIndex,
 }
 
 impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
-        let mk_query = |query_string| {
-            Query::new(language, query_string).map_err(Error::InvalidQuery)
-        };
         let engine = RefactorEngine {
-            query_for_imports: mk_query(
-                r#"
-                (import_clause
-                  moduleName: (module_identifier) @name
-                  asClause:
-                    (as_clause
-                      name: (module_name_segment) @as_clause
-                    )?
-                  exposing: (exposing_list)? @exposing_list
-                ) @root
-                "#,
-            )?,
-            query_for_unqualified_values: mk_query(
-                r#"
-                [ (value_qid
-                     .
-                     (lower_case_identifier) @val
-                  )
-                  (upper_case_qid
-                     .
-                     (upper_case_identifier) @val
-                  )
-                ]"#,
+            query_for_imports: ImportsQuery::init(language)?,
+            query_for_unqualified_values: UnqualifiedValuesQuery::init(
+                language,
             )?,
         };
         Ok(engine)
@@ -99,7 +77,8 @@ impl RefactorEngine {
 
                 // Modify the import in the new code with the name just found.
                 let import = self
-                    .imports(&mut cursor, &diff.new)
+                    .query_for_imports
+                    .run(&mut cursor, &diff.new)
                     .find(|import| import.name() == import_name)
                     .ok_or(Error::FailureWhileTraversingTree)?;
                 let new_exposed_count = import.exposed_list().count();
@@ -121,12 +100,14 @@ impl RefactorEngine {
                 let import_node =
                     node.parent().ok_or(Error::FailureWhileTraversingTree)?;
                 let import = self
-                    .imports_in(&mut cursor, &diff.old, import_node)
+                    .query_for_imports
+                    .run_in(&mut cursor, &diff.old, import_node)
                     .next()
                     .ok_or(Error::FailureWhileTraversingTree)?;
                 let qualifier = import.aliased_name();
                 let mut cursor_2 = QueryCursor::new();
-                self.imports(&mut cursor_2, &diff.old)
+                self.query_for_imports
+                    .run(&mut cursor_2, &diff.old)
                     .find(|import| import.aliased_name() == qualifier)
                     .ok_or(Error::FailureWhileTraversingTree)?
                     .exposed_list()
@@ -175,7 +156,8 @@ impl RefactorEngine {
         qualifier: &RopeSlice,
     ) -> Result<(), Error> {
         let import = self
-            .imports(cursor, &diff.new)
+            .query_for_imports
+            .run(cursor, &diff.new)
             .find(|import| import.aliased_name() == *qualifier)
             .ok_or(Error::FailureWhileTraversingTree)?;
         let mut exposed_list = import.exposed_list();
@@ -232,17 +214,9 @@ impl RefactorEngine {
         name: &RopeSlice,
         qualifier: &RopeSlice,
     ) -> Result<(), Error> {
-        cursor
-            .matches(
-                &self.query_for_unqualified_values,
-                diff.new.tree.root_node(),
-                &diff.new,
-            )
-            .for_each(|match_| {
-                let node = match match_.captures {
-                    [capture] => capture.node,
-                    _ => panic!("wrong number of capures"),
-                };
+        self.query_for_unqualified_values
+            .run(cursor, &diff.new)
+            .for_each(|node| {
                 if *name == diff.new.slice(&node.byte_range()) {
                     edits.push(Edit::new(
                         diff.new.buffer,
@@ -254,36 +228,119 @@ impl RefactorEngine {
             });
         Ok(())
     }
+}
 
-    fn imports<'a, 'tree>(
+struct UnqualifiedValuesQuery {
+    query: Query,
+}
+
+impl UnqualifiedValuesQuery {
+    fn run<'a, 'tree>(
+        &'a self,
+        cursor: &'a mut QueryCursor,
+        code: &'tree SourceFileSnapshot,
+    ) -> UnqualifiedValues<'a, 'tree> {
+        let matches = cursor.matches(&self.query, code.tree.root_node(), code);
+        UnqualifiedValues { matches }
+    }
+}
+
+struct UnqualifiedValues<'a, 'tree> {
+    matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
+}
+
+impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
+    type Item = Node<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let match_ = self.matches.next()?;
+        let capture = match_.captures.first()?;
+        Some(capture.node)
+    }
+}
+
+impl UnqualifiedValuesQuery {
+    fn init(lang: Language) -> Result<UnqualifiedValuesQuery, Error> {
+        let query_str = r#"
+            [ (value_qid
+                    .
+                    (lower_case_identifier) @val
+                )
+                (upper_case_qid
+                    .
+                    (upper_case_identifier) @val
+                )
+            ]"#;
+        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let unqualified_values_query = UnqualifiedValuesQuery { query };
+        Ok(unqualified_values_query)
+    }
+}
+
+struct ImportsQuery {
+    query: Query,
+    root_index: usize,
+    name_index: usize,
+    as_clause_index: usize,
+    exposing_list_index: usize,
+}
+
+impl ImportsQuery {
+    fn init(lang: Language) -> Result<ImportsQuery, Error> {
+        let query_str = r#"
+            (import_clause
+                moduleName: (module_identifier) @name
+                asClause:
+                (as_clause
+                    name: (module_name_segment) @as_clause
+                )?
+                exposing: (exposing_list)? @exposing_list
+            ) @root
+            "#;
+        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let index_for_name = |name| {
+            query
+                .capture_index_for_name(name)
+                .ok_or(Error::MissingCaptureIndex)
+                .map(|index| index as usize)
+        };
+        let imports_query = ImportsQuery {
+            root_index: index_for_name("root")?,
+            name_index: index_for_name("name")?,
+            as_clause_index: index_for_name("as_clause")?,
+            exposing_list_index: index_for_name("exposing_list")?,
+            query,
+        };
+        Ok(imports_query)
+    }
+
+    fn run<'a, 'tree>(
         &'a self,
         cursor: &'a mut QueryCursor,
         code: &'tree SourceFileSnapshot,
     ) -> Imports<'a, 'tree> {
-        self.imports_in(cursor, code, code.tree.root_node())
+        self.run_in(cursor, code, code.tree.root_node())
     }
 
-    fn imports_in<'a, 'tree>(
+    fn run_in<'a, 'tree>(
         &'a self,
         cursor: &'a mut QueryCursor,
         code: &'tree SourceFileSnapshot,
         node: Node<'tree>,
     ) -> Imports<'a, 'tree> {
-        let query_for_imports = &self.query_for_imports;
-        let matches = cursor.matches(query_for_imports, node, code);
+        let matches = cursor.matches(&self.query, node, code);
         Imports {
             code,
             matches,
-            query_for_imports,
+            query: self,
         }
     }
 }
 
-// TODO: put this code next to the query responsible for it.
 struct Imports<'a, 'tree> {
     code: &'tree SourceFileSnapshot,
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
-    query_for_imports: &'a Query,
+    query: &'a ImportsQuery,
 }
 
 impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
@@ -296,22 +353,10 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
         });
         Some(Import {
             code: self.code,
-            _root_node: nodes[self
-                .query_for_imports
-                .capture_index_for_name("root")?
-                as usize]?,
-            name_node: nodes[self
-                .query_for_imports
-                .capture_index_for_name("name")?
-                as usize]?,
-            as_clause_node: nodes[self
-                .query_for_imports
-                .capture_index_for_name("as_clause")?
-                as usize],
-            exposing_list_node: nodes[self
-                .query_for_imports
-                .capture_index_for_name("exposing_list")?
-                as usize],
+            _root_node: nodes[self.query.root_index]?,
+            name_node: nodes[self.query.name_index]?,
+            as_clause_node: nodes[self.query.as_clause_index],
+            exposing_list_node: nodes[self.query.exposing_list_index],
         })
     }
 }
