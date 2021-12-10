@@ -128,6 +128,23 @@ impl RefactorEngine {
         }
     }
 
+    fn remove_exposed_list(
+        &self,
+        edits: &mut Vec<Edit>,
+        code: &SourceFileSnapshot,
+        import: &Import,
+    ) {
+        match import.root_node.child_by_field_name("exposing") {
+            None => {}
+            Some(node) => edits.push(Edit::new(
+                code.buffer,
+                &mut code.bytes.clone(),
+                &node.byte_range(),
+                String::new(),
+            )),
+        }
+    }
+
     fn remove_from_exposed_list(
         &self,
         edits: &mut Vec<Edit>,
@@ -136,44 +153,54 @@ impl RefactorEngine {
         name: &RopeSlice,
         qualifier: &RopeSlice,
     ) -> Result<(), Error> {
-        let imports = self
+        let import = self
             .imports(cursor, &diff.new)
             .find(|import| import.name() == *qualifier)
             .ok_or(Error::FailureWhileTraversingTree)?;
-        let exposed = imports
-            .exposed_list()
-            .find(|exposed| *name == exposed.name())
+        let mut exposed_list = import.exposed_list();
+        let mut exposed_list_length = 0;
+        let exposed = exposed_list
+            .find(|exposed| {
+                exposed_list_length += 1;
+                *name == exposed.name()
+            })
             .ok_or(Error::FailureWhileTraversingTree)?
             .node;
-        let range = || {
-            let next = exposed.next_sibling();
-            if let Some(node) = next {
-                if node.kind() == "," {
-                    let end_byte = match node.next_sibling() {
-                        Some(next) => next.start_byte(),
-                        None => node.end_byte(),
-                    };
-                    return exposed.start_byte()..end_byte;
+        exposed_list_length += exposed_list.count();
+        println!("FOO {:?}", exposed_list_length);
+        if exposed_list_length == 1 {
+            self.remove_exposed_list(edits, &diff.new, &import);
+        } else {
+            let range = || {
+                let next = exposed.next_sibling();
+                if let Some(node) = next {
+                    if node.kind() == "," {
+                        let end_byte = match node.next_sibling() {
+                            Some(next) => next.start_byte(),
+                            None => node.end_byte(),
+                        };
+                        return exposed.start_byte()..end_byte;
+                    }
                 }
-            }
-            let prev = exposed.prev_sibling();
-            if let Some(node) = prev {
-                if node.kind() == "," {
-                    let start_byte = match node.prev_sibling() {
-                        Some(prev) => prev.end_byte(),
-                        None => node.start_byte(),
-                    };
-                    return start_byte..exposed.end_byte();
+                let prev = exposed.prev_sibling();
+                if let Some(node) = prev {
+                    if node.kind() == "," {
+                        let start_byte = match node.prev_sibling() {
+                            Some(prev) => prev.end_byte(),
+                            None => node.start_byte(),
+                        };
+                        return start_byte..exposed.end_byte();
+                    }
                 }
-            }
-            exposed.byte_range()
-        };
-        edits.push(Edit::new(
-            diff.new.buffer,
-            &mut diff.new.bytes.clone(),
-            &range(),
-            String::new(),
-        ));
+                exposed.byte_range()
+            };
+            edits.push(Edit::new(
+                diff.new.buffer,
+                &mut diff.new.bytes.clone(),
+                &range(),
+                String::new(),
+            ));
+        }
         Ok(())
     }
 
@@ -283,14 +310,16 @@ impl<'a> Iterator for ExposedList<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let cursor = self.cursor.as_mut()?;
-        let node = cursor.node();
-        if !cursor.goto_next_sibling() {
-            self.cursor = None
+        while cursor.goto_next_sibling() {
+            let node = cursor.node();
+            if node.is_named() {
+                return Some(Exposed {
+                    code: self.code,
+                    node,
+                });
+            }
         }
-        Some(Exposed {
-            code: self.code,
-            node,
-        })
+        None
     }
 }
 

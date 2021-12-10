@@ -13,8 +13,8 @@ timesTwo = Dict.map (\k v -> v * 2)
 
 -- === expected output below ===
 -- module Math exposing (..)
--- 
--- import Dict exposing ()
--- 
+--
+-- import Dict
+--
 -- timesTwo : Dict.Dict k Int -> Dict.Dict k Int
 -- timesTwo = Dict.map (\k v -> v * 2)
