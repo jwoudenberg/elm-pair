@@ -24,7 +24,7 @@ impl RefactorEngine {
             query_for_exposed_imports: mk_query(
                 r#"
                 (import_clause
-                  moduleName: (upper_case_qid) @name
+                  moduleName: (module_identifier) @name
                 ) @import
                 "#,
             )?,
@@ -358,11 +358,11 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
         }
         (
             [("upper_case_identifier", before)],
-            [("upper_case_identifier", qualifier), ("dot", _), ("upper_case_identifier", after)],
+            [("module_name_segment", qualifier), ("dot", _), ("upper_case_identifier", after)],
         )
         | (
             [("lower_case_identifier", before)],
-            [("upper_case_identifier", qualifier), ("dot", _), ("lower_case_identifier", after)],
+            [("module_name_segment", qualifier), ("dot", _), ("lower_case_identifier", after)],
         ) => {
             let name_before = changes.old_code.slice(&before.byte_range());
             let name_after = changes.new_code.slice(&after.byte_range());

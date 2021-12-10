@@ -110,7 +110,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-elm"
 version = "5.3.7"
-source = "git+https://github.com/jwoudenberg/tree-sitter-elm#26a993134595647b6711e2f57e203a2b726c0b80"
+source = "git+https://github.com/jwoudenberg/tree-sitter-elm#835b5ecd662e2386f3487c0cea519124ab6e1364"
 dependencies = [
  "cc",
  "tree-sitter",
