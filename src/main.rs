@@ -1,7 +1,7 @@
 use mvar::MVar;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
-use support::source_code::{Buffer, SourceFileSnapshot};
+use support::source_code::SourceFileSnapshot;
 use tree_sitter::Node;
 
 mod analysis_thread;

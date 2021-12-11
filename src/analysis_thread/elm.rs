@@ -45,20 +45,19 @@ impl RefactorEngine {
                 base_name,
             } => {
                 let base_name_str = diff.new.slice(&base_name.byte_range());
-                let qualifier_str = diff.new.slice(&qualifier.byte_range());
                 self.remove_from_exposed_list(
                     &mut edits,
                     &mut cursor,
                     diff,
                     &base_name_str,
-                    &qualifier_str,
+                    &qualifier,
                 )?;
                 self.remove_qualifier_from_name(
                     &mut edits,
                     &mut cursor,
                     diff,
                     &base_name_str,
-                    &qualifier_str,
+                    &qualifier,
                 )?;
             }
             ElmChange::ExposedValuesRemoved(nodes) => {
@@ -459,7 +458,7 @@ fn sort_edits(mut edits: Vec<Edit>) -> Vec<Edit> {
 #[derive(Debug)]
 pub(crate) enum ElmChange<'a> {
     QualifierAdded {
-        qualifier: Node<'a>,
+        qualifier: RopeSlice<'a>,
         base_name: Node<'a>,
     },
     ExposedValuesRemoved(Vec<Node<'a>>),
@@ -498,17 +497,23 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
         }
         (
             [("upper_case_identifier", before)],
-            [("module_name_segment", qualifier), ("dot", _), ("upper_case_identifier", after)],
+            [qualifier @ .., ("dot", _), ("upper_case_identifier", after)],
         )
         | (
             [("lower_case_identifier", before)],
-            [("module_name_segment", qualifier), ("dot", _), ("lower_case_identifier", after)],
+            [qualifier @ .., ("dot", _), ("lower_case_identifier", after)],
         ) => {
             let name_before = changes.old_code.slice(&before.byte_range());
             let name_after = changes.new_code.slice(&after.byte_range());
-            if name_before == name_after {
+            let valid_qualifier = qualifier.iter().all(|(kind, _)| {
+                *kind == "dot" || *kind == "module_name_segment"
+            });
+            let (_, qualifier_start) = qualifier.first()?;
+            let (_, qualifier_end) = qualifier.last()?;
+            let range = qualifier_start.start_byte()..qualifier_end.end_byte();
+            if valid_qualifier && name_before == name_after {
                 Some(ElmChange::QualifierAdded {
-                    qualifier: *qualifier,
+                    qualifier: changes.new_code.slice(&range),
                     base_name: *after,
                 })
             } else {
@@ -543,9 +548,10 @@ fn debug_print_tree_changes(changes: &TreeChanges) {
 mod tests {
     use crate::analysis_thread::elm::RefactorEngine;
     use crate::analysis_thread::{diff_trees, SourceFileDiff};
+    use crate::support::source_code::Buffer;
     use crate::test_support::included_answer_test as ia_test;
     use crate::test_support::simulation::Simulation;
-    use crate::{Buffer, SourceFileSnapshot};
+    use crate::SourceFileSnapshot;
     use std::path::Path;
 
     macro_rules! simulation_test {
