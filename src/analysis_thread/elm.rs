@@ -3,6 +3,36 @@ use crate::support::source_code::{Edit, SourceFileSnapshot};
 use ropey::RopeSlice;
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
+// These constants come from the tree-sitter-elm grammar. They might need to
+// be changed when tree-sitter-elm updates.
+const COMMA: u16 = 6;
+const DOT: u16 = 55;
+const EXPOSED_TYPE: u16 = 92;
+const EXPOSED_VALUE: u16 = 91;
+const EXPOSING_LIST: u16 = 90;
+const LOWER_CASE_IDENTIFIER: u16 = 1;
+const MODULE_NAME_SEGMENT: u16 = 200;
+const UPPER_CASE_IDENTIFIER: u16 = 33;
+
+#[cfg(test)]
+mod kind_constant_tests {
+    #[test]
+    fn check_kind_constants() {
+        let language = tree_sitter_elm::language();
+        let check = |constant, str, named| {
+            assert_eq!(constant, language.id_for_node_kind(str, named))
+        };
+        check(super::COMMA, ",", false);
+        check(super::DOT, "dot", true);
+        check(super::EXPOSED_TYPE, "exposed_type", true);
+        check(super::EXPOSED_VALUE, "exposed_value", true);
+        check(super::EXPOSING_LIST, "exposing_list", true);
+        check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
+        check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
+        check(super::UPPER_CASE_IDENTIFIER, "upper_case_identifier", true);
+    }
+}
+
 pub(crate) struct RefactorEngine {
     query_for_imports: ImportsQuery,
     query_for_unqualified_values: UnqualifiedValuesQuery,
@@ -24,6 +54,7 @@ impl RefactorEngine {
                 language,
             )?,
         };
+
         Ok(engine)
     }
 
@@ -175,7 +206,7 @@ impl RefactorEngine {
             let range = || {
                 let next = exposed.next_sibling();
                 if let Some(node) = next {
-                    if node.kind() == "," {
+                    if node.kind_id() == COMMA {
                         let end_byte = match node.next_sibling() {
                             Some(next) => next.start_byte(),
                             None => node.end_byte(),
@@ -185,7 +216,7 @@ impl RefactorEngine {
                 }
                 let prev = exposed.prev_sibling();
                 if let Some(node) = prev {
-                    if node.kind() == "," {
+                    if node.kind_id() == COMMA {
                         let start_byte = match node.prev_sibling() {
                             Some(prev) => prev.end_byte(),
                             None => node.start_byte(),
@@ -465,21 +496,20 @@ pub(crate) enum ElmChange<'a> {
     ExposingListRemoved(Node<'a>),
 }
 
-// TODO: use kind ID's instead of names for pattern matching.
 fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
     // debug_print_tree_changes(&changes);
     match (
         attach_kinds(changes.old_removed).as_slice(),
         attach_kinds(changes.new_added).as_slice(),
     ) {
-        ([("exposed_value" | "exposed_type", before), rest @ ..], after)
+        ([(EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..], after)
         | (
-            [(",", _), ("exposed_value" | "exposed_type", before), rest @ ..],
+            [(COMMA, _), (EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..],
             after,
         ) => {
             match after {
                 [] => {}
-                [("exposed_value", node)]
+                [(EXPOSED_VALUE, node)]
                     if changes.new_code.slice(&node.byte_range()) == "" => {}
                 _ => return None,
             }
@@ -488,9 +518,8 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
             while !rest.is_empty() {
                 match rest {
                     [] => break,
-                    [(",", _), new_rest @ ..] => rest = new_rest,
-                    [("exposed_value" | "exposed_type", node), new_rest @ ..] =>
-                    {
+                    [(COMMA, _), new_rest @ ..] => rest = new_rest,
+                    [(EXPOSED_VALUE | EXPOSED_TYPE, node), new_rest @ ..] => {
                         removed_nodes.push(*node);
                         rest = new_rest;
                     }
@@ -500,18 +529,18 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
             Some(ElmChange::ExposedValuesRemoved(removed_nodes))
         }
         (
-            [("upper_case_identifier", before)],
-            [qualifier @ .., ("dot", _), ("upper_case_identifier", after)],
+            [(UPPER_CASE_IDENTIFIER, before)],
+            [qualifier @ .., (DOT, _), (UPPER_CASE_IDENTIFIER, after)],
         )
         | (
-            [("lower_case_identifier", before)],
-            [qualifier @ .., ("dot", _), ("lower_case_identifier", after)],
+            [(LOWER_CASE_IDENTIFIER, before)],
+            [qualifier @ .., (DOT, _), (LOWER_CASE_IDENTIFIER, after)],
         ) => {
             let name_before = changes.old_code.slice(&before.byte_range());
             let name_after = changes.new_code.slice(&after.byte_range());
-            let valid_qualifier = qualifier.iter().all(|(kind, _)| {
-                *kind == "dot" || *kind == "module_name_segment"
-            });
+            let valid_qualifier = qualifier
+                .iter()
+                .all(|(kind, _)| *kind == DOT || *kind == MODULE_NAME_SEGMENT);
             let (_, qualifier_start) = qualifier.first()?;
             let (_, qualifier_end) = qualifier.last()?;
             let range = qualifier_start.start_byte()..qualifier_end.end_byte();
@@ -524,15 +553,18 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
                 None
             }
         }
-        ([("exposing_list", before)], []) => {
+        ([(EXPOSING_LIST, before)], []) => {
             Some(ElmChange::ExposingListRemoved(*before))
         }
         _ => None,
     }
 }
 
-fn attach_kinds(nodes: Vec<Node>) -> Vec<(&str, Node)> {
-    nodes.into_iter().map(|node| (node.kind(), node)).collect()
+fn attach_kinds(nodes: Vec<Node>) -> Vec<(u16, Node)> {
+    nodes
+        .into_iter()
+        .map(|node| (node.kind_id(), node))
+        .collect()
 }
 
 // TODO: remove debug helper when it's no longer needed.
@@ -572,7 +604,7 @@ mod tests {
         };
     }
 
-    pub fn run_simulation_test(path: &Path) {
+    fn run_simulation_test(path: &Path) {
         match run_simulation_test_helper(path) {
             Err(err) => panic!("simulation failed with: {:?}", err),
             Ok(res) => ia_test::assert_eq_answer_in(&res, path),
