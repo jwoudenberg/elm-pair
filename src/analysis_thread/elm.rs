@@ -564,8 +564,8 @@ mod tests {
             fn $name() {
                 let mut path = std::path::PathBuf::new();
                 path.push("./tests");
-                let module_name = ia_test::snake_to_camel(stringify!($name));
-                path.push(module_name + ".elm");
+                let module_name = stringify!($name);
+                path.push(module_name.to_owned() + ".elm");
                 println!("Run simulation {:?}", &path);
                 run_simulation_test(&path);
             }

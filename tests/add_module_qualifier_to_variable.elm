@@ -1,4 +1,4 @@
-module Math exposing (..)
+module Main exposing (..)
 
 import Json.Decode exposing (Decoder, field, int)
 
@@ -12,17 +12,17 @@ sumDecoder =
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 6 Decoder Int
+-- MOVE CURSOR TO LINE 9 field
 -- INSERT Json.Decode.
 -- END SIMULATION
 -- === expected output below ===
--- module Math exposing (..)
+-- module Main exposing (..)
 --
--- import Json.Decode exposing (field, int)
+-- import Json.Decode exposing (Decoder, int)
 --
 --
--- sumDecoder : Json.Decode.Decoder Int
+-- sumDecoder : Decoder Int
 -- sumDecoder =
 --     Json.Decode.map2 (+)
---         (field "x" int)
---         (field "y" int)
+--         (Json.Decode.field "x" int)
+--         (Json.Decode.field "y" int)

@@ -52,16 +52,6 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
     }
 }
 
-pub fn snake_to_camel(str: &str) -> String {
-    str.split('_')
-        .map(|word| {
-            let (first, rest) = word.split_at(1);
-            first.to_uppercase() + rest
-        })
-        .collect::<Vec<String>>()
-        .join("")
-}
-
 fn assert_ok<A, E: std::fmt::Debug>(result: Result<A, E>) -> A {
     match result {
         Err(err) => panic!("{:?}", err),
