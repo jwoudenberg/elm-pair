@@ -472,8 +472,11 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
         attach_kinds(changes.old_removed).as_slice(),
         attach_kinds(changes.new_added).as_slice(),
     ) {
-        ([("exposed_value", before), rest @ ..], after)
-        | ([(",", _), ("exposed_value", before), rest @ ..], after) => {
+        ([("exposed_value" | "exposed_type", before), rest @ ..], after)
+        | (
+            [(",", _), ("exposed_value" | "exposed_type", before), rest @ ..],
+            after,
+        ) => {
             match after {
                 [] => {}
                 [("exposed_value", node)]
@@ -486,7 +489,8 @@ fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
                 match rest {
                     [] => break,
                     [(",", _), new_rest @ ..] => rest = new_rest,
-                    [("exposed_value", node), new_rest @ ..] => {
+                    [("exposed_value" | "exposed_type", node), new_rest @ ..] =>
+                    {
                         removed_nodes.push(*node);
                         rest = new_rest;
                     }

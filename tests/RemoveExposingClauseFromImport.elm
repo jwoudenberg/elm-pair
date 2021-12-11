@@ -1,22 +1,28 @@
 module Math exposing (..)
 
-import String exposing (toInt, fromInt)
+import Json.Decode exposing (Decoder, field, int)
 
-addStrings : String -> String -> Maybe String
-addStrings str1 str2 =
-  Maybe.map2 (\int1 int2 -> fromInt (int1 + int2)) (toInt str1) (toInt str2)
+
+sumDecoder : Decoder Int
+sumDecoder =
+    Json.Decode.map2 (+)
+        (field "x" int)
+        (field "y" int)
+
+
 
 -- START SIMULATION
 -- MOVE CURSOR TO LINE 3 exposing
--- DELETE exposing (toInt, fromInt)
+-- DELETE exposing (Decoder, field, int)
 -- END SIMULATION
-
-
 -- === expected output below ===
 -- module Math exposing (..)
 --
--- import String
+-- import Json.Decode
 --
--- addStrings : String -> String -> Maybe String
--- addStrings str1 str2 =
---   Maybe.map2 (\int1 int2 -> String.fromInt (int1 + int2)) (String.toInt str1) (String.toInt str2)
+--
+-- sumDecoder : Json.Decode.Decoder Int
+-- sumDecoder =
+--     Json.Decode.map2 (+)
+--         (Json.Decode.field "x" Json.Decode.int)
+--         (Json.Decode.field "y" Json.Decode.int)

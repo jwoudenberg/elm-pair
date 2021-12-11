@@ -1,26 +1,28 @@
 module Math exposing (..)
 
-import Process exposing (kill, Id)
-import Task exposing (Task)
+import Json.Decode exposing (Decoder, field, int)
 
-kill2 : Id -> Id -> Task x ()
-kill2 proc1 proc2 =
-  kill proc1
-    |> Task.andThen(\_ -> kill proc2)
+
+sumDecoder : Decoder Int
+sumDecoder =
+    Json.Decode.map2 (+)
+        (field "x" int)
+        (field "y" int)
+
+
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 6 Id
--- INSERT Process.
+-- MOVE CURSOR TO LINE 6 Decoder Int
+-- INSERT Json.Decode.
 -- END SIMULATION
-
-
 -- === expected output below ===
 -- module Math exposing (..)
 --
--- import Process exposing (kill)
--- import Task exposing (Task)
+-- import Json.Decode exposing (field, int)
 --
--- kill2 : Process.Id -> Process.Id -> Task x ()
--- kill2 proc1 proc2 =
---   kill proc1
---     |> Task.andThen(\_ -> kill proc2)
+--
+-- sumDecoder : Json.Decode.Decoder Int
+-- sumDecoder =
+--     Json.Decode.map2 (+)
+--         (field "x" int)
+--         (field "y" int)
