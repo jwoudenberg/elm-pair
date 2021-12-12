@@ -137,8 +137,6 @@ struct SourceFileDiff {
 }
 
 struct TreeChanges<'a> {
-    old_code: &'a SourceFileSnapshot,
-    new_code: &'a SourceFileSnapshot,
     old_removed: Vec<Node<'a>>,
     new_added: Vec<Node<'a>>,
 }
@@ -153,24 +151,18 @@ fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
-                    old_code,
-                    new_code,
                     old_removed: Vec::new(),
                     new_added: Vec::new(),
                 }
             }
             FirstChangedSibling::OldAtFirstAdditional => {
                 return TreeChanges {
-                    old_code,
-                    new_code,
                     old_removed: collect_remaining_siblings(old),
                     new_added: Vec::new(),
                 }
             }
             FirstChangedSibling::NewAtFirstAdditional => {
                 return TreeChanges {
-                    old_code,
-                    new_code,
                     old_removed: Vec::new(),
                     new_added: collect_remaining_siblings(new),
                 }
@@ -212,8 +204,6 @@ fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         }
 
         return TreeChanges {
-            old_code,
-            new_code,
             old_removed,
             new_added,
         };

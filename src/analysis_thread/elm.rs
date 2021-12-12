@@ -60,7 +60,6 @@ impl RefactorEngine {
 
     pub(in crate::analysis_thread) fn respond_to_change<'a>(
         &self,
-        // TODO: deal with code being passed in twice.
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
@@ -80,8 +79,7 @@ impl RefactorEngine {
                 match after {
                     [] => {}
                     [(EXPOSED_VALUE, node)]
-                        if changes.new_code.slice(&node.byte_range()) == "" => {
-                    }
+                        if diff.new.slice(&node.byte_range()) == "" => {}
                     _ => return Ok(None),
                 }
                 let mut removed_nodes = vec![*before];
@@ -138,8 +136,8 @@ impl RefactorEngine {
                 [(LOWER_CASE_IDENTIFIER, before)],
                 [qualifier @ .., (DOT, _), (LOWER_CASE_IDENTIFIER, after)],
             ) => {
-                let name_before = changes.old_code.slice(&before.byte_range());
-                let name_after = changes.new_code.slice(&after.byte_range());
+                let name_before = diff.old.slice(&before.byte_range());
+                let name_after = diff.new.slice(&after.byte_range());
                 let valid_qualifier = qualifier.iter().all(|(kind, _)| {
                     *kind == DOT || *kind == MODULE_NAME_SEGMENT
                 });
@@ -153,7 +151,7 @@ impl RefactorEngine {
                 if !valid_qualifier || name_before != name_after {
                     return Ok(None);
                 }
-                let qualifier = changes.new_code.slice(&range);
+                let qualifier = diff.new.slice(&range);
                 let base_name_str = diff.new.slice(&after.byte_range());
                 self.remove_from_exposed_list(
                     &mut edits,
@@ -541,14 +539,14 @@ fn attach_kinds(nodes: Vec<Node>) -> Vec<(u16, Node)> {
 
 // TODO: remove debug helper when it's no longer needed.
 #[allow(dead_code)]
-fn debug_print_tree_changes(changes: &TreeChanges) {
+fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
     println!("REMOVED NODES:");
     for node in &changes.old_removed {
-        crate::debug_print_node(changes.old_code, 2, node);
+        crate::debug_print_node(&diff.old, 2, node);
     }
     println!("ADDED NODES:");
     for node in &changes.new_added {
-        crate::debug_print_node(changes.new_code, 2, node);
+        crate::debug_print_node(&diff.new, 2, node);
     }
 }
 
