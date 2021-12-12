@@ -58,44 +58,47 @@ impl RefactorEngine {
         Ok(engine)
     }
 
-    pub(in crate::analysis_thread) fn respond_to_change(
+    pub(in crate::analysis_thread) fn respond_to_change<'a>(
         &self,
+        // TODO: deal with code being passed in twice.
         diff: &SourceFileDiff,
-        tree_changes: TreeChanges,
+        changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
-        let change = match interpret_change(tree_changes) {
-            Some(change) => change,
-            None => return Ok(None),
-        };
-
+        // debug_print_tree_changes(&changes);
         let mut edits = Vec::new();
         let mut cursor = QueryCursor::new();
-        match change {
-            ElmChange::QualifierAdded {
-                qualifier,
-                base_name,
-            } => {
-                let base_name_str = diff.new.slice(&base_name.byte_range());
-                self.remove_from_exposed_list(
-                    &mut edits,
-                    &mut cursor,
-                    diff,
-                    &base_name_str,
-                    &qualifier,
-                )?;
-                self.remove_qualifier_from_name(
-                    &mut edits,
-                    &mut cursor,
-                    diff,
-                    &base_name_str,
-                    &qualifier,
-                )?;
-            }
-            ElmChange::ExposedValuesRemoved(nodes) => {
-                // Find the name of the import in the old code.
-                let first =
-                    nodes.get(0).ok_or(Error::FailureWhileTraversingTree)?;
-                let import_name_node = first
+        match (
+            attach_kinds(changes.old_removed).as_slice(),
+            attach_kinds(changes.new_added).as_slice(),
+        ) {
+            // Remove values from exposed list.
+            ([(EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..], after)
+            | (
+                [(COMMA, _), (EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..],
+                after,
+            ) => {
+                match after {
+                    [] => {}
+                    [(EXPOSED_VALUE, node)]
+                        if changes.new_code.slice(&node.byte_range()) == "" => {
+                    }
+                    _ => return Ok(None),
+                }
+                let mut removed_nodes = vec![*before];
+                let mut rest = rest;
+                while !rest.is_empty() {
+                    match rest {
+                        [] => break,
+                        [(COMMA, _), new_rest @ ..] => rest = new_rest,
+                        [(EXPOSED_VALUE | EXPOSED_TYPE, node), new_rest @ ..] =>
+                        {
+                            removed_nodes.push(*node);
+                            rest = new_rest;
+                        }
+                        _ => return Ok(None),
+                    }
+                }
+                let import_name_node = before
                     .parent()
                     .ok_or(Error::FailureWhileTraversingTree)?
                     .parent()
@@ -116,7 +119,7 @@ impl RefactorEngine {
                     self.remove_exposed_list(&mut edits, &diff.new, &import);
                 }
                 let mut exposed_cursor = QueryCursor::new();
-                nodes.into_iter().try_for_each(|node| {
+                removed_nodes.into_iter().try_for_each(|node| {
                     self.remove_qualifier_from_name(
                         &mut edits,
                         &mut exposed_cursor,
@@ -126,9 +129,51 @@ impl RefactorEngine {
                     )
                 })?;
             }
-            ElmChange::ExposingListRemoved(node) => {
+            // Add module qualifier to value.
+            (
+                [(UPPER_CASE_IDENTIFIER, before)],
+                [qualifier @ .., (DOT, _), (UPPER_CASE_IDENTIFIER, after)],
+            )
+            | (
+                [(LOWER_CASE_IDENTIFIER, before)],
+                [qualifier @ .., (DOT, _), (LOWER_CASE_IDENTIFIER, after)],
+            ) => {
+                let name_before = changes.old_code.slice(&before.byte_range());
+                let name_after = changes.new_code.slice(&after.byte_range());
+                let valid_qualifier = qualifier.iter().all(|(kind, _)| {
+                    *kind == DOT || *kind == MODULE_NAME_SEGMENT
+                });
+                let range = match qualifier {
+                    [] => return Ok(None),
+                    [(_, node)] => node.byte_range(),
+                    [(_, first), .., (_, last)] => {
+                        first.start_byte()..last.end_byte()
+                    }
+                };
+                if !valid_qualifier || name_before != name_after {
+                    return Ok(None);
+                }
+                let qualifier = changes.new_code.slice(&range);
+                let base_name_str = diff.new.slice(&after.byte_range());
+                self.remove_from_exposed_list(
+                    &mut edits,
+                    &mut cursor,
+                    diff,
+                    &base_name_str,
+                    &qualifier,
+                )?;
+                self.remove_qualifier_from_name(
+                    &mut edits,
+                    &mut cursor,
+                    diff,
+                    &base_name_str,
+                    &qualifier,
+                )?;
+            }
+            // Remove entire exposing list.
+            ([(EXPOSING_LIST, before)], []) => {
                 let import_node =
-                    node.parent().ok_or(Error::FailureWhileTraversingTree)?;
+                    before.parent().ok_or(Error::FailureWhileTraversingTree)?;
                 let import = self
                     .query_for_imports
                     .run_in(&mut cursor, &diff.old, import_node)
@@ -152,7 +197,8 @@ impl RefactorEngine {
                         )
                     })?;
             }
-        };
+            _ => {}
+        }
         if edits.is_empty() {
             Ok(None)
         } else {
@@ -484,80 +530,6 @@ impl Exposed<'_> {
 fn sort_edits(mut edits: Vec<Edit>) -> Vec<Edit> {
     edits.sort_by(|x, y| y.input_edit.start_byte.cmp(&x.input_edit.start_byte));
     edits
-}
-
-#[derive(Debug)]
-pub(crate) enum ElmChange<'a> {
-    QualifierAdded {
-        qualifier: RopeSlice<'a>,
-        base_name: Node<'a>,
-    },
-    ExposedValuesRemoved(Vec<Node<'a>>),
-    ExposingListRemoved(Node<'a>),
-}
-
-fn interpret_change(changes: TreeChanges) -> Option<ElmChange> {
-    // debug_print_tree_changes(&changes);
-    match (
-        attach_kinds(changes.old_removed).as_slice(),
-        attach_kinds(changes.new_added).as_slice(),
-    ) {
-        ([(EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..], after)
-        | (
-            [(COMMA, _), (EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..],
-            after,
-        ) => {
-            match after {
-                [] => {}
-                [(EXPOSED_VALUE, node)]
-                    if changes.new_code.slice(&node.byte_range()) == "" => {}
-                _ => return None,
-            }
-            let mut removed_nodes = vec![*before];
-            let mut rest = rest;
-            while !rest.is_empty() {
-                match rest {
-                    [] => break,
-                    [(COMMA, _), new_rest @ ..] => rest = new_rest,
-                    [(EXPOSED_VALUE | EXPOSED_TYPE, node), new_rest @ ..] => {
-                        removed_nodes.push(*node);
-                        rest = new_rest;
-                    }
-                    _ => return None,
-                }
-            }
-            Some(ElmChange::ExposedValuesRemoved(removed_nodes))
-        }
-        (
-            [(UPPER_CASE_IDENTIFIER, before)],
-            [qualifier @ .., (DOT, _), (UPPER_CASE_IDENTIFIER, after)],
-        )
-        | (
-            [(LOWER_CASE_IDENTIFIER, before)],
-            [qualifier @ .., (DOT, _), (LOWER_CASE_IDENTIFIER, after)],
-        ) => {
-            let name_before = changes.old_code.slice(&before.byte_range());
-            let name_after = changes.new_code.slice(&after.byte_range());
-            let valid_qualifier = qualifier
-                .iter()
-                .all(|(kind, _)| *kind == DOT || *kind == MODULE_NAME_SEGMENT);
-            let (_, qualifier_start) = qualifier.first()?;
-            let (_, qualifier_end) = qualifier.last()?;
-            let range = qualifier_start.start_byte()..qualifier_end.end_byte();
-            if valid_qualifier && name_before == name_after {
-                Some(ElmChange::QualifierAdded {
-                    qualifier: changes.new_code.slice(&range),
-                    base_name: *after,
-                })
-            } else {
-                None
-            }
-        }
-        ([(EXPOSING_LIST, before)], []) => {
-            Some(ElmChange::ExposingListRemoved(*before))
-        }
-        _ => None,
-    }
 }
 
 fn attach_kinds(nodes: Vec<Node>) -> Vec<(u16, Node)> {
