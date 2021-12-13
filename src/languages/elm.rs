@@ -1,5 +1,6 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::support::source_code::{Edit, SourceFileSnapshot};
+use crate::Error;
 use ropey::RopeSlice;
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
@@ -37,14 +38,6 @@ pub(crate) struct RefactorEngine {
     query_for_imports: ImportsQuery,
     query_for_unqualified_values: UnqualifiedValuesQuery,
     query_for_qualified_value: QualifiedValueQuery,
-}
-
-#[derive(Debug)]
-pub(crate) enum Error {
-    FailureWhileTraversingTree,
-    InvalidQuery(tree_sitter::QueryError),
-    NotEnoughMatches,
-    MissingCaptureIndex,
 }
 
 impl RefactorEngine {
@@ -114,17 +107,17 @@ impl RefactorEngine {
         let old_import_node = changes
             .old_removed
             .first()
-            .ok_or(Error::FailureWhileTraversingTree)?
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
             .parent()
-            .ok_or(Error::FailureWhileTraversingTree)?
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
             .parent()
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
         let mut cursor = QueryCursor::new();
         let old_import = self
             .query_for_imports
             .run_in(&mut cursor, &diff.old, old_import_node)
             .next()
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
 
         // Modify the import in the new code with the name just found.
         let mut edits = Vec::new();
@@ -133,7 +126,7 @@ impl RefactorEngine {
             .query_for_imports
             .run(&mut cursor2, &diff.new)
             .find(|import| import.name() == old_import.name())
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
         let new_exposed_count = import.exposing_list().count();
         if new_exposed_count == 0 {
             self.remove_exposing_list(&mut edits, &diff.new, &import);
@@ -171,15 +164,15 @@ impl RefactorEngine {
             &changes
                 .old_removed
                 .first()
-                .ok_or(Error::FailureWhileTraversingTree)?
+                .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
                 .byte_range(),
         );
         let parent = changes
             .new_added
             .first()
-            .ok_or(Error::FailureWhileTraversingTree)?
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
             .parent()
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
         let mut cursor = QueryCursor::new();
         let QualifiedValue { qualifier, name } = self
             .query_for_qualified_value
@@ -214,20 +207,20 @@ impl RefactorEngine {
             .old_removed
             .first()
             .and_then(Node::parent)
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
         let mut cursor = QueryCursor::new();
         let import = self
             .query_for_imports
             .run_in(&mut cursor, &diff.old, import_node)
             .next()
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
         let qualifier = import.aliased_name();
         let mut cursor_2 = QueryCursor::new();
         let mut edits = Vec::new();
         self.query_for_imports
             .run(&mut cursor_2, &diff.old)
             .find(|import| import.aliased_name() == qualifier)
-            .ok_or(Error::FailureWhileTraversingTree)?
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
             .exposing_list()
             .try_for_each(|exposed| {
                 let mut val_cursor = QueryCursor::new();
@@ -271,7 +264,7 @@ impl RefactorEngine {
             .query_for_imports
             .run(cursor, &diff.new)
             .find(|import| import.aliased_name() == *qualifier)
-            .ok_or(Error::FailureWhileTraversingTree)?;
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
         let mut exposing_list = import.exposing_list();
         let mut exposing_list_length = 0;
         let exposed = exposing_list
@@ -279,7 +272,7 @@ impl RefactorEngine {
                 exposing_list_length += 1;
                 *name == exposed.name()
             })
-            .ok_or(Error::FailureWhileTraversingTree)?
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
             .node;
         exposing_list_length += exposing_list.count();
         if exposing_list_length == 1 {
@@ -359,7 +352,8 @@ impl QualifiedValueQuery {
                 [ (lower_case_identifier) (upper_case_identifier) ] @name
               )
             ]"#;
-        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let query = Query::new(lang, query_str)
+            .map_err(Error::TreeSitterFailedToParseQuery)?;
         let qualified_value_query = QualifiedValueQuery {
             qualifier_index: index_for_name(&query, "qualifier")?,
             name_index: index_for_name(&query, "name")?,
@@ -379,7 +373,7 @@ impl QualifiedValueQuery {
         cursor
             .matches(&self.query, node, code)
             .next()
-            .ok_or(Error::NotEnoughMatches)?
+            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?
             .captures
             .iter()
             .for_each(|capture| {
@@ -399,9 +393,11 @@ impl QualifiedValueQuery {
                 }
             });
         let val = QualifiedValue {
-            name: name.ok_or(Error::NotEnoughMatches)?,
-            qualifier: code
-                .slice(&qualifier_range.ok_or(Error::NotEnoughMatches)?),
+            name: name.ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?,
+            qualifier: code.slice(
+                &qualifier_range
+                    .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?,
+            ),
         };
         Ok(val)
     }
@@ -428,7 +424,8 @@ impl UnqualifiedValuesQuery {
                     (upper_case_identifier) @val
                 )
             ]"#;
-        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let query = Query::new(lang, query_str)
+            .map_err(Error::TreeSitterFailedToParseQuery)?;
         let unqualified_values_query = UnqualifiedValuesQuery { query };
         Ok(unqualified_values_query)
     }
@@ -477,7 +474,8 @@ impl ImportsQuery {
                 exposing: (exposing_list)? @exposing_list
             ) @root
             "#;
-        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let query = Query::new(lang, query_str)
+            .map_err(Error::TreeSitterFailedToParseQuery)?;
         let imports_query = ImportsQuery {
             root_index: index_for_name(&query, "root")?,
             name_index: index_for_name(&query, "name")?,
@@ -637,7 +635,7 @@ fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
 fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
     query
         .capture_index_for_name(name)
-        .ok_or(Error::MissingCaptureIndex)
+        .ok_or(Error::TreeSitterQueryDoesNotHaveExpectedIndex)
 }
 
 // TODO: remove debug helper when it's no longer needed.
@@ -655,8 +653,8 @@ fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
 
 #[cfg(test)]
 mod tests {
-    use crate::languages::elm::RefactorEngine;
     use crate::analysis_thread::{diff_trees, SourceFileDiff};
+    use crate::languages::elm::RefactorEngine;
     use crate::support::source_code::Buffer;
     use crate::test_support::included_answer_test as ia_test;
     use crate::test_support::simulation::Simulation;
@@ -723,8 +721,7 @@ mod tests {
     #[derive(Debug)]
     enum Error {
         RunningSimulation(crate::test_support::simulation::Error),
-        ParsingSourceCode(crate::support::source_code::ParseError),
-        AnalyzingElm(crate::languages::elm::Error),
+        ElmPair(crate::Error),
     }
 
     impl From<crate::test_support::simulation::Error> for Error {
@@ -733,15 +730,9 @@ mod tests {
         }
     }
 
-    impl From<crate::support::source_code::ParseError> for Error {
-        fn from(err: crate::support::source_code::ParseError) -> Error {
-            Error::ParsingSourceCode(err)
-        }
-    }
-
-    impl From<crate::languages::elm::Error> for Error {
-        fn from(err: crate::languages::elm::Error) -> Error {
-            Error::AnalyzingElm(err)
+    impl From<crate::Error> for Error {
+        fn from(err: crate::Error) -> Error {
+            Error::ElmPair(err)
         }
     }
 }

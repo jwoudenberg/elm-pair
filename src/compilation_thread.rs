@@ -1,34 +1,15 @@
 use crate::analysis_thread;
 use crate::sized_stack::SizedStack;
 use crate::support::source_code::{Buffer, SourceFileSnapshot};
-use crate::MsgLoop;
+use crate::{Error, MsgLoop};
 use knowledge_base::Query;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, SendError, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 
 pub(crate) enum Msg {
     CompilationRequested(SourceFileSnapshot),
     OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
-}
-
-#[derive(Debug)]
-pub(crate) enum Error {
-    NoElmJsonFoundInAnyAncestorDirectory,
-    DidNotFindElmBinaryOnPath,
-    CouldNotReadCurrentWorkingDirectory(std::io::Error),
-    DidNotFindPathEnvVar,
-    CompilationFailedToCreateTempDir(std::io::Error),
-    CompilationFailedToWriteCodeToTempFile(std::io::Error),
-    CompilationFailedToRunElmMake(std::io::Error),
-    NoElmProjectStoredForBuffer(Buffer),
-    FailedToSendMessage,
-}
-
-impl<T> From<SendError<T>> for Error {
-    fn from(_err: SendError<T>) -> Error {
-        Error::FailedToSendMessage
-    }
 }
 
 pub(crate) fn run(
@@ -120,7 +101,7 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
             return Ok(bin_path);
         };
     }
-    Err(Error::DidNotFindElmBinaryOnPath)
+    Err(Error::ElmDidNotFindCompilerBinaryOnPath)
 }
 
 fn does_snapshot_compile(
@@ -132,10 +113,10 @@ fn does_snapshot_compile(
     // version in the editor.
     let mut temp_path = project.root.join("elm-stuff/elm-pair");
     std::fs::create_dir_all(&temp_path)
-        .map_err(Error::CompilationFailedToCreateTempDir)?;
+        .map_err(Error::ElmCompilationFailedToCreateTempDir)?;
     temp_path.push("Temp.elm");
     std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
-        .map_err(Error::CompilationFailedToWriteCodeToTempFile)?;
+        .map_err(Error::ElmCompilationFailedToWriteCodeToTempFile)?;
 
     // Run Elm compiler against temporary file.
     let output = std::process::Command::new(&project.elm_bin)
@@ -144,7 +125,7 @@ fn does_snapshot_compile(
         .arg(temp_path)
         .current_dir(&project.root)
         .output()
-        .map_err(Error::CompilationFailedToRunElmMake)?;
+        .map_err(Error::ElmCompilationFailedToRunElmMake)?;
 
     Ok(output.status.success())
 }
@@ -183,7 +164,7 @@ impl Query<BufferPath> for KnowledgeBase {
         &mut self,
         BufferPath(buffer): &BufferPath,
     ) -> Result<Self::Answer, Self::Error> {
-        Err(Error::NoElmProjectStoredForBuffer(*buffer))
+        Err(Error::ElmNoProjectStoredForBuffer(*buffer))
     }
 }
 

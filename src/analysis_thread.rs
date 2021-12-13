@@ -1,8 +1,6 @@
-use crate::compilation_thread;
-use crate::editor_listener_thread;
 use crate::languages::elm;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
-use crate::{MVar, MsgLoop};
+use crate::{Error, MVar, MsgLoop};
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
@@ -15,28 +13,9 @@ pub(crate) enum Msg {
     CompilationSucceeded(SourceFileSnapshot),
 }
 
-impl From<editor_listener_thread::Error> for Msg {
-    fn from(err: editor_listener_thread::Error) -> Msg {
-        Msg::ThreadFailed(Error::EditorListenerThreadFailed(err))
-    }
-}
-
-impl From<compilation_thread::Error> for Msg {
-    fn from(err: compilation_thread::Error) -> Msg {
-        Msg::ThreadFailed(Error::CompilationThreadFailed(err))
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum Error {
-    EditorListenerThreadFailed(editor_listener_thread::Error),
-    CompilationThreadFailed(compilation_thread::Error),
-    AnalyzingElm(elm::Error),
-}
-
-impl From<elm::Error> for Error {
-    fn from(err: elm::Error) -> Error {
-        Error::AnalyzingElm(err)
+impl From<Error> for Msg {
+    fn from(err: Error) -> Msg {
+        Msg::ThreadFailed(err)
     }
 }
 

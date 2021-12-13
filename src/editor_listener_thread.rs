@@ -1,36 +1,15 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
-use crate::support::source_code::{Buffer, ParseError, SourceFileSnapshot};
-use crate::MVar;
+use crate::support::source_code::{Buffer, SourceFileSnapshot};
+use crate::{Error, MVar};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::mpsc::{SendError, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tree_sitter::InputEdit;
-
-#[derive(Debug)]
-pub(crate) enum Error {
-    SocketCreationFailed(std::io::Error),
-    AcceptingIncomingSocketConnectionFailed(std::io::Error),
-    ParsingSourceCodeFailed(ParseError),
-    NeovimMessageDecodingFailed(neovim::Error),
-    FailedToSendMessage,
-}
-
-impl<T> From<SendError<T>> for Error {
-    fn from(_err: SendError<T>) -> Error {
-        Error::FailedToSendMessage
-    }
-}
-
-impl From<ParseError> for Error {
-    fn from(err: ParseError) -> Error {
-        Error::ParsingSourceCodeFailed(err)
-    }
-}
 
 struct EditorListenerLoop {
     active_buffer: Arc<MVar<SourceFileSnapshot>>,

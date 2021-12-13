@@ -1,7 +1,7 @@
 use mvar::MVar;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
-use support::source_code::SourceFileSnapshot;
+use support::source_code::{Buffer, SourceFileSnapshot};
 use tree_sitter::Node;
 
 mod analysis_thread;
@@ -26,7 +26,7 @@ pub fn main() {
     });
 }
 
-fn run() -> Result<(), analysis_thread::Error> {
+fn run() -> Result<(), Error> {
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
     let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
@@ -83,6 +83,135 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
     // to recover from panicked threads, so letting the original problem
     // showball by calling `unwrap()` here is fine.
     mutex.lock().unwrap()
+}
+
+// TODO: review these errors and see which ones we can handle without crashing.
+#[derive(Debug)]
+pub(crate) enum Error {
+    NoElmJsonFoundInAnyAncestorDirectory,
+    CouldNotReadCurrentWorkingDirectory(std::io::Error),
+    DidNotFindPathEnvVar,
+    FailedToSendMessage,
+    SocketCreationFailed(std::io::Error),
+    AcceptingIncomingSocketConnectionFailed(std::io::Error),
+    CloningSocketFailed(std::io::Error),
+
+    // Elm errors
+    ElmDidNotFindCompilerBinaryOnPath,
+    ElmCompilationFailedToCreateTempDir(std::io::Error),
+    ElmCompilationFailedToWriteCodeToTempFile(std::io::Error),
+    ElmCompilationFailedToRunElmMake(std::io::Error),
+    ElmNoProjectStoredForBuffer(Buffer),
+
+    // Treesitter errors
+    TreeSitterParsingFailed,
+    TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
+    TreeSitterExpectedNodeDoesNotExist,
+    TreeSitterFailedToParseQuery(tree_sitter::QueryError),
+    TreeSitterQueryReturnedNotEnoughMatches,
+    TreeSitterQueryDoesNotHaveExpectedIndex,
+
+    // Neovim errors
+    NeovimEncodingFailedWhileWritingMarker(std::io::Error),
+    NeovimEncodingFailedWhileWritingData(std::io::Error),
+    NeovimEncodingFailedWhileWritingString(std::io::Error),
+    NeovimUnknownMessageType(u32, u8),
+    NeovimUnknownEventMethod(String),
+    NeovimReceivedErrorEvent(u64, String),
+    NeovimReceivedLinesEventForUnknownBuffer(Buffer),
+    NeovimDecodingReadingMarker(std::io::Error),
+    NeovimDecodingReadingData(std::io::Error),
+    NeovimDecodingSkippingData(std::io::Error),
+    NeovimDecodingReadingString(std::io::Error),
+    NeovimDecodingTypeMismatch(rmp::Marker),
+    NeovimDecodingOutOfRange,
+    NeovimDecodingInvalidUtf8(core::str::Utf8Error),
+    NeovimDecodingBufferCannotHoldString(u32),
+    NeovimDecodingNotEnoughArrayElements { expected: u32, actual: u32 },
+}
+
+impl From<rmp::encode::ValueWriteError> for Error {
+    fn from(error: rmp::encode::ValueWriteError) -> Error {
+        match error {
+            rmp::encode::ValueWriteError::InvalidMarkerWrite(sub_error) => {
+                Error::NeovimEncodingFailedWhileWritingMarker(sub_error)
+            }
+            rmp::encode::ValueWriteError::InvalidDataWrite(sub_error) => {
+                Error::NeovimEncodingFailedWhileWritingData(sub_error)
+            }
+        }
+    }
+}
+
+impl From<rmp::decode::MarkerReadError> for Error {
+    fn from(
+        rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
+    ) -> Error {
+        Error::NeovimDecodingReadingMarker(error)
+    }
+}
+
+impl From<rmp::decode::ValueReadError> for Error {
+    fn from(error: rmp::decode::ValueReadError) -> Error {
+        match error {
+            rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
+                Error::NeovimDecodingReadingMarker(sub_error)
+            }
+            rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
+                Error::NeovimDecodingReadingData(sub_error)
+            }
+            rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
+                Error::NeovimDecodingTypeMismatch(sub_error)
+            }
+        }
+    }
+}
+
+impl From<rmp::decode::NumValueReadError> for Error {
+    fn from(error: rmp::decode::NumValueReadError) -> Error {
+        match error {
+            rmp::decode::NumValueReadError::InvalidMarkerRead(sub_error) => {
+                Error::NeovimDecodingReadingMarker(sub_error)
+            }
+            rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
+                Error::NeovimDecodingReadingData(sub_error)
+            }
+            rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
+                Error::NeovimDecodingTypeMismatch(sub_error)
+            }
+            rmp::decode::NumValueReadError::OutOfRange => {
+                Error::NeovimDecodingOutOfRange
+            }
+        }
+    }
+}
+
+impl From<rmp::decode::DecodeStringError<'_>> for Error {
+    fn from(error: rmp::decode::DecodeStringError) -> Error {
+        match error {
+            rmp::decode::DecodeStringError::InvalidMarkerRead(sub_error) => {
+                Error::NeovimDecodingReadingMarker(sub_error)
+            }
+            rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
+                Error::NeovimDecodingReadingData(sub_error)
+            }
+            rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
+                Error::NeovimDecodingTypeMismatch(sub_error)
+            }
+            rmp::decode::DecodeStringError::BufferSizeTooSmall(sub_error) => {
+                Error::NeovimDecodingBufferCannotHoldString(sub_error)
+            }
+            rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
+                Error::NeovimDecodingInvalidUtf8(sub_error)
+            }
+        }
+    }
+}
+
+impl<T> From<SendError<T>> for Error {
+    fn from(_err: SendError<T>) -> Error {
+        Error::FailedToSendMessage
+    }
 }
 
 // TODO: remove debug helper when it's no longer needed.

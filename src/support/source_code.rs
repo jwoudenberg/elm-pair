@@ -1,3 +1,4 @@
+use crate::Error;
 use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use tree_sitter::{InputEdit, Node, Tree};
@@ -37,7 +38,7 @@ impl SourceFileSnapshot {
     pub(crate) fn new(
         buffer: Buffer,
         bytes: Rope,
-    ) -> Result<SourceFileSnapshot, ParseError> {
+    ) -> Result<SourceFileSnapshot, Error> {
         let snapshot = SourceFileSnapshot {
             tree: parse(None, &bytes)?,
             buffer,
@@ -47,10 +48,7 @@ impl SourceFileSnapshot {
         Ok(snapshot)
     }
 
-    pub(crate) fn apply_edit(
-        &mut self,
-        edit: InputEdit,
-    ) -> Result<(), ParseError> {
+    pub(crate) fn apply_edit(&mut self, edit: InputEdit) -> Result<(), Error> {
         self.revision += 1;
         self.tree.edit(&edit);
         let new_tree = parse(Some(&self.tree), &self.bytes)?;
@@ -66,13 +64,13 @@ impl SourceFileSnapshot {
 }
 
 // TODO: reuse parser.
-fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, ParseError> {
+fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
-        .map_err(ParseError::TreeSitterSettingLanguageFailed)?;
+        .map_err(Error::TreeSitterSettingLanguageFailed)?;
     match parser.parse(code.bytes().collect::<Vec<u8>>(), prev_tree) {
-        None => Err(ParseError::TreeSitterParsingFailed),
+        None => Err(Error::TreeSitterParsingFailed),
         Some(tree) => Ok(tree),
     }
 }
@@ -164,10 +162,4 @@ pub(crate) fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
         row,
         column: code.byte_to_char(byte) - code.line_to_char(row),
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum ParseError {
-    TreeSitterParsingFailed,
-    TreeSitterSettingLanguageFailed(tree_sitter::LanguageError),
 }

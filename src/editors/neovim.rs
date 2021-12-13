@@ -1,11 +1,11 @@
 use crate::analysis_thread as analysis;
-use crate::editor_listener_thread as editor_listener;
 use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
 use crate::support::source_code::{
     byte_to_point, Buffer, Edit, SourceFileSnapshot,
 };
+use crate::Error;
 use byteorder::ReadBytesExt;
-use messagepack::{read_tuple, DecodingError};
+use messagepack::read_tuple;
 use ropey::{Rope, RopeBuilder};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -25,7 +25,7 @@ impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
     pub fn from_unix_socket(
         socket: UnixStream,
         editor_id: u32,
-    ) -> Result<Self, editor_listener::Error> {
+    ) -> Result<Self, crate::Error> {
         let write = socket.try_clone().map_err(Error::CloningSocketFailed)?;
         let neovim = Neovim {
             editor_id,
@@ -50,12 +50,9 @@ impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
         "neovim"
     }
 
-    fn listen<F>(self, on_event: F) -> Result<(), editor_listener::Error>
+    fn listen<F>(self, on_event: F) -> Result<(), crate::Error>
     where
-        F: FnMut(
-            Buffer,
-            &mut Self::Event,
-        ) -> Result<(), editor_listener::Error>,
+        F: FnMut(Buffer, &mut Self::Event) -> Result<(), crate::Error>,
     {
         let mut listener = NeovimListener {
             editor_id: self.editor_id,
@@ -83,7 +80,7 @@ impl<R, W, F> NeovimListener<R, W, F>
 where
     R: Read,
     W: Write,
-    F: FnMut(Buffer, &mut NeovimEvent<R>) -> Result<(), editor_listener::Error>,
+    F: FnMut(Buffer, &mut NeovimEvent<R>) -> Result<(), crate::Error>,
 {
     // Messages we receive from neovim's webpack-rpc API:
     // neovim api:  https://neovim.io/doc/user/api.html
@@ -111,7 +108,7 @@ where
             let new_self = self.parse_notification_msg()?;
             Ok(Some(new_self))
         } else {
-            Err(Error::UnknownMessageType(array_len, type_))
+            Err(Error::NeovimUnknownMessageType(array_len, type_))
         }
     }
 
@@ -119,13 +116,13 @@ where
         let mut buffer = [0u8; 30];
         let len = rmp::decode::read_str_len(&mut self.read)? as usize;
         if len > buffer.len() {
-            return Err(
-                DecodingError::BufferCannotHoldString(len as u32).into()
-            );
+            return Err(Error::NeovimDecodingBufferCannotHoldString(
+                len as u32,
+            ));
         }
         self.read
             .read_exact(&mut buffer[0..len])
-            .map_err(DecodingError::ReadingString)?;
+            .map_err(Error::NeovimDecodingReadingString)?;
         match &buffer[0..len] {
             b"nvim_error_event" => self.parse_error_event()?,
             b"nvim_buf_lines_event" => return self.parse_buf_lines_event(),
@@ -135,7 +132,7 @@ where
             b"nvim_buf_detach_event" => self.parse_buf_detach_event()?,
             b"buffer_opened" => self.parse_buffer_opened()?,
             method => {
-                return Err(Error::UnknownEventMethod(
+                return Err(Error::NeovimUnknownEventMethod(
                     to_utf8(method)?.to_owned(),
                 ))
             }
@@ -152,11 +149,11 @@ where
                 let mut buffer = vec![0; len as usize];
                 self.read
                     .read_exact(&mut buffer)
-                    .map_err(DecodingError::ReadingString)?;
+                    .map_err(Error::NeovimDecodingReadingString)?;
                 to_utf8(&buffer)?.to_owned()
             }
         );
-        Err(Error::ReceivedErrorEvent(type_, msg))
+        Err(Error::NeovimReceivedErrorEvent(type_, msg))
     }
 
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
@@ -171,7 +168,7 @@ where
                 let mut buffer = vec![0; len as usize];
                 self.read
                     .read_exact(&mut buffer)
-                    .map_err(DecodingError::ReadingString)?;
+                    .map_err(Error::NeovimDecodingReadingString)?;
                 Path::new(to_utf8(&buffer)?).to_owned()
             }
         );
@@ -237,11 +234,11 @@ where
         rmp::encode::write_array_len(write, 3)?;
         rmp::encode::write_u32(write, buf.buffer_id)?; //buf
         rmp::encode::write_bool(write, true)
-            .map_err(Error::EncodingFailedWhileWritingData)?; // send_buffer
+            .map_err(Error::NeovimEncodingFailedWhileWritingData)?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
         write
             .flush()
-            .map_err(Error::EncodingFailedWhileWritingData)?;
+            .map_err(Error::NeovimEncodingFailedWhileWritingData)?;
         Ok(())
     }
 }
@@ -258,7 +255,7 @@ impl<R: Read> EditorEvent for NeovimEvent<R> {
     fn apply_to_buffer(
         &mut self,
         opt_code: Option<SourceFileSnapshot>,
-    ) -> Result<BufferChange, editor_listener::Error> {
+    ) -> Result<BufferChange, crate::Error> {
         let contains_entire_buffer = self.lastline == -1;
         if contains_entire_buffer {
             let rope = self.read_rope()?;
@@ -266,7 +263,9 @@ impl<R: Read> EditorEvent for NeovimEvent<R> {
                 buffer: self.buffer,
                 bytes: rope,
                 path: self.paths_for_new_buffers.remove(&self.buffer).ok_or(
-                    Error::ReceivedLinesEventForUnknownBuffer(self.buffer),
+                    Error::NeovimReceivedLinesEventForUnknownBuffer(
+                        self.buffer,
+                    ),
                 )?,
             })
         } else if let Some(mut code) = opt_code {
@@ -309,7 +308,7 @@ impl<R: Read> NeovimEvent<R> {
             read_chunks(
                 &mut self.read,
                 len as usize,
-                DecodingError::ReadingString,
+                Error::NeovimDecodingReadingString,
                 |chunk| {
                     code.insert(code.byte_to_char(new_end_byte), chunk);
                     new_end_byte += chunk.len();
@@ -338,7 +337,7 @@ impl<R: Read> NeovimEvent<R> {
             read_chunks(
                 &mut self.read,
                 len as usize,
-                DecodingError::ReadingString,
+                Error::NeovimDecodingReadingString,
                 |chunk| {
                     builder.append(chunk);
                     Ok(())
@@ -350,82 +349,9 @@ impl<R: Read> NeovimEvent<R> {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum Error {
-    CloningSocketFailed(std::io::Error),
-    DecodingFailed(DecodingError),
-    EncodingFailedWhileWritingMarker(std::io::Error),
-    EncodingFailedWhileWritingData(std::io::Error),
-    EncodingFailedWhileWritingString(std::io::Error),
-    UnknownMessageType(u32, u8),
-    UnknownEventMethod(String),
-    ReceivedErrorEvent(u64, String),
-    FailedWhileProcessingBufChange(Box<editor_listener::Error>),
-    ReceivedLinesEventForUnknownBuffer(Buffer),
-}
-
-impl From<Error> for editor_listener::Error {
-    fn from(err: Error) -> editor_listener::Error {
-        if let Error::FailedWhileProcessingBufChange(original) = err {
-            *original
-        } else {
-            editor_listener::Error::NeovimMessageDecodingFailed(err)
-        }
-    }
-}
-
-impl From<editor_listener::Error> for Error {
-    fn from(err: editor_listener::Error) -> Error {
-        Error::FailedWhileProcessingBufChange(Box::new(err))
-    }
-}
-
-impl From<DecodingError> for Error {
-    fn from(err: DecodingError) -> Error {
-        Error::DecodingFailed(err)
-    }
-}
-
-impl From<rmp::encode::ValueWriteError> for Error {
-    fn from(error: rmp::encode::ValueWriteError) -> Error {
-        match error {
-            rmp::encode::ValueWriteError::InvalidMarkerWrite(sub_error) => {
-                Error::EncodingFailedWhileWritingMarker(sub_error)
-            }
-            rmp::encode::ValueWriteError::InvalidDataWrite(sub_error) => {
-                Error::EncodingFailedWhileWritingData(sub_error)
-            }
-        }
-    }
-}
-
-impl From<rmp::decode::ValueReadError> for Error {
-    fn from(error: rmp::decode::ValueReadError) -> Error {
-        Error::DecodingFailed(error.into())
-    }
-}
-
-impl From<rmp::decode::NumValueReadError> for Error {
-    fn from(error: rmp::decode::NumValueReadError) -> Error {
-        Error::DecodingFailed(error.into())
-    }
-}
-
-impl From<rmp::decode::DecodeStringError<'_>> for Error {
-    fn from(error: rmp::decode::DecodeStringError) -> Error {
-        Error::DecodingFailed(error.into())
-    }
-}
-
-impl From<rmp::decode::MarkerReadError> for Error {
-    fn from(error: rmp::decode::MarkerReadError) -> Error {
-        Error::DecodingFailed(error.into())
-    }
-}
-
 // Skip `count` messagepack options. If one of these objects is an array or
 // map, skip its contents too.
-fn skip_objects<R>(read: &mut R, count: u32) -> Result<(), DecodingError>
+fn skip_objects<R>(read: &mut R, count: u32) -> Result<(), Error>
 where
     R: Read,
 {
@@ -434,7 +360,7 @@ where
         count -= 1;
         let marker = rmp::decode::read_marker(read)?;
         count += skip_one_object(read, marker)
-            .map_err(DecodingError::SkippingData)?;
+            .map_err(Error::NeovimDecodingSkippingData)?;
     }
     Ok(())
 }
@@ -539,9 +465,9 @@ where
     Ok(())
 }
 
-fn to_utf8(buffer: &[u8]) -> Result<&str, DecodingError> {
-    let str =
-        std::str::from_utf8(buffer).map_err(DecodingError::InvalidUtf8)?;
+fn to_utf8(buffer: &[u8]) -> Result<&str, Error> {
+    let str = std::str::from_utf8(buffer)
+        .map_err(Error::NeovimDecodingInvalidUtf8)?;
     Ok(str)
 }
 
@@ -592,7 +518,7 @@ where
     Ok(())
 }
 
-fn read_buf<R>(read: &mut R) -> Result<u32, DecodingError>
+fn read_buf<R>(read: &mut R) -> Result<u32, Error>
 where
     R: Read,
 {
@@ -657,7 +583,7 @@ where
         }
         write
             .flush()
-            .map_err(Error::EncodingFailedWhileWritingData)?;
+            .map_err(Error::NeovimEncodingFailedWhileWritingData)?;
         Ok(())
     }
 }
@@ -670,24 +596,11 @@ where
     rmp::encode::write_str_len(write, bytes.len() as u32)?;
     write
         .write_all(bytes)
-        .map_err(Error::EncodingFailedWhileWritingString)?;
+        .map_err(Error::NeovimEncodingFailedWhileWritingString)?;
     Ok(())
 }
 
 mod messagepack {
-    #[derive(Debug)]
-    pub(crate) enum DecodingError {
-        ReadingMarker(std::io::Error),
-        ReadingData(std::io::Error),
-        SkippingData(std::io::Error),
-        ReadingString(std::io::Error),
-        TypeMismatch(rmp::Marker),
-        OutOfRange,
-        InvalidUtf8(core::str::Utf8Error),
-        BufferCannotHoldString(u32),
-        NotEnoughArrayElements { expected: u32, actual: u32 },
-    }
-
     // Helper macro that counts the numver of arguments passed to it.
     // Taken from: https://stackoverflow.com/questions/34304593/counting-length-of-repetition-in-macro
     #[macro_export]
@@ -719,7 +632,7 @@ mod messagepack {
             let expected_len = messagepack::count!($($x)*) as u32;
             if array_len  < expected_len {
                 return Err(
-                    DecodingError::NotEnoughArrayElements {
+                    Error::NeovimDecodingNotEnoughArrayElements {
                         actual: array_len,
                         expected: expected_len
                     }.into()
@@ -730,69 +643,4 @@ mod messagepack {
         };
     }
     pub use read_tuple;
-
-    impl From<rmp::decode::MarkerReadError> for DecodingError {
-        fn from(
-            rmp::decode::MarkerReadError(error): rmp::decode::MarkerReadError,
-        ) -> DecodingError {
-            DecodingError::ReadingMarker(error)
-        }
-    }
-
-    impl From<rmp::decode::ValueReadError> for DecodingError {
-        fn from(error: rmp::decode::ValueReadError) -> DecodingError {
-            match error {
-                rmp::decode::ValueReadError::InvalidMarkerRead(sub_error) => {
-                    DecodingError::ReadingMarker(sub_error)
-                }
-                rmp::decode::ValueReadError::InvalidDataRead(sub_error) => {
-                    DecodingError::ReadingData(sub_error)
-                }
-                rmp::decode::ValueReadError::TypeMismatch(sub_error) => {
-                    DecodingError::TypeMismatch(sub_error)
-                }
-            }
-        }
-    }
-
-    impl From<rmp::decode::NumValueReadError> for DecodingError {
-        fn from(error: rmp::decode::NumValueReadError) -> DecodingError {
-            match error {
-                rmp::decode::NumValueReadError::InvalidMarkerRead(
-                    sub_error,
-                ) => DecodingError::ReadingMarker(sub_error),
-                rmp::decode::NumValueReadError::InvalidDataRead(sub_error) => {
-                    DecodingError::ReadingData(sub_error)
-                }
-                rmp::decode::NumValueReadError::TypeMismatch(sub_error) => {
-                    DecodingError::TypeMismatch(sub_error)
-                }
-                rmp::decode::NumValueReadError::OutOfRange => {
-                    DecodingError::OutOfRange
-                }
-            }
-        }
-    }
-
-    impl From<rmp::decode::DecodeStringError<'_>> for DecodingError {
-        fn from(error: rmp::decode::DecodeStringError) -> DecodingError {
-            match error {
-                rmp::decode::DecodeStringError::InvalidMarkerRead(
-                    sub_error,
-                ) => DecodingError::ReadingMarker(sub_error),
-                rmp::decode::DecodeStringError::InvalidDataRead(sub_error) => {
-                    DecodingError::ReadingData(sub_error)
-                }
-                rmp::decode::DecodeStringError::TypeMismatch(sub_error) => {
-                    DecodingError::TypeMismatch(sub_error)
-                }
-                rmp::decode::DecodeStringError::BufferSizeTooSmall(
-                    sub_error,
-                ) => DecodingError::BufferCannotHoldString(sub_error),
-                rmp::decode::DecodeStringError::InvalidUtf8(_, sub_error) => {
-                    DecodingError::InvalidUtf8(sub_error)
-                }
-            }
-        }
-    }
 }
