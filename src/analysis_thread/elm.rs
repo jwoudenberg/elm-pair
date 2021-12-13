@@ -61,78 +61,23 @@ impl RefactorEngine {
         Ok(engine)
     }
 
+    // TODO: try to return an Iterator instead of a Vector.
+    // TODO: Try remove Vector from TreeChanges type.
     pub(in crate::analysis_thread) fn respond_to_change<'a>(
         &self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
         // debug_print_tree_changes(&changes);
-        let mut edits = Vec::new();
-        match (
+        let edits = match (
             attach_kinds(&changes.old_removed).as_slice(),
             attach_kinds(&changes.new_added).as_slice(),
         ) {
-            // Remove values from exposed list.
             (
                 [EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..],
                 [] | [EXPOSED_VALUE],
-            ) => {
-                match changes.new_added.as_slice() {
-                    [] => {}
-                    [node] if diff.new.slice(&node.byte_range()) == "" => {}
-                    _ => return Ok(None),
-                }
-                // TODO: Figure out better approach to tree-traversal.
-                let old_import_node = changes
-                    .old_removed
-                    .first()
-                    .ok_or(Error::FailureWhileTraversingTree)?
-                    .parent()
-                    .ok_or(Error::FailureWhileTraversingTree)?
-                    .parent()
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-                let mut cursor = QueryCursor::new();
-                let old_import = self
-                    .query_for_imports
-                    .run_in(&mut cursor, &diff.old, old_import_node)
-                    .next()
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-
-                // Modify the import in the new code with the name just found.
-                let mut cursor2 = QueryCursor::new();
-                let import = self
-                    .query_for_imports
-                    .run(&mut cursor2, &diff.new)
-                    .find(|import| import.name() == old_import.name())
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-                let new_exposed_count = import.exposed_list().count();
-                if new_exposed_count == 0 {
-                    self.remove_exposed_list(&mut edits, &diff.new, &import);
-                }
-                let removed_range =
-                    changes.old_removed.first().unwrap().start_byte()
-                        ..changes.old_removed.last().unwrap().end_byte();
-                let mut exposed_cursor = QueryCursor::new();
-                old_import.exposed_list().into_iter().try_for_each(
-                    |exposed| {
-                        if exposed.node.start_byte() >= removed_range.start
-                            && exposed.node.end_byte() <= removed_range.end
-                        {
-                            self.remove_qualifier_from_name(
-                                &mut edits,
-                                &mut exposed_cursor,
-                                diff,
-                                &exposed.name(),
-                                &import.aliased_name(),
-                            )
-                        } else {
-                            Ok(())
-                        }
-                    },
-                )?;
-            }
-            // Add module qualifier to value.
+            ) => self.on_removed_values_from_exposing_list(diff, changes)?,
             (
                 [UPPER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., UPPER_CASE_IDENTIFIER],
@@ -140,75 +85,13 @@ impl RefactorEngine {
             | (
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-            ) => {
-                let name_before = diff.old.slice(
-                    &changes
-                        .old_removed
-                        .first()
-                        .ok_or(Error::FailureWhileTraversingTree)?
-                        .byte_range(),
-                );
-                let parent = changes
-                    .new_added
-                    .first()
-                    .ok_or(Error::FailureWhileTraversingTree)?
-                    .parent()
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-                let mut cursor = QueryCursor::new();
-                let QualifiedValue { qualifier, name } = self
-                    .query_for_qualified_value
-                    .run_in(&mut cursor, &diff.new, parent)?;
-                if name_before != name {
-                    return Ok(None);
-                }
-                self.remove_from_exposed_list(
-                    &mut edits,
-                    &mut cursor,
-                    diff,
-                    &name,
-                    &qualifier,
-                )?;
-                self.remove_qualifier_from_name(
-                    &mut edits,
-                    &mut cursor,
-                    diff,
-                    &name,
-                    &qualifier,
-                )?;
-            }
+            ) => self.on_added_module_qualifier_to_value(diff, changes)?,
             // Remove entire exposing list.
             ([EXPOSING_LIST], []) => {
-                let import_node = changes
-                    .old_removed
-                    .first()
-                    .and_then(Node::parent)
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-                let mut cursor = QueryCursor::new();
-                let import = self
-                    .query_for_imports
-                    .run_in(&mut cursor, &diff.old, import_node)
-                    .next()
-                    .ok_or(Error::FailureWhileTraversingTree)?;
-                let qualifier = import.aliased_name();
-                let mut cursor_2 = QueryCursor::new();
-                self.query_for_imports
-                    .run(&mut cursor_2, &diff.old)
-                    .find(|import| import.aliased_name() == qualifier)
-                    .ok_or(Error::FailureWhileTraversingTree)?
-                    .exposed_list()
-                    .try_for_each(|exposed| {
-                        let mut val_cursor = QueryCursor::new();
-                        self.remove_qualifier_from_name(
-                            &mut edits,
-                            &mut val_cursor,
-                            diff,
-                            &exposed.name(),
-                            &qualifier,
-                        )
-                    })?;
+                self.on_removed_exposing_list_from_import(diff, changes)?
             }
-            _ => {}
-        }
+            _ => Vec::new(),
+        };
         if edits.is_empty() {
             Ok(None)
         } else {
@@ -216,7 +99,150 @@ impl RefactorEngine {
         }
     }
 
-    fn remove_exposed_list(
+    fn on_removed_values_from_exposing_list(
+        &self,
+        diff: &SourceFileDiff,
+        changes: TreeChanges,
+    ) -> Result<Vec<Edit>, Error> {
+        match changes.new_added.as_slice() {
+            [] => {}
+            [node] if diff.new.slice(&node.byte_range()) == "" => {}
+            _ => return Ok(Vec::new()),
+        }
+
+        // TODO: Figure out better approach to tree-traversal.
+        let old_import_node = changes
+            .old_removed
+            .first()
+            .ok_or(Error::FailureWhileTraversingTree)?
+            .parent()
+            .ok_or(Error::FailureWhileTraversingTree)?
+            .parent()
+            .ok_or(Error::FailureWhileTraversingTree)?;
+        let mut cursor = QueryCursor::new();
+        let old_import = self
+            .query_for_imports
+            .run_in(&mut cursor, &diff.old, old_import_node)
+            .next()
+            .ok_or(Error::FailureWhileTraversingTree)?;
+
+        // Modify the import in the new code with the name just found.
+        let mut edits = Vec::new();
+        let mut cursor2 = QueryCursor::new();
+        let import = self
+            .query_for_imports
+            .run(&mut cursor2, &diff.new)
+            .find(|import| import.name() == old_import.name())
+            .ok_or(Error::FailureWhileTraversingTree)?;
+        let new_exposed_count = import.exposing_list().count();
+        if new_exposed_count == 0 {
+            self.remove_exposing_list(&mut edits, &diff.new, &import);
+        }
+        let removed_range = changes.old_removed.first().unwrap().start_byte()
+            ..changes.old_removed.last().unwrap().end_byte();
+        let mut exposed_cursor = QueryCursor::new();
+        old_import
+            .exposing_list()
+            .into_iter()
+            .try_for_each(|exposed| {
+                if exposed.node.start_byte() >= removed_range.start
+                    && exposed.node.end_byte() <= removed_range.end
+                {
+                    self.remove_qualifier_from_name(
+                        &mut edits,
+                        &mut exposed_cursor,
+                        diff,
+                        &exposed.name(),
+                        &import.aliased_name(),
+                    )
+                } else {
+                    Ok(())
+                }
+            })?;
+        Ok(edits)
+    }
+
+    fn on_added_module_qualifier_to_value(
+        &self,
+        diff: &SourceFileDiff,
+        changes: TreeChanges,
+    ) -> Result<Vec<Edit>, Error> {
+        let name_before = diff.old.slice(
+            &changes
+                .old_removed
+                .first()
+                .ok_or(Error::FailureWhileTraversingTree)?
+                .byte_range(),
+        );
+        let parent = changes
+            .new_added
+            .first()
+            .ok_or(Error::FailureWhileTraversingTree)?
+            .parent()
+            .ok_or(Error::FailureWhileTraversingTree)?;
+        let mut cursor = QueryCursor::new();
+        let QualifiedValue { qualifier, name } = self
+            .query_for_qualified_value
+            .run_in(&mut cursor, &diff.new, parent)?;
+        if name_before != name {
+            return Ok(Vec::new());
+        }
+        let mut edits = Vec::new();
+        self.remove_from_exposing_list(
+            &mut edits,
+            &mut cursor,
+            diff,
+            &name,
+            &qualifier,
+        )?;
+        self.remove_qualifier_from_name(
+            &mut edits,
+            &mut cursor,
+            diff,
+            &name,
+            &qualifier,
+        )?;
+        Ok(edits)
+    }
+
+    fn on_removed_exposing_list_from_import(
+        &self,
+        diff: &SourceFileDiff,
+        changes: TreeChanges,
+    ) -> Result<Vec<Edit>, Error> {
+        let import_node = changes
+            .old_removed
+            .first()
+            .and_then(Node::parent)
+            .ok_or(Error::FailureWhileTraversingTree)?;
+        let mut cursor = QueryCursor::new();
+        let import = self
+            .query_for_imports
+            .run_in(&mut cursor, &diff.old, import_node)
+            .next()
+            .ok_or(Error::FailureWhileTraversingTree)?;
+        let qualifier = import.aliased_name();
+        let mut cursor_2 = QueryCursor::new();
+        let mut edits = Vec::new();
+        self.query_for_imports
+            .run(&mut cursor_2, &diff.old)
+            .find(|import| import.aliased_name() == qualifier)
+            .ok_or(Error::FailureWhileTraversingTree)?
+            .exposing_list()
+            .try_for_each(|exposed| {
+                let mut val_cursor = QueryCursor::new();
+                self.remove_qualifier_from_name(
+                    &mut edits,
+                    &mut val_cursor,
+                    diff,
+                    &exposed.name(),
+                    &qualifier,
+                )
+            })?;
+        Ok(edits)
+    }
+
+    fn remove_exposing_list(
         &self,
         edits: &mut Vec<Edit>,
         code: &SourceFileSnapshot,
@@ -233,7 +259,7 @@ impl RefactorEngine {
         }
     }
 
-    fn remove_from_exposed_list(
+    fn remove_from_exposing_list(
         &self,
         edits: &mut Vec<Edit>,
         cursor: &mut QueryCursor,
@@ -246,18 +272,18 @@ impl RefactorEngine {
             .run(cursor, &diff.new)
             .find(|import| import.aliased_name() == *qualifier)
             .ok_or(Error::FailureWhileTraversingTree)?;
-        let mut exposed_list = import.exposed_list();
-        let mut exposed_list_length = 0;
-        let exposed = exposed_list
+        let mut exposing_list = import.exposing_list();
+        let mut exposing_list_length = 0;
+        let exposed = exposing_list
             .find(|exposed| {
-                exposed_list_length += 1;
+                exposing_list_length += 1;
                 *name == exposed.name()
             })
             .ok_or(Error::FailureWhileTraversingTree)?
             .node;
-        exposed_list_length += exposed_list.count();
-        if exposed_list_length == 1 {
-            self.remove_exposed_list(edits, &diff.new, &import);
+        exposing_list_length += exposing_list.count();
+        if exposing_list_length == 1 {
+            self.remove_exposing_list(edits, &diff.new, &import);
         } else {
             let range = || {
                 let next = exposed.next_sibling();
@@ -527,7 +553,7 @@ impl Import<'_> {
         self.code.slice(&name_node.byte_range())
     }
 
-    fn exposed_list(&self) -> ExposedList {
+    fn exposing_list(&self) -> ExposedList {
         let cursor = self.exposing_list_node.and_then(|node| {
             let mut cursor = node.walk();
             if cursor.goto_first_child() {
