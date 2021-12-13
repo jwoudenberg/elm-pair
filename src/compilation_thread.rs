@@ -14,7 +14,7 @@ pub(crate) enum Msg {
 
 #[derive(Debug)]
 pub(crate) enum Error {
-    _NoElmJsonFoundInAnyAncestorDirectoryOf(PathBuf),
+    NoElmJsonFoundInAnyAncestorDirectory,
     DidNotFindElmBinaryOnPath,
     CouldNotReadCurrentWorkingDirectory(std::io::Error),
     DidNotFindPathEnvVar,
@@ -41,9 +41,10 @@ pub(crate) fn run(
         compilation_candidates: SizedStack::with_capacity(
             crate::MAX_COMPILATION_CANDIDATES,
         ),
-        project: HashMap::new(),
-        knowledge_base: KnowledgeBase {
+        kb: KnowledgeBase {
+            buffer_path: HashMap::new(),
             project_root: HashMap::new(),
+            compilation_params: HashMap::new(),
         },
     }
     .start(compilation_receiver)
@@ -53,15 +54,7 @@ struct CompilationLoop {
     analysis_sender: Sender<analysis_thread::Msg>,
     last_checked_revisions: HashMap<Buffer, usize>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
-    project: HashMap<Buffer, ElmProject>,
-    knowledge_base: KnowledgeBase,
-}
-
-struct ElmProject {
-    // Root of the Elm project containing this source file.
-    root: PathBuf,
-    // Absolute path to the `elm` compiler.
-    elm_bin: PathBuf,
+    kb: KnowledgeBase,
 }
 
 impl MsgLoop<Error> for CompilationLoop {
@@ -73,17 +66,7 @@ impl MsgLoop<Error> for CompilationLoop {
                 self.compilation_candidates.push(snapshot)
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
-                self.project.insert(
-                    buffer,
-                    ElmProject {
-                        // root: find_project_root(&path)?.to_path_buf(),
-                        root: self
-                            .knowledge_base
-                            .ask(&ProjectRoot(path))
-                            .to_path_buf(),
-                        elm_bin: find_executable("elm")?,
-                    },
-                );
+                self.kb.insert(BufferPath(buffer), path);
             }
         }
         Ok(true)
@@ -94,17 +77,14 @@ impl MsgLoop<Error> for CompilationLoop {
             None => return Ok(()),
             Some(code) => code,
         };
-        let project = self
-            .project
-            .get(&snapshot.buffer)
-            .ok_or(Error::NoElmProjectStoredForBuffer(snapshot.buffer))?;
-
         if is_new_revision(&mut self.last_checked_revisions, &snapshot) {
             eprintln!(
                 "[info] running compilation for revision {:?} of buffer {:?}",
                 snapshot.revision, snapshot.buffer
             );
-            if does_snapshot_compile(project, &snapshot)? {
+            let compilation_params =
+                self.kb.ask(&GetCompilationParams(snapshot.buffer))?;
+            if does_snapshot_compile(compilation_params, &snapshot)? {
                 self.analysis_sender.send(
                     analysis_thread::Msg::CompilationSucceeded(snapshot),
                 )?;
@@ -144,7 +124,7 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
 }
 
 fn does_snapshot_compile(
-    project: &ElmProject,
+    project: &CompilationParams,
     snapshot: &SourceFileSnapshot,
 ) -> Result<bool, Error> {
     // Write lates code to temporary file. We don't compile the original source
@@ -169,15 +149,47 @@ fn does_snapshot_compile(
     Ok(output.status.success())
 }
 
+struct KnowledgeBase {
+    buffer_path: HashMap<BufferPath, PathBuf>,
+    project_root: HashMap<ProjectRoot, PathBuf>,
+    compilation_params: HashMap<GetCompilationParams, CompilationParams>,
+}
+
+#[derive(PartialEq, Clone, Eq, Hash)]
+struct BufferPath(Buffer);
+
+#[derive(PartialEq, Clone, Eq, Hash)]
+struct GetCompilationParams(Buffer);
+
+struct CompilationParams {
+    // Root of the Elm project containing this source file.
+    root: PathBuf,
+    // Absolute path to the `elm` compiler.
+    elm_bin: PathBuf,
+}
+
 #[derive(PartialEq, Clone, Eq, Hash)]
 struct ProjectRoot(PathBuf);
 
-struct KnowledgeBase {
-    project_root: HashMap<ProjectRoot, PathBuf>,
+impl Query<BufferPath> for KnowledgeBase {
+    type Answer = PathBuf;
+    type Error = Error;
+
+    fn store(&mut self) -> &mut HashMap<BufferPath, Self::Answer> {
+        &mut self.buffer_path
+    }
+
+    fn answer(
+        &mut self,
+        BufferPath(buffer): &BufferPath,
+    ) -> Result<Self::Answer, Self::Error> {
+        Err(Error::NoElmProjectStoredForBuffer(*buffer))
+    }
 }
 
 impl Query<ProjectRoot> for KnowledgeBase {
     type Answer = PathBuf;
+    type Error = Error;
 
     fn store(&mut self) -> &mut HashMap<ProjectRoot, Self::Answer> {
         &mut self.project_root
@@ -186,15 +198,39 @@ impl Query<ProjectRoot> for KnowledgeBase {
     fn answer(
         &mut self,
         ProjectRoot(maybe_root): &ProjectRoot,
-    ) -> Self::Answer {
+    ) -> Result<Self::Answer, Self::Error> {
         if maybe_root.join("elm.json").exists() {
-            maybe_root.to_owned()
+            Ok(maybe_root.to_owned())
         } else {
             // TODO: find a way that queries for multiple file can share a
             // reference to the same PathBuf.
-            self.ask(&ProjectRoot(maybe_root.parent().unwrap().to_owned()))
-                .to_owned()
+            match maybe_root.parent() {
+                None => Err(Error::NoElmJsonFoundInAnyAncestorDirectory),
+                Some(parent) => {
+                    let root = self.ask(&ProjectRoot(parent.to_owned()))?;
+                    Ok(root.to_owned())
+                }
+            }
         }
+    }
+}
+
+impl Query<GetCompilationParams> for KnowledgeBase {
+    type Answer = CompilationParams;
+    type Error = Error;
+
+    fn store(&mut self) -> &mut HashMap<GetCompilationParams, Self::Answer> {
+        &mut self.compilation_params
+    }
+
+    fn answer(
+        &mut self,
+        GetCompilationParams(buffer): &GetCompilationParams,
+    ) -> Result<Self::Answer, Self::Error> {
+        let buffer_path = self.ask(&BufferPath(*buffer))?.to_owned();
+        let root = self.ask(&ProjectRoot(buffer_path))?.to_owned();
+        let elm_bin = find_executable("elm")?;
+        Ok(CompilationParams { root, elm_bin })
     }
 }
 
@@ -206,18 +242,25 @@ mod knowledge_base {
         Q: std::hash::Hash + std::cmp::Eq + Clone + 'static,
     {
         type Answer;
+        type Error;
 
         // Functions to implement for concrete query types.
-        fn answer(&mut self, question: &Q) -> Self::Answer;
+        fn answer(&mut self, question: &Q)
+            -> Result<Self::Answer, Self::Error>;
         fn store(&mut self) -> &mut HashMap<Q, Self::Answer>;
 
         // Function to call for making queries.
-        fn ask(&mut self, question: &Q) -> &Self::Answer {
+        fn ask(&mut self, question: &Q) -> Result<&Self::Answer, Self::Error> {
             if !self.store().contains_key(question) {
-                let answer = self.answer(question);
+                let answer = self.answer(question)?;
                 self.store().insert(question.clone(), answer);
             }
-            self.store().get(question).unwrap()
+            Ok(self.store().get(question).unwrap())
+        }
+
+        // Inserting information manually, instead of on-demand
+        fn insert(&mut self, question: Q, answer: Self::Answer) {
+            self.store().insert(question, answer);
         }
     }
 }
