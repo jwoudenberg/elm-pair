@@ -1,12 +1,11 @@
 use crate::compilation_thread;
 use crate::editor_listener_thread;
+use crate::languages::elm;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{MVar, MsgLoop};
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
-
-pub(crate) mod elm;
 
 pub(crate) enum Msg {
     SourceCodeModified,
@@ -32,11 +31,11 @@ impl From<compilation_thread::Error> for Msg {
 pub(crate) enum Error {
     EditorListenerThreadFailed(editor_listener_thread::Error),
     CompilationThreadFailed(compilation_thread::Error),
-    AnalyzingElm(crate::analysis_thread::elm::Error),
+    AnalyzingElm(elm::Error),
 }
 
-impl From<crate::analysis_thread::elm::Error> for Error {
-    fn from(err: crate::analysis_thread::elm::Error) -> Error {
+impl From<elm::Error> for Error {
+    fn from(err: elm::Error) -> Error {
         Error::AnalyzingElm(err)
     }
 }
@@ -131,17 +130,17 @@ pub(crate) trait EditorDriver: 'static + Send {
     fn apply_edits(&self, edits: Vec<Edit>) -> bool;
 }
 
-struct SourceFileDiff {
+pub(crate) struct SourceFileDiff {
     pub old: SourceFileSnapshot,
     pub new: SourceFileSnapshot,
 }
 
-struct TreeChanges<'a> {
-    old_removed: Vec<Node<'a>>,
-    new_added: Vec<Node<'a>>,
+pub(crate) struct TreeChanges<'a> {
+    pub old_removed: Vec<Node<'a>>,
+    pub new_added: Vec<Node<'a>>,
 }
 
-fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
+pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let old_code = &diff.old;
     let new_code = &diff.new;
     let mut old = diff.old.tree.walk();

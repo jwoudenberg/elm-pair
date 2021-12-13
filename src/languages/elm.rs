@@ -63,7 +63,7 @@ impl RefactorEngine {
 
     // TODO: try to return an Iterator instead of a Vector.
     // TODO: Try remove Vector from TreeChanges type.
-    pub(in crate::analysis_thread) fn respond_to_change<'a>(
+    pub(crate) fn respond_to_change<'a>(
         &self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
@@ -655,7 +655,7 @@ fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
 
 #[cfg(test)]
 mod tests {
-    use crate::analysis_thread::elm::RefactorEngine;
+    use crate::languages::elm::RefactorEngine;
     use crate::analysis_thread::{diff_trees, SourceFileDiff};
     use crate::support::source_code::Buffer;
     use crate::test_support::included_answer_test as ia_test;
@@ -724,7 +724,7 @@ mod tests {
     enum Error {
         RunningSimulation(crate::test_support::simulation::Error),
         ParsingSourceCode(crate::support::source_code::ParseError),
-        AnalyzingElm(crate::analysis_thread::elm::Error),
+        AnalyzingElm(crate::languages::elm::Error),
     }
 
     impl From<crate::test_support::simulation::Error> for Error {
@@ -739,8 +739,8 @@ mod tests {
         }
     }
 
-    impl From<crate::analysis_thread::elm::Error> for Error {
-        fn from(err: crate::analysis_thread::elm::Error) -> Error {
+    impl From<crate::languages::elm::Error> for Error {
+        fn from(err: crate::languages::elm::Error) -> Error {
             Error::AnalyzingElm(err)
         }
     }
