@@ -36,12 +36,14 @@ mod kind_constant_tests {
 pub(crate) struct RefactorEngine {
     query_for_imports: ImportsQuery,
     query_for_unqualified_values: UnqualifiedValuesQuery,
+    query_for_qualified_value: QualifiedValueQuery,
 }
 
 #[derive(Debug)]
 pub(crate) enum Error {
     FailureWhileTraversingTree,
     InvalidQuery(tree_sitter::QueryError),
+    NotEnoughMatches,
     MissingCaptureIndex,
 }
 
@@ -53,6 +55,7 @@ impl RefactorEngine {
             query_for_unqualified_values: UnqualifiedValuesQuery::init(
                 language,
             )?,
+            query_for_qualified_value: QualifiedValueQuery::init(language)?,
         };
 
         Ok(engine)
@@ -65,113 +68,122 @@ impl RefactorEngine {
     ) -> Result<Option<Vec<Edit>>, Error> {
         // debug_print_tree_changes(&changes);
         let mut edits = Vec::new();
-        let mut cursor = QueryCursor::new();
         match (
-            attach_kinds(changes.old_removed).as_slice(),
-            attach_kinds(changes.new_added).as_slice(),
+            attach_kinds(&changes.old_removed).as_slice(),
+            attach_kinds(&changes.new_added).as_slice(),
         ) {
             // Remove values from exposed list.
-            ([(EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..], after)
-            | (
-                [(COMMA, _), (EXPOSED_VALUE | EXPOSED_TYPE, before), rest @ ..],
-                after,
+            (
+                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..],
+                [] | [EXPOSED_VALUE],
             ) => {
-                match after {
+                match changes.new_added.as_slice() {
                     [] => {}
-                    [(EXPOSED_VALUE, node)]
-                        if diff.new.slice(&node.byte_range()) == "" => {}
+                    [node] if diff.new.slice(&node.byte_range()) == "" => {}
                     _ => return Ok(None),
                 }
-                let mut removed_nodes = vec![*before];
-                let mut rest = rest;
-                while !rest.is_empty() {
-                    match rest {
-                        [] => break,
-                        [(COMMA, _), new_rest @ ..] => rest = new_rest,
-                        [(EXPOSED_VALUE | EXPOSED_TYPE, node), new_rest @ ..] =>
-                        {
-                            removed_nodes.push(*node);
-                            rest = new_rest;
-                        }
-                        _ => return Ok(None),
-                    }
-                }
-                let import_name_node = before
-                    .parent()
+                // TODO: Figure out better approach to tree-traversal.
+                let old_import_node = changes
+                    .old_removed
+                    .first()
                     .ok_or(Error::FailureWhileTraversingTree)?
                     .parent()
                     .ok_or(Error::FailureWhileTraversingTree)?
-                    .child_by_field_name("moduleName")
+                    .parent()
                     .ok_or(Error::FailureWhileTraversingTree)?;
-                let import_name =
-                    diff.old.slice(&import_name_node.byte_range());
+                let mut cursor = QueryCursor::new();
+                let old_import = self
+                    .query_for_imports
+                    .run_in(&mut cursor, &diff.old, old_import_node)
+                    .next()
+                    .ok_or(Error::FailureWhileTraversingTree)?;
 
                 // Modify the import in the new code with the name just found.
+                let mut cursor2 = QueryCursor::new();
                 let import = self
                     .query_for_imports
-                    .run(&mut cursor, &diff.new)
-                    .find(|import| import.name() == import_name)
+                    .run(&mut cursor2, &diff.new)
+                    .find(|import| import.name() == old_import.name())
                     .ok_or(Error::FailureWhileTraversingTree)?;
                 let new_exposed_count = import.exposed_list().count();
                 if new_exposed_count == 0 {
                     self.remove_exposed_list(&mut edits, &diff.new, &import);
                 }
+                let removed_range =
+                    changes.old_removed.first().unwrap().start_byte()
+                        ..changes.old_removed.last().unwrap().end_byte();
                 let mut exposed_cursor = QueryCursor::new();
-                removed_nodes.into_iter().try_for_each(|node| {
-                    self.remove_qualifier_from_name(
-                        &mut edits,
-                        &mut exposed_cursor,
-                        diff,
-                        &diff.old.slice(&node.byte_range()),
-                        &import.aliased_name(),
-                    )
-                })?;
+                old_import.exposed_list().into_iter().try_for_each(
+                    |exposed| {
+                        if exposed.node.start_byte() >= removed_range.start
+                            && exposed.node.end_byte() <= removed_range.end
+                        {
+                            self.remove_qualifier_from_name(
+                                &mut edits,
+                                &mut exposed_cursor,
+                                diff,
+                                &exposed.name(),
+                                &import.aliased_name(),
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )?;
             }
             // Add module qualifier to value.
             (
-                [(UPPER_CASE_IDENTIFIER, before)],
-                [qualifier @ .., (DOT, _), (UPPER_CASE_IDENTIFIER, after)],
+                [UPPER_CASE_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., UPPER_CASE_IDENTIFIER],
             )
             | (
-                [(LOWER_CASE_IDENTIFIER, before)],
-                [qualifier @ .., (DOT, _), (LOWER_CASE_IDENTIFIER, after)],
+                [LOWER_CASE_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
             ) => {
-                let name_before = diff.old.slice(&before.byte_range());
-                let name_after = diff.new.slice(&after.byte_range());
-                let valid_qualifier = qualifier.iter().all(|(kind, _)| {
-                    *kind == DOT || *kind == MODULE_NAME_SEGMENT
-                });
-                let range = match qualifier {
-                    [] => return Ok(None),
-                    [(_, node)] => node.byte_range(),
-                    [(_, first), .., (_, last)] => {
-                        first.start_byte()..last.end_byte()
-                    }
-                };
-                if !valid_qualifier || name_before != name_after {
+                let name_before = diff.old.slice(
+                    &changes
+                        .old_removed
+                        .first()
+                        .ok_or(Error::FailureWhileTraversingTree)?
+                        .byte_range(),
+                );
+                let parent = changes
+                    .new_added
+                    .first()
+                    .ok_or(Error::FailureWhileTraversingTree)?
+                    .parent()
+                    .ok_or(Error::FailureWhileTraversingTree)?;
+                let mut cursor = QueryCursor::new();
+                let QualifiedValue { qualifier, name } = self
+                    .query_for_qualified_value
+                    .run_in(&mut cursor, &diff.new, parent)?;
+                if name_before != name {
                     return Ok(None);
                 }
-                let qualifier = diff.new.slice(&range);
-                let base_name_str = diff.new.slice(&after.byte_range());
                 self.remove_from_exposed_list(
                     &mut edits,
                     &mut cursor,
                     diff,
-                    &base_name_str,
+                    &name,
                     &qualifier,
                 )?;
                 self.remove_qualifier_from_name(
                     &mut edits,
                     &mut cursor,
                     diff,
-                    &base_name_str,
+                    &name,
                     &qualifier,
                 )?;
             }
             // Remove entire exposing list.
-            ([(EXPOSING_LIST, before)], []) => {
-                let import_node =
-                    before.parent().ok_or(Error::FailureWhileTraversingTree)?;
+            ([EXPOSING_LIST], []) => {
+                let import_node = changes
+                    .old_removed
+                    .first()
+                    .and_then(Node::parent)
+                    .ok_or(Error::FailureWhileTraversingTree)?;
+                let mut cursor = QueryCursor::new();
                 let import = self
                     .query_for_imports
                     .run_in(&mut cursor, &diff.old, import_node)
@@ -304,11 +316,97 @@ impl RefactorEngine {
     }
 }
 
+struct QualifiedValueQuery {
+    query: Query,
+    qualifier_index: u32,
+    name_index: u32,
+}
+
+impl QualifiedValueQuery {
+    fn init(lang: Language) -> Result<QualifiedValueQuery, Error> {
+        let query_str = r#"
+            [ (_
+                (
+                  (module_name_segment) @qualifier
+                  (dot)
+                )+
+                [ (lower_case_identifier) (upper_case_identifier) ] @name
+              )
+            ]"#;
+        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let qualified_value_query = QualifiedValueQuery {
+            qualifier_index: index_for_name(&query, "qualifier")?,
+            name_index: index_for_name(&query, "name")?,
+            query,
+        };
+        Ok(qualified_value_query)
+    }
+
+    fn run_in<'a>(
+        &self,
+        cursor: &mut QueryCursor,
+        code: &'a SourceFileSnapshot,
+        node: Node<'a>,
+    ) -> Result<QualifiedValue<'a>, Error> {
+        let mut qualifier_range = None;
+        let mut name = None;
+        cursor
+            .matches(&self.query, node, code)
+            .next()
+            .ok_or(Error::NotEnoughMatches)?
+            .captures
+            .iter()
+            .for_each(|capture| {
+                if capture.index == self.qualifier_index {
+                    match &qualifier_range {
+                        None => {
+                            qualifier_range = Some(capture.node.byte_range())
+                        }
+                        Some(existing_range) => {
+                            qualifier_range = Some(
+                                existing_range.start..capture.node.end_byte(),
+                            )
+                        }
+                    }
+                } else if capture.index == self.name_index {
+                    name = Some(code.slice(&capture.node.byte_range()))
+                }
+            });
+        let val = QualifiedValue {
+            name: name.ok_or(Error::NotEnoughMatches)?,
+            qualifier: code
+                .slice(&qualifier_range.ok_or(Error::NotEnoughMatches)?),
+        };
+        Ok(val)
+    }
+}
+
+struct QualifiedValue<'a> {
+    qualifier: RopeSlice<'a>,
+    name: RopeSlice<'a>,
+}
+
 struct UnqualifiedValuesQuery {
     query: Query,
 }
 
 impl UnqualifiedValuesQuery {
+    fn init(lang: Language) -> Result<UnqualifiedValuesQuery, Error> {
+        let query_str = r#"
+            [ (value_qid
+                    .
+                    (lower_case_identifier) @val
+                )
+                (upper_case_qid
+                    .
+                    (upper_case_identifier) @val
+                )
+            ]"#;
+        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
+        let unqualified_values_query = UnqualifiedValuesQuery { query };
+        Ok(unqualified_values_query)
+    }
+
     fn run<'a, 'tree>(
         &'a self,
         cursor: &'a mut QueryCursor,
@@ -333,30 +431,12 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
     }
 }
 
-impl UnqualifiedValuesQuery {
-    fn init(lang: Language) -> Result<UnqualifiedValuesQuery, Error> {
-        let query_str = r#"
-            [ (value_qid
-                    .
-                    (lower_case_identifier) @val
-                )
-                (upper_case_qid
-                    .
-                    (upper_case_identifier) @val
-                )
-            ]"#;
-        let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
-        let unqualified_values_query = UnqualifiedValuesQuery { query };
-        Ok(unqualified_values_query)
-    }
-}
-
 struct ImportsQuery {
     query: Query,
-    root_index: usize,
-    name_index: usize,
-    as_clause_index: usize,
-    exposing_list_index: usize,
+    root_index: u32,
+    name_index: u32,
+    as_clause_index: u32,
+    exposing_list_index: u32,
 }
 
 impl ImportsQuery {
@@ -372,17 +452,11 @@ impl ImportsQuery {
             ) @root
             "#;
         let query = Query::new(lang, query_str).map_err(Error::InvalidQuery)?;
-        let index_for_name = |name| {
-            query
-                .capture_index_for_name(name)
-                .ok_or(Error::MissingCaptureIndex)
-                .map(|index| index as usize)
-        };
         let imports_query = ImportsQuery {
-            root_index: index_for_name("root")?,
-            name_index: index_for_name("name")?,
-            as_clause_index: index_for_name("as_clause")?,
-            exposing_list_index: index_for_name("exposing_list")?,
+            root_index: index_for_name(&query, "root")?,
+            name_index: index_for_name(&query, "name")?,
+            as_clause_index: index_for_name(&query, "as_clause")?,
+            exposing_list_index: index_for_name(&query, "exposing_list")?,
             query,
         };
         Ok(imports_query)
@@ -427,10 +501,10 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
         });
         Some(Import {
             code: self.code,
-            _root_node: nodes[self.query.root_index]?,
-            name_node: nodes[self.query.name_index]?,
-            as_clause_node: nodes[self.query.as_clause_index],
-            exposing_list_node: nodes[self.query.exposing_list_index],
+            _root_node: nodes[self.query.root_index as usize]?,
+            name_node: nodes[self.query.name_index as usize]?,
+            as_clause_node: nodes[self.query.as_clause_index as usize],
+            exposing_list_node: nodes[self.query.exposing_list_index as usize],
         })
     }
 }
@@ -530,11 +604,14 @@ fn sort_edits(mut edits: Vec<Edit>) -> Vec<Edit> {
     edits
 }
 
-fn attach_kinds(nodes: Vec<Node>) -> Vec<(u16, Node)> {
-    nodes
-        .into_iter()
-        .map(|node| (node.kind_id(), node))
-        .collect()
+fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
+    nodes.iter().map(|node| node.kind_id()).collect()
+}
+
+fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
+    query
+        .capture_index_for_name(name)
+        .ok_or(Error::MissingCaptureIndex)
 }
 
 // TODO: remove debug helper when it's no longer needed.
