@@ -2,6 +2,7 @@ use crate::languages::elm;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
 
@@ -10,6 +11,7 @@ pub(crate) enum Msg {
     ThreadFailed(Error),
     EditorConnected(u32, Box<dyn EditorDriver>),
     EditorDisconnected(u32),
+    OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
     CompilationSucceeded(SourceFileSnapshot),
 }
 
@@ -30,6 +32,7 @@ where
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new()?,
+        kb: elm::knowledge_base::KnowledgeBase::new(),
     }
     .start(analysis_receiver)
 }
@@ -39,6 +42,7 @@ struct AnalysisLoop<'a> {
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
+    kb: elm::knowledge_base::KnowledgeBase,
 }
 
 impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
@@ -79,6 +83,9 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 if self.editor_driver.is_empty() {
                     return Ok(false);
                 }
+            }
+            Msg::OpenedNewSourceFile { buffer, path } => {
+                self.kb.insert_buffer_path(buffer, path);
             }
             Msg::CompilationSucceeded(snapshot) => {
                 if self.editor_driver.contains_key(&snapshot.buffer.editor_id) {

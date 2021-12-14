@@ -90,6 +90,12 @@ impl EditorListenerLoop {
                     self.compilation_sender.send(
                         compilation_thread::Msg::OpenedNewSourceFile {
                             buffer,
+                            path: path.clone(),
+                        },
+                    )?;
+                    self.analysis_sender.send(
+                        analysis_thread::Msg::OpenedNewSourceFile {
+                            buffer,
                             path,
                         },
                     )?;

@@ -1,87 +1,92 @@
 use crate::support::source_code::Buffer;
 use crate::Error;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct KnowledgeBase {
-    buffer_path: HashMap<BufferPath, PathBuf>,
-    project_root: HashMap<ProjectRoot, PathBuf>,
-    compilation_params: HashMap<GetCompilationParams, CompilationParams>,
+    buffer_path: HashMap<Buffer, PathBuf>,
+    buffer_project: HashMap<Buffer, Project>,
+    compilation_params: HashMap<Buffer, CompilationParams>,
+    project_root: HashMap<PathBuf, PathBuf>,
+}
+
+macro_rules! memoize {
+    ($cache:expr, $question:expr, $answer:expr) => {{
+        if !$cache.contains_key($question) {
+            let res = match $answer {
+                Ok(ok) => ok,
+                Err(err) => return Err(err),
+            };
+            $cache.insert($question.clone(), res);
+        }
+        Ok($cache.get($question).unwrap())
+    }};
 }
 
 impl KnowledgeBase {
     pub fn new() -> KnowledgeBase {
         KnowledgeBase {
             buffer_path: HashMap::new(),
+            buffer_project: HashMap::new(),
             project_root: HashMap::new(),
             compilation_params: HashMap::new(),
         }
     }
 
-    pub(crate) fn insert_buffer_path(&mut self, buffer: Buffer, path: PathBuf) {
-        self.insert(BufferPath(buffer), path);
+    pub(crate) fn buffer_project(
+        &mut self,
+        buffer: Buffer,
+    ) -> Result<&Project, Error> {
+        memoize!(self.buffer_project, &buffer, {
+            let buffer_path = self.buffer_path(buffer)?.to_owned();
+            let project_root = self.project_root(&buffer_path)?;
+            let project = Project {
+                modules: HashMap::new(),
+            };
+            Ok(project)
+        })
     }
 
     pub(crate) fn get_compilation_params(
         &mut self,
         buffer: Buffer,
     ) -> Result<&CompilationParams, Error> {
-        self.ask(&GetCompilationParams(buffer))
-    }
-}
-
-#[derive(PartialEq, Clone, Eq, Hash)]
-struct BufferPath(Buffer);
-
-impl Query<BufferPath> for KnowledgeBase {
-    type Answer = PathBuf;
-    type Error = Error;
-
-    fn store(&mut self) -> &mut HashMap<BufferPath, Self::Answer> {
-        &mut self.buffer_path
+        memoize!(self.compilation_params, &buffer, {
+            let buffer_path = self.buffer_path(buffer)?.to_owned();
+            let root = self.project_root(&buffer_path)?.to_owned();
+            let elm_bin = find_executable("elm")?;
+            Ok(CompilationParams { root, elm_bin })
+        })
     }
 
-    fn answer(
-        &mut self,
-        BufferPath(buffer): &BufferPath,
-    ) -> Result<Self::Answer, Self::Error> {
-        Err(Error::ElmNoProjectStoredForBuffer(*buffer))
-    }
-}
-
-#[derive(PartialEq, Clone, Eq, Hash)]
-struct ProjectRoot(PathBuf);
-
-impl Query<ProjectRoot> for KnowledgeBase {
-    type Answer = PathBuf;
-    type Error = Error;
-
-    fn store(&mut self) -> &mut HashMap<ProjectRoot, Self::Answer> {
-        &mut self.project_root
+    pub(crate) fn insert_buffer_path(&mut self, buffer: Buffer, path: PathBuf) {
+        self.buffer_path.insert(buffer, path);
     }
 
-    fn answer(
-        &mut self,
-        ProjectRoot(maybe_root): &ProjectRoot,
-    ) -> Result<Self::Answer, Self::Error> {
-        if maybe_root.join("elm.json").exists() {
-            Ok(maybe_root.to_owned())
-        } else {
-            // TODO: find a way that queries for multiple file can share a
-            // reference to the same PathBuf.
-            match maybe_root.parent() {
-                None => Err(Error::NoElmJsonFoundInAnyAncestorDirectory),
-                Some(parent) => {
-                    let root = self.ask(&ProjectRoot(parent.to_owned()))?;
-                    Ok(root.to_owned())
+    fn buffer_path(&mut self, buffer: Buffer) -> Result<&PathBuf, Error> {
+        memoize!(self.buffer_path, &buffer, {
+            Err(Error::ElmNoProjectStoredForBuffer(buffer))
+        })
+    }
+
+    fn project_root(&mut self, maybe_root: &Path) -> Result<&PathBuf, Error> {
+        memoize!(self.project_root, &maybe_root.to_path_buf(), {
+            if maybe_root.join("elm.json").exists() {
+                Ok(maybe_root.to_owned())
+            } else {
+                // TODO: find a way that queries for multiple file can share a
+                // reference to the same PathBuf.
+                match maybe_root.parent() {
+                    None => Err(Error::NoElmJsonFoundInAnyAncestorDirectory),
+                    Some(parent) => {
+                        let root = self.project_root(&parent.to_owned())?;
+                        Ok(root.to_owned())
+                    }
                 }
             }
-        }
+        })
     }
 }
-
-#[derive(PartialEq, Clone, Eq, Hash)]
-struct GetCompilationParams(Buffer);
 
 pub struct CompilationParams {
     // Root of the Elm project containing this source file.
@@ -90,23 +95,8 @@ pub struct CompilationParams {
     pub elm_bin: PathBuf,
 }
 
-impl Query<GetCompilationParams> for KnowledgeBase {
-    type Answer = CompilationParams;
-    type Error = Error;
-
-    fn store(&mut self) -> &mut HashMap<GetCompilationParams, Self::Answer> {
-        &mut self.compilation_params
-    }
-
-    fn answer(
-        &mut self,
-        GetCompilationParams(buffer): &GetCompilationParams,
-    ) -> Result<Self::Answer, Self::Error> {
-        let buffer_path = self.ask(&BufferPath(*buffer))?.to_owned();
-        let root = self.ask(&ProjectRoot(buffer_path))?.to_owned();
-        let elm_bin = find_executable("elm")?;
-        Ok(CompilationParams { root, elm_bin })
-    }
+pub struct Project {
+    pub modules: HashMap<String, PathBuf>,
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {
@@ -122,30 +112,4 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
         };
     }
     Err(Error::ElmDidNotFindCompilerBinaryOnPath)
-}
-
-pub trait Query<Q>
-where
-    Q: std::hash::Hash + std::cmp::Eq + Clone + 'static,
-{
-    type Answer;
-    type Error;
-
-    // Functions to implement for concrete query types.
-    fn answer(&mut self, question: &Q) -> Result<Self::Answer, Self::Error>;
-    fn store(&mut self) -> &mut HashMap<Q, Self::Answer>;
-
-    // Function to call for making queries.
-    fn ask(&mut self, question: &Q) -> Result<&Self::Answer, Self::Error> {
-        if !self.store().contains_key(question) {
-            let answer = self.answer(question)?;
-            self.store().insert(question.clone(), answer);
-        }
-        Ok(self.store().get(question).unwrap())
-    }
-
-    // Inserting information manually, instead of on-demand
-    fn insert(&mut self, question: Q, answer: Self::Answer) {
-        self.store().insert(question, answer);
-    }
 }
