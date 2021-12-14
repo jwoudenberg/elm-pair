@@ -1,4 +1,5 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
+use crate::languages::elm::knowledge_base::{ElmExport, KnowledgeBase};
 use crate::support::source_code::{Edit, SourceFileSnapshot};
 use crate::Error;
 use ropey::RopeSlice;
@@ -12,6 +13,7 @@ const COMMA: u16 = 6;
 const DOT: u16 = 55;
 const EXPOSED_TYPE: u16 = 92;
 const EXPOSED_VALUE: u16 = 91;
+const EXPOSED_UNION_CONSTRUCTORS: u16 = 93;
 const EXPOSING_LIST: u16 = 90;
 const LOWER_CASE_IDENTIFIER: u16 = 1;
 const MODULE_NAME_SEGMENT: u16 = 200;
@@ -29,6 +31,11 @@ mod kind_constant_tests {
         check(super::DOT, "dot", true);
         check(super::EXPOSED_TYPE, "exposed_type", true);
         check(super::EXPOSED_VALUE, "exposed_value", true);
+        check(
+            super::EXPOSED_UNION_CONSTRUCTORS,
+            "exposed_union_constructors",
+            true,
+        );
         check(super::EXPOSING_LIST, "exposing_list", true);
         check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
         check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
@@ -37,6 +44,7 @@ mod kind_constant_tests {
 }
 
 pub(crate) struct RefactorEngine {
+    pub(crate) kb: KnowledgeBase,
     query_for_imports: ImportsQuery,
     query_for_unqualified_values: UnqualifiedValuesQuery,
     query_for_qualified_value: QualifiedValueQuery,
@@ -46,6 +54,7 @@ impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
         let engine = RefactorEngine {
+            kb: KnowledgeBase::new(),
             query_for_imports: ImportsQuery::init(language)?,
             query_for_unqualified_values: UnqualifiedValuesQuery::init(
                 language,
@@ -59,11 +68,11 @@ impl RefactorEngine {
     // TODO: try to return an Iterator instead of a Vector.
     // TODO: Try remove Vector from TreeChanges type.
     pub(crate) fn respond_to_change<'a>(
-        &self,
+        &mut self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
-        // debug_print_tree_changes(&changes);
+        // debug_print_tree_changes(diff, &changes);
         let edits = match (
             attach_kinds(&changes.old_removed).as_slice(),
             attach_kinds(&changes.new_added).as_slice(),
@@ -85,6 +94,9 @@ impl RefactorEngine {
             ([EXPOSING_LIST], []) => {
                 self.on_removed_exposing_list_from_import(diff, changes)?
             }
+            ([EXPOSED_UNION_CONSTRUCTORS], []) => {
+                self.on_removed_constructors_from_exposing_list(diff, changes)?
+            }
             _ => Vec::new(),
         };
         if edits.is_empty() {
@@ -92,6 +104,55 @@ impl RefactorEngine {
         } else {
             Ok(Some(sort_edits(edits)))
         }
+    }
+
+    fn on_removed_constructors_from_exposing_list(
+        &mut self,
+        diff: &SourceFileDiff,
+        changes: TreeChanges,
+    ) -> Result<Vec<Edit>, Error> {
+        // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
+        let node = changes.old_removed.first().unwrap();
+        let exposed_type_node = node.parent().unwrap();
+        let type_name = exposed_type_node.child(0).unwrap();
+        let old_import_node =
+            exposed_type_node.parent().unwrap().parent().unwrap();
+        let mut cursor = QueryCursor::new();
+        let old_import = self
+            .query_for_imports
+            .run_in(&mut cursor, &diff.old, old_import_node)
+            .next()
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+        let module_name = old_import.name();
+        let exports = self
+            .kb
+            .module_exports(diff.old.buffer, &module_name.to_string())?;
+        let type_name = diff.old.slice(&type_name.byte_range()).to_string();
+        let constructors = exports
+            .iter()
+            .find_map(|export| match export {
+                ElmExport::Value { .. } => None,
+                ElmExport::Type { name, constructors } => {
+                    if *name == type_name {
+                        Some(constructors)
+                    } else {
+                        None
+                    }
+                }
+            })
+            .unwrap();
+        let mut edits = Vec::new();
+        let mut cursor2 = QueryCursor::new();
+        for constructor in constructors.clone() {
+            self.add_qualifier_to_name(
+                &mut edits,
+                &mut cursor2,
+                diff,
+                &constructor.as_str().into(),
+                &old_import.aliased_name(),
+            )?;
+        }
+        Ok(edits)
     }
 
     fn on_removed_values_from_exposing_list(
@@ -143,7 +204,7 @@ impl RefactorEngine {
                 if exposed.node.start_byte() >= removed_range.start
                     && exposed.node.end_byte() <= removed_range.end
                 {
-                    self.remove_qualifier_from_name(
+                    self.add_qualifier_to_name(
                         &mut edits,
                         &mut exposed_cursor,
                         diff,
@@ -190,7 +251,7 @@ impl RefactorEngine {
             &name,
             &qualifier,
         )?;
-        self.remove_qualifier_from_name(
+        self.add_qualifier_to_name(
             &mut edits,
             &mut cursor,
             diff,
@@ -226,7 +287,7 @@ impl RefactorEngine {
             .exposing_list()
             .try_for_each(|exposed| {
                 let mut val_cursor = QueryCursor::new();
-                self.remove_qualifier_from_name(
+                self.add_qualifier_to_name(
                     &mut edits,
                     &mut val_cursor,
                     diff,
@@ -313,7 +374,7 @@ impl RefactorEngine {
         Ok(())
     }
 
-    fn remove_qualifier_from_name(
+    fn add_qualifier_to_name(
         &self,
         edits: &mut Vec<Edit>,
         cursor: &mut QueryCursor,
@@ -694,7 +755,10 @@ mod tests {
         let new = SourceFileSnapshot::new(buffer, simulation.end_bytes)?;
         let diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
-        let refactor_engine = RefactorEngine::new()?;
+        let mut refactor_engine = RefactorEngine::new()?;
+        refactor_engine
+            .kb
+            .insert_buffer_path(buffer, path.to_owned());
         match refactor_engine.respond_to_change(&diff, tree_changes)? {
             None => Ok("No refactor for this change.".to_owned()),
             Some(refactor) => {

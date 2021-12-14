@@ -32,7 +32,6 @@ where
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new()?,
-        kb: elm::knowledge_base::KnowledgeBase::new(),
     }
     .start(analysis_receiver)
 }
@@ -42,27 +41,35 @@ struct AnalysisLoop<'a> {
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
-    kb: elm::knowledge_base::KnowledgeBase,
 }
 
 impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
-        if let Some((diff, editor_driver)) = self.source_file_diff() {
-            eprintln!(
-                "[info] diffing revision {:?} against {:?} for buffer {:?}",
-                diff.new.revision, diff.old.revision, diff.old.buffer
-            );
-            let tree_changes = diff_trees(&diff);
-            match self.refactor_engine.respond_to_change(&diff, tree_changes) {
-                Ok(Some(refactor)) => {
-                    eprintln!("[info] applying refactor to editor");
-                    editor_driver.apply_edits(refactor);
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    eprintln!("[warn] failed to create refactor: {:?}", err)
+        if let Some(diff) = self.source_file_diff() {
+            let AnalysisLoop {
+                editor_driver,
+                refactor_engine,
+                ..
+            } = self;
+            if let Some(editor_driver) =
+                editor_driver.get(&diff.new.buffer.editor_id)
+            {
+                eprintln!(
+                    "[info] diffing revision {:?} against {:?} for buffer {:?}",
+                    diff.new.revision, diff.old.revision, diff.old.buffer
+                );
+                let tree_changes = diff_trees(&diff);
+                match refactor_engine.respond_to_change(&diff, tree_changes) {
+                    Ok(Some(refactor)) => {
+                        eprintln!("[info] applying refactor to editor");
+                        editor_driver.apply_edits(refactor);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        eprintln!("[warn] failed to create refactor: {:?}", err)
+                    }
                 }
             }
         };
@@ -85,7 +92,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 }
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
-                self.kb.insert_buffer_path(buffer, path);
+                self.refactor_engine.kb.insert_buffer_path(buffer, path);
             }
             Msg::CompilationSucceeded(snapshot) => {
                 if self.editor_driver.contains_key(&snapshot.buffer.editor_id) {
@@ -98,15 +105,14 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
 }
 
 impl<'a> AnalysisLoop<'a> {
-    fn source_file_diff(&self) -> Option<(SourceFileDiff, &dyn EditorDriver)> {
+    fn source_file_diff(&self) -> Option<SourceFileDiff> {
         let new = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();
         if new.revision <= old.revision {
             return None;
         }
-        let editor_driver = self.editor_driver.get(&new.buffer.editor_id)?;
         let diff = SourceFileDiff { old, new };
-        Some((diff, editor_driver.as_ref()))
+        Some(diff)
     }
 }
 

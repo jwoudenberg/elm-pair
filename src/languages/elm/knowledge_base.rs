@@ -1,6 +1,9 @@
 use crate::support::source_code::Buffer;
 use crate::Error;
+use serde::Deserialize;
 use std::collections::HashMap;
+use std::io::BufReader;
+use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 
 pub struct KnowledgeBase {
@@ -33,15 +36,67 @@ impl KnowledgeBase {
         }
     }
 
+    pub(crate) fn module_exports(
+        &mut self,
+        buffer: Buffer,
+        module: &str,
+    ) -> Result<&Vec<ElmExport>, Error> {
+        let project = self.buffer_project(buffer)?;
+        match project.modules.get(module) {
+            None => panic!("no such module"),
+            Some(ElmModule::_InProject { .. }) => panic!("not implemented yet"),
+            Some(ElmModule::FromDependency { exposed_modules }) => {
+                Ok(exposed_modules)
+            }
+        }
+    }
+
     pub(crate) fn buffer_project(
         &mut self,
         buffer: Buffer,
     ) -> Result<&Project, Error> {
         memoize!(self.buffer_project, &buffer, {
+            // TODO: Avoid need to copy buffer_path here.
             let buffer_path = self.buffer_path(buffer)?.to_owned();
             let project_root = self.project_root(&buffer_path)?;
+            let file =
+                std::fs::File::open(project_root.join("elm.json")).unwrap();
+            let reader = BufReader::new(file);
+            let _elm_json: ElmJson = serde_json::from_reader(reader).unwrap();
             let project = Project {
-                modules: HashMap::new(),
+                // TODO: Populate with project sourcefiles.
+                // TODO: Parse out of elm-stuff/i.dat file.
+                modules: HashMap::from_iter(std::array::IntoIter::new([
+                    (
+                        "Url".to_owned(),
+                        ElmModule::FromDependency {
+                            exposed_modules: vec![ElmExport::Type {
+                                name: "Protocol".to_owned(),
+                                constructors: vec![
+                                    "Http".to_owned(),
+                                    "Https".to_owned(),
+                                ],
+                            }],
+                        },
+                    ),
+                    (
+                        "Json.Decode".to_owned(),
+                        ElmModule::FromDependency {
+                            exposed_modules: vec![
+                                ElmExport::Value {
+                                    name: "field".to_owned(),
+                                },
+                                ElmExport::Value {
+                                    name: "int".to_owned(),
+                                },
+                                ElmExport::Type {
+                                    name: "Decoder".to_owned(),
+                                    constructors: Vec::new(),
+                                },
+                            ],
+                        },
+                    ),
+                ])),
             };
             Ok(project)
         })
@@ -69,6 +124,7 @@ impl KnowledgeBase {
         })
     }
 
+    // TODO: return path to `elm.json` instead.
     fn project_root(&mut self, maybe_root: &Path) -> Result<&PathBuf, Error> {
         memoize!(self.project_root, &maybe_root.to_path_buf(), {
             if maybe_root.join("elm.json").exists() {
@@ -95,8 +151,33 @@ pub struct CompilationParams {
     pub elm_bin: PathBuf,
 }
 
+#[derive(Debug)]
 pub struct Project {
-    pub modules: HashMap<String, PathBuf>,
+    pub modules: HashMap<String, ElmModule>,
+}
+
+#[derive(Debug)]
+pub enum ElmModule {
+    _InProject { path: PathBuf },
+    FromDependency { exposed_modules: Vec<ElmExport> },
+}
+
+#[derive(Debug)]
+pub enum ElmExport {
+    Value {
+        name: String,
+    },
+    Type {
+        name: String,
+        constructors: Vec<String>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct ElmJson {
+    #[serde(rename = "source-directories")]
+    _source_directories: Vec<PathBuf>,
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {

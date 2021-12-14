@@ -29,5 +29,6 @@ toggleSecure protocol =
 --     case protocol of
 --         Url.Http ->
 --             Url.Https
+--
 --         Url.Https ->
 --             Url.Http
