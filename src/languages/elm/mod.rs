@@ -4,6 +4,8 @@ use crate::Error;
 use ropey::RopeSlice;
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
+pub mod knowledge_base;
+
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
 const COMMA: u16 = 6;
