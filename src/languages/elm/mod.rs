@@ -13,6 +13,7 @@ const COMMA: u16 = 6;
 const DOT: u16 = 55;
 const EXPOSED_TYPE: u16 = 92;
 const EXPOSED_VALUE: u16 = 91;
+const EXPOSED_OPERATOR: u16 = 94;
 const EXPOSED_UNION_CONSTRUCTORS: u16 = 93;
 const EXPOSING_LIST: u16 = 90;
 const LOWER_CASE_IDENTIFIER: u16 = 1;
@@ -29,6 +30,7 @@ mod kind_constant_tests {
         };
         check(super::COMMA, ",", false);
         check(super::DOT, "dot", true);
+        check(super::EXPOSED_OPERATOR, "exposed_operator", true);
         check(super::EXPOSED_TYPE, "exposed_type", true);
         check(super::EXPOSED_VALUE, "exposed_value", true);
         check(
@@ -81,7 +83,13 @@ impl RefactorEngine {
                 [EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..],
                 [] | [EXPOSED_VALUE],
-            ) => self.on_removed_values_from_exposing_list(diff, changes)?,
+            ) => on_removed_values_from_exposing_list(
+                &mut self.kb,
+                &self.query_for_unqualified_values,
+                &self.query_for_imports,
+                diff,
+                changes,
+            )?,
             (
                 [UPPER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., UPPER_CASE_IDENTIFIER],
@@ -89,13 +97,28 @@ impl RefactorEngine {
             | (
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-            ) => self.on_added_module_qualifier_to_value(diff, changes)?,
+            ) => on_added_module_qualifier_to_value(
+                &self.query_for_unqualified_values,
+                &self.query_for_imports,
+                &self.query_for_qualified_value,
+                diff,
+                changes,
+            )?,
             // Remove entire exposing list.
-            ([EXPOSING_LIST], []) => {
-                self.on_removed_exposing_list_from_import(diff, changes)?
-            }
+            ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
+                &self.query_for_unqualified_values,
+                &self.query_for_imports,
+                diff,
+                changes,
+            )?,
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
-                self.on_removed_constructors_from_exposing_list(diff, changes)?
+                on_removed_constructors_from_exposing_list(
+                    &mut self.kb,
+                    &self.query_for_unqualified_values,
+                    &self.query_for_imports,
+                    diff,
+                    changes,
+                )?
             }
             _ => Vec::new(),
         };
@@ -105,297 +128,342 @@ impl RefactorEngine {
             Ok(Some(sort_edits(edits)))
         }
     }
+}
 
-    fn on_removed_constructors_from_exposing_list(
-        &mut self,
-        diff: &SourceFileDiff,
-        changes: TreeChanges,
-    ) -> Result<Vec<Edit>, Error> {
-        // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
-        let node = changes.old_removed.first().unwrap();
-        let exposed_type_node = node.parent().unwrap();
-        let type_name = exposed_type_node.child(0).unwrap();
-        let old_import_node =
-            exposed_type_node.parent().unwrap().parent().unwrap();
-        let mut cursor = QueryCursor::new();
-        let old_import = self
-            .query_for_imports
-            .run_in(&mut cursor, &diff.old, old_import_node)
-            .next()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let module_name = old_import.name();
-        let exports = self
-            .kb
-            .module_exports(diff.old.buffer, &module_name.to_string())?;
-        let type_name = diff.old.slice(&type_name.byte_range()).to_string();
-        let constructors = exports
-            .iter()
-            .find_map(|export| match export {
-                ElmExport::Value { .. } => None,
-                ElmExport::Type { name, constructors } => {
-                    if *name == type_name {
-                        Some(constructors)
-                    } else {
-                        None
+fn on_removed_constructors_from_exposing_list(
+    kb: &mut KnowledgeBase,
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    query_for_imports: &ImportsQuery,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
+    let node = changes.old_removed.first().unwrap();
+    let exposed_type_node = node.parent().unwrap();
+    let type_name = exposed_type_node.child(0).unwrap();
+    let old_import_node = exposed_type_node.parent().unwrap().parent().unwrap();
+    let mut cursor = QueryCursor::new();
+    let old_import = query_for_imports
+        .run_in(&mut cursor, &diff.old, old_import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let module_name = old_import.name();
+    let exports =
+        kb.module_exports(diff.old.buffer, &module_name.to_string())?;
+    let type_name = diff.old.slice(&type_name.byte_range()).to_string();
+    let constructors = exports
+        .iter()
+        .find_map(|export| match export {
+            ElmExport::Value { .. } => None,
+            ElmExport::Type { name, constructors } => {
+                if *name == type_name {
+                    Some(constructors)
+                } else {
+                    None
+                }
+            }
+        })
+        .unwrap();
+    let mut edits = Vec::new();
+    let mut cursor2 = QueryCursor::new();
+    for constructor in constructors.clone() {
+        add_qualifier_to_name(
+            query_for_unqualified_values,
+            &mut edits,
+            &mut cursor2,
+            diff,
+            &constructor.as_str().into(),
+            &old_import.aliased_name(),
+        )?;
+    }
+    Ok(edits)
+}
+
+fn on_removed_values_from_exposing_list(
+    kb: &mut KnowledgeBase,
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    query_for_imports: &ImportsQuery,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    match changes.new_added.as_slice() {
+        [] => {}
+        [node] if diff.new.slice(&node.byte_range()) == "" => {}
+        _ => return Ok(Vec::new()),
+    }
+
+    // TODO: Figure out better approach to tree-traversal.
+    let old_import_node = changes
+        .old_removed
+        .first()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .parent()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .parent()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut cursor = QueryCursor::new();
+    let old_import = query_for_imports
+        .run_in(&mut cursor, &diff.old, old_import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+
+    // Modify the import in the new code with the name just found.
+    let mut edits = Vec::new();
+    let mut cursor2 = QueryCursor::new();
+    let import = query_for_imports
+        .run(&mut cursor2, &diff.new)
+        .find(|import| import.name() == old_import.name())
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let new_exposed_count = import.exposing_list().count();
+    if new_exposed_count == 0 {
+        remove_exposing_list(&mut edits, &diff.new, &import);
+    }
+    let removed_range = changes.old_removed.first().unwrap().start_byte()
+        ..changes.old_removed.last().unwrap().end_byte();
+    let mut exposed_cursor = QueryCursor::new();
+
+    // Read exports from module, in case there's constructors.
+    let exports =
+        kb.module_exports(diff.old.buffer, &import.name().to_string())?;
+    old_import
+        .exposing_list()
+        .into_iter()
+        .try_for_each(|exposed| {
+            let (node, has_constructors) = match exposed {
+                Exposed::Value { node, .. } => (node, false),
+                Exposed::Operator { node, .. } => (node, false),
+                Exposed::Type {
+                    node, constructors, ..
+                } => (node, constructors),
+            };
+            if node.start_byte() >= removed_range.start
+                && node.end_byte() <= removed_range.end
+            {
+                if has_constructors {
+                    let constructors = exports
+                        .iter()
+                        .find_map(|export| match export {
+                            ElmExport::Value { .. } => None,
+                            ElmExport::Type { name, constructors } => {
+                                if *name == exposed.name() {
+                                    Some(constructors)
+                                } else {
+                                    None
+                                }
+                            }
+                        })
+                        .unwrap();
+                    for constructor in constructors.clone() {
+                        add_qualifier_to_name(
+                            query_for_unqualified_values,
+                            &mut edits,
+                            &mut exposed_cursor,
+                            diff,
+                            &constructor.as_str().into(),
+                            &old_import.aliased_name(),
+                        )?;
                     }
                 }
-            })
-            .unwrap();
-        let mut edits = Vec::new();
-        let mut cursor2 = QueryCursor::new();
-        for constructor in constructors.clone() {
-            self.add_qualifier_to_name(
-                &mut edits,
-                &mut cursor2,
-                diff,
-                &constructor.as_str().into(),
-                &old_import.aliased_name(),
-            )?;
-        }
-        Ok(edits)
-    }
-
-    fn on_removed_values_from_exposing_list(
-        &self,
-        diff: &SourceFileDiff,
-        changes: TreeChanges,
-    ) -> Result<Vec<Edit>, Error> {
-        match changes.new_added.as_slice() {
-            [] => {}
-            [node] if diff.new.slice(&node.byte_range()) == "" => {}
-            _ => return Ok(Vec::new()),
-        }
-
-        // TODO: Figure out better approach to tree-traversal.
-        let old_import_node = changes
-            .old_removed
-            .first()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .parent()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .parent()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let mut cursor = QueryCursor::new();
-        let old_import = self
-            .query_for_imports
-            .run_in(&mut cursor, &diff.old, old_import_node)
-            .next()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-
-        // Modify the import in the new code with the name just found.
-        let mut edits = Vec::new();
-        let mut cursor2 = QueryCursor::new();
-        let import = self
-            .query_for_imports
-            .run(&mut cursor2, &diff.new)
-            .find(|import| import.name() == old_import.name())
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let new_exposed_count = import.exposing_list().count();
-        if new_exposed_count == 0 {
-            self.remove_exposing_list(&mut edits, &diff.new, &import);
-        }
-        let removed_range = changes.old_removed.first().unwrap().start_byte()
-            ..changes.old_removed.last().unwrap().end_byte();
-        let mut exposed_cursor = QueryCursor::new();
-        old_import
-            .exposing_list()
-            .into_iter()
-            .try_for_each(|exposed| {
-                if exposed.node.start_byte() >= removed_range.start
-                    && exposed.node.end_byte() <= removed_range.end
-                {
-                    self.add_qualifier_to_name(
-                        &mut edits,
-                        &mut exposed_cursor,
-                        diff,
-                        &exposed.name(),
-                        &import.aliased_name(),
-                    )
-                } else {
-                    Ok(())
-                }
-            })?;
-        Ok(edits)
-    }
-
-    fn on_added_module_qualifier_to_value(
-        &self,
-        diff: &SourceFileDiff,
-        changes: TreeChanges,
-    ) -> Result<Vec<Edit>, Error> {
-        let name_before = diff.old.slice(
-            &changes
-                .old_removed
-                .first()
-                .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-                .byte_range(),
-        );
-        let parent = changes
-            .new_added
-            .first()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .parent()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let mut cursor = QueryCursor::new();
-        let QualifiedValue { qualifier, name } = self
-            .query_for_qualified_value
-            .run_in(&mut cursor, &diff.new, parent)?;
-        if name_before != name {
-            return Ok(Vec::new());
-        }
-        let mut edits = Vec::new();
-        self.remove_from_exposing_list(
-            &mut edits,
-            &mut cursor,
-            diff,
-            &name,
-            &qualifier,
-        )?;
-        self.add_qualifier_to_name(
-            &mut edits,
-            &mut cursor,
-            diff,
-            &name,
-            &qualifier,
-        )?;
-        Ok(edits)
-    }
-
-    fn on_removed_exposing_list_from_import(
-        &self,
-        diff: &SourceFileDiff,
-        changes: TreeChanges,
-    ) -> Result<Vec<Edit>, Error> {
-        let import_node = changes
-            .old_removed
-            .first()
-            .and_then(Node::parent)
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let mut cursor = QueryCursor::new();
-        let import = self
-            .query_for_imports
-            .run_in(&mut cursor, &diff.old, import_node)
-            .next()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let qualifier = import.aliased_name();
-        let mut cursor_2 = QueryCursor::new();
-        let mut edits = Vec::new();
-        self.query_for_imports
-            .run(&mut cursor_2, &diff.old)
-            .find(|import| import.aliased_name() == qualifier)
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .exposing_list()
-            .try_for_each(|exposed| {
-                let mut val_cursor = QueryCursor::new();
-                self.add_qualifier_to_name(
+                add_qualifier_to_name(
+                    query_for_unqualified_values,
                     &mut edits,
-                    &mut val_cursor,
+                    &mut exposed_cursor,
                     diff,
                     &exposed.name(),
-                    &qualifier,
+                    &import.aliased_name(),
                 )
-            })?;
-        Ok(edits)
-    }
+            } else {
+                Ok(())
+            }
+        })?;
+    Ok(edits)
+}
 
-    fn remove_exposing_list(
-        &self,
-        edits: &mut Vec<Edit>,
-        code: &SourceFileSnapshot,
-        import: &Import,
-    ) {
-        match import.exposing_list_node {
-            None => {}
-            Some(node) => edits.push(Edit::new(
-                code.buffer,
-                &mut code.bytes.clone(),
-                &node.byte_range(),
-                String::new(),
-            )),
-        }
-    }
-
-    fn remove_from_exposing_list(
-        &self,
-        edits: &mut Vec<Edit>,
-        cursor: &mut QueryCursor,
-        diff: &SourceFileDiff,
-        name: &RopeSlice,
-        qualifier: &RopeSlice,
-    ) -> Result<(), Error> {
-        let import = self
-            .query_for_imports
-            .run(cursor, &diff.new)
-            .find(|import| import.aliased_name() == *qualifier)
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-        let mut exposing_list = import.exposing_list();
-        let mut exposing_list_length = 0;
-        let exposed = exposing_list
-            .find(|exposed| {
-                exposing_list_length += 1;
-                *name == exposed.name()
-            })
+fn on_added_module_qualifier_to_value(
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    query_for_imports: &ImportsQuery,
+    query_for_qualified_value: &QualifiedValueQuery,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    let name_before = diff.old.slice(
+        &changes
+            .old_removed
+            .first()
             .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .node;
-        exposing_list_length += exposing_list.count();
-        if exposing_list_length == 1 {
-            self.remove_exposing_list(edits, &diff.new, &import);
-        } else {
-            let range = || {
-                let next = exposed.next_sibling();
-                if let Some(node) = next {
-                    if node.kind_id() == COMMA {
-                        let end_byte = match node.next_sibling() {
-                            Some(next) => next.start_byte(),
-                            None => node.end_byte(),
-                        };
-                        return exposed.start_byte()..end_byte;
-                    }
-                }
-                let prev = exposed.prev_sibling();
-                if let Some(node) = prev {
-                    if node.kind_id() == COMMA {
-                        let start_byte = match node.prev_sibling() {
-                            Some(prev) => prev.end_byte(),
-                            None => node.start_byte(),
-                        };
-                        return start_byte..exposed.end_byte();
-                    }
-                }
-                exposed.byte_range()
-            };
-            edits.push(Edit::new(
-                diff.new.buffer,
-                &mut diff.new.bytes.clone(),
-                &range(),
-                String::new(),
-            ));
-        }
-        Ok(())
+            .byte_range(),
+    );
+    let parent = changes
+        .new_added
+        .first()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .parent()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut cursor = QueryCursor::new();
+    let QualifiedValue { qualifier, name } =
+        query_for_qualified_value.run_in(&mut cursor, &diff.new, parent)?;
+    if name_before != name {
+        return Ok(Vec::new());
     }
+    let mut edits = Vec::new();
+    remove_from_exposing_list(
+        query_for_imports,
+        &mut edits,
+        &mut cursor,
+        diff,
+        &name,
+        &qualifier,
+    )?;
+    add_qualifier_to_name(
+        query_for_unqualified_values,
+        &mut edits,
+        &mut cursor,
+        diff,
+        &name,
+        &qualifier,
+    )?;
+    Ok(edits)
+}
 
-    fn add_qualifier_to_name(
-        &self,
-        edits: &mut Vec<Edit>,
-        cursor: &mut QueryCursor,
-        diff: &SourceFileDiff,
-        name: &RopeSlice,
-        qualifier: &RopeSlice,
-    ) -> Result<(), Error> {
-        self.query_for_unqualified_values
-            .run(cursor, &diff.new)
-            .for_each(|node| {
-                if *name == diff.new.slice(&node.byte_range()) {
-                    edits.push(Edit::new(
-                        diff.new.buffer,
-                        &mut diff.new.bytes.clone(),
-                        &(node.start_byte()..node.start_byte()),
-                        format!("{}.", qualifier),
-                    ))
-                }
-            });
-        Ok(())
+fn on_removed_exposing_list_from_import(
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    query_for_imports: &ImportsQuery,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    let import_node = changes
+        .old_removed
+        .first()
+        .and_then(Node::parent)
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut cursor = QueryCursor::new();
+    let import = query_for_imports
+        .run_in(&mut cursor, &diff.old, import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let qualifier = import.aliased_name();
+    let mut cursor_2 = QueryCursor::new();
+    let mut edits = Vec::new();
+    query_for_imports
+        .run(&mut cursor_2, &diff.old)
+        .find(|import| import.aliased_name() == qualifier)
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .exposing_list()
+        .try_for_each(|exposed| {
+            let mut val_cursor = QueryCursor::new();
+            add_qualifier_to_name(
+                query_for_unqualified_values,
+                &mut edits,
+                &mut val_cursor,
+                diff,
+                &exposed.name(),
+                &qualifier,
+            )
+        })?;
+    Ok(edits)
+}
+
+fn remove_exposing_list(
+    edits: &mut Vec<Edit>,
+    code: &SourceFileSnapshot,
+    import: &Import,
+) {
+    match import.exposing_list_node {
+        None => {}
+        Some(node) => edits.push(Edit::new(
+            code.buffer,
+            &mut code.bytes.clone(),
+            &node.byte_range(),
+            String::new(),
+        )),
     }
+}
+
+fn remove_from_exposing_list(
+    query_for_imports: &ImportsQuery,
+    edits: &mut Vec<Edit>,
+    cursor: &mut QueryCursor,
+    diff: &SourceFileDiff,
+    name: &RopeSlice,
+    qualifier: &RopeSlice,
+) -> Result<(), Error> {
+    let import = query_for_imports
+        .run(cursor, &diff.new)
+        .find(|import| import.aliased_name() == *qualifier)
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut exposing_list = import.exposing_list();
+    let mut exposing_list_length = 0;
+    let exposed = exposing_list
+        .find(|exposed| {
+            exposing_list_length += 1;
+            *name == exposed.name()
+        })
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let exposed_node = match exposed {
+        Exposed::Value { node, .. } => node,
+        Exposed::Type { node, .. } => node,
+        Exposed::Operator { node, .. } => node,
+    };
+    exposing_list_length += exposing_list.count();
+    if exposing_list_length == 1 {
+        remove_exposing_list(edits, &diff.new, &import);
+    } else {
+        let range = || {
+            let next = exposed_node.next_sibling();
+            if let Some(node) = next {
+                if node.kind_id() == COMMA {
+                    let end_byte = match node.next_sibling() {
+                        Some(next) => next.start_byte(),
+                        None => node.end_byte(),
+                    };
+                    return exposed_node.start_byte()..end_byte;
+                }
+            }
+            let prev = exposed_node.prev_sibling();
+            if let Some(node) = prev {
+                if node.kind_id() == COMMA {
+                    let start_byte = match node.prev_sibling() {
+                        Some(prev) => prev.end_byte(),
+                        None => node.start_byte(),
+                    };
+                    return start_byte..exposed_node.end_byte();
+                }
+            }
+            exposed_node.byte_range()
+        };
+        edits.push(Edit::new(
+            diff.new.buffer,
+            &mut diff.new.bytes.clone(),
+            &range(),
+            String::new(),
+        ));
+    }
+    Ok(())
+}
+
+// TODO: distinguish between type and constructor, so when asked to qualify
+// a name shared by a type and a constructor, we qualify the right one.
+fn add_qualifier_to_name(
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    edits: &mut Vec<Edit>,
+    cursor: &mut QueryCursor,
+    diff: &SourceFileDiff,
+    name: &RopeSlice,
+    qualifier: &RopeSlice,
+) -> Result<(), Error> {
+    query_for_unqualified_values
+        .run(cursor, &diff.new)
+        .for_each(|node| {
+            if *name == diff.new.slice(&node.byte_range()) {
+                edits.push(Edit::new(
+                    diff.new.buffer,
+                    &mut diff.new.bytes.clone(),
+                    &(node.start_byte()..node.start_byte()),
+                    format!("{}.", qualifier),
+                ))
+            }
+        });
+    Ok(())
 }
 
 struct QualifiedValueQuery {
@@ -659,24 +727,55 @@ impl<'a> Iterator for ExposedList<'a> {
             // wrapping entirely. Then this check likely wouldn't need this huge
             // comment explaining it.
             if node.is_named() && !node.byte_range().is_empty() {
-                return Some(Exposed {
-                    code: self.code,
-                    node,
-                });
+                let exposed = match node.kind_id() {
+                    EXPOSED_VALUE => Exposed::Value {
+                        code: self.code,
+                        node,
+                    },
+                    EXPOSED_OPERATOR => Exposed::Operator {
+                        code: self.code,
+                        node,
+                    },
+                    EXPOSED_TYPE => Exposed::Type {
+                        code: self.code,
+                        // TODO: create a field for this in tree-sitter grammar.
+                        constructors: node.child(1).is_some(),
+                        node,
+                    },
+                    _ => panic!("unexpected exposed kind"),
+                };
+                return Some(exposed);
             }
         }
         None
     }
 }
 
-struct Exposed<'a> {
-    code: &'a SourceFileSnapshot,
-    node: Node<'a>,
+enum Exposed<'a> {
+    Operator {
+        code: &'a SourceFileSnapshot,
+        node: Node<'a>,
+    },
+    Value {
+        code: &'a SourceFileSnapshot,
+        node: Node<'a>,
+    },
+    Type {
+        code: &'a SourceFileSnapshot,
+        node: Node<'a>,
+        constructors: bool,
+    },
 }
 
 impl Exposed<'_> {
     fn name(&self) -> RopeSlice {
-        self.code.slice(&self.node.byte_range())
+        match self {
+            Exposed::Operator { code, node } => code.slice(&node.byte_range()),
+            Exposed::Value { code, node } => code.slice(&node.byte_range()),
+            Exposed::Type { code, node, .. } => {
+                code.slice(&node.child(0).unwrap().byte_range())
+            }
+        }
     }
 }
 
