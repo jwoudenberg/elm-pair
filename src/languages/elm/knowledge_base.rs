@@ -5,6 +5,7 @@ use ropey::RopeSlice;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufReader, Read};
+use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 
 pub struct KnowledgeBase {
@@ -197,11 +198,71 @@ fn parse_idat(path: PathBuf) -> Result<HashMap<String, ElmModule>, Error> {
     let mut parser = ElmIdatParser {
         reader: BufReader::new(file),
     };
-    let idat = parser.data_binary_map(
-        ElmIdatParser::elm_canonical_module_name,
-        ElmIdatParser::elm_dependency_interface,
-    )?;
-    panic!()
+    let iter = parser
+        .data_binary_map(
+            ElmIdatParser::elm_canonical_module_name,
+            ElmIdatParser::elm_dependency_interface,
+        )?
+        .into_iter()
+        .filter_map(|(canonical_name, i)| {
+            let ElmName(name) = canonical_name.module;
+            let module = elm_module_from_interface(i)?;
+            Some((name, module))
+        });
+    Ok(HashMap::from_iter(iter))
+}
+
+fn elm_module_from_interface(
+    dep_i: ElmDependencyInterface,
+) -> Option<ElmModule> {
+    if let ElmDependencyInterface::Public(interface) = dep_i {
+        // TODO: add binops
+        let values = interface.values.into_iter().map(elm_export_from_value);
+        let unions = interface.unions.into_iter().map(elm_export_from_union);
+        let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
+        let exposed_modules =
+            Vec::from_iter(values.chain(unions).chain(aliases));
+        Some(ElmModule::FromDependency { exposed_modules })
+    } else {
+        None
+    }
+}
+
+fn elm_export_from_value(
+    (ElmName(name), _): (ElmName, ElmCanonicalAnnotation),
+) -> ElmExport {
+    ElmExport::Value { name }
+}
+
+fn elm_export_from_union(
+    (ElmName(name), union): (ElmName, ElmUnion),
+) -> ElmExport {
+    let constructor_names = |canonical_union: ElmCanonicalUnion| {
+        let iter = canonical_union
+            .alts
+            .into_iter()
+            .map(|ElmCtor(ElmName(name), _, _, _)| name);
+        Vec::from_iter(iter)
+    };
+    let constructors = match union {
+        ElmUnion::Open(canonical_union) => constructor_names(canonical_union),
+        ElmUnion::Closed(canonical_union) => constructor_names(canonical_union),
+        ElmUnion::Private(_) =>
+        // We're reading this information for use by other modules.
+        // These external modules can't see private constructors,
+        // so we don't need to return them here.
+        {
+            Vec::new()
+        }
+    };
+    ElmExport::Type { name, constructors }
+}
+
+fn elm_export_from_alias((ElmName(name), _): (ElmName, ElmAlias)) -> ElmExport {
+    ElmExport::Type {
+        name,
+        constructors: Vec::new(),
+    }
 }
 
 struct ElmIdatParser<R> {
@@ -354,12 +415,12 @@ impl<R: Read> ElmIdatParser<R> {
     fn elm_canonical_union(&mut self) -> Result<ElmCanonicalUnion, Error> {
         let vars = self.data_binary_list(Self::elm_name)?;
         let alts = self.data_binary_list(Self::elm_ctor)?;
-        let numAlts = self.data_binary_int()?;
+        let num_alts = self.data_binary_int()?;
         let opts = self.elm_ctor_opts()?;
         Ok(ElmCanonicalUnion {
             vars,
             alts,
-            numAlts,
+            num_alts,
             opts,
         })
     }
@@ -588,7 +649,7 @@ struct ElmInterface {
 struct ElmCanonicalUnion {
     vars: Vec<ElmName>,
     alts: Vec<ElmCtor>,
-    numAlts: i64,
+    num_alts: i64,
     opts: ElmCtorOpts,
 }
 
