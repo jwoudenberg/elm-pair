@@ -106,6 +106,12 @@ pub(crate) enum Error {
         type_name: String,
         module_name: String,
     },
+    ElmIdatReadingFailed(std::io::Error),
+    ElmIdatReadingUtf8Failed(std::str::Utf8Error),
+    ElmIdatReadingUnexpectedKind {
+        kind: u8,
+        during: String,
+    },
 
     // Treesitter errors
     TreeSitterParsingFailed,
