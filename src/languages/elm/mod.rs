@@ -5,6 +5,7 @@ use crate::Error;
 use ropey::RopeSlice;
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
+pub mod idat;
 pub mod knowledge_base;
 
 // These constants come from the tree-sitter-elm grammar. They might need to
