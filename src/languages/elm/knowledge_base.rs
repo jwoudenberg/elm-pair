@@ -1,5 +1,6 @@
 use crate::support::source_code::Buffer;
 use crate::Error;
+use ropey::RopeSlice;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -36,13 +37,37 @@ impl KnowledgeBase {
         }
     }
 
+    pub(crate) fn constructors_for_type<'a, 'b>(
+        &'a mut self,
+        buffer: Buffer,
+        module_name: RopeSlice<'b>,
+        type_name: RopeSlice<'b>,
+    ) -> Result<&'a Vec<String>, Error> {
+        self.module_exports(buffer, module_name)?
+            .iter()
+            .find_map(|export| match export {
+                ElmExport::Value { .. } => None,
+                ElmExport::Type { name, constructors } => {
+                    if type_name.eq(name) {
+                        Some(constructors)
+                    } else {
+                        None
+                    }
+                }
+            })
+            .ok_or_else(|| Error::ElmNoSuchTypeInModule {
+                module_name: module_name.to_string(),
+                type_name: type_name.to_string(),
+            })
+    }
+
     pub(crate) fn module_exports(
         &mut self,
         buffer: Buffer,
-        module: &str,
+        module: RopeSlice,
     ) -> Result<&Vec<ElmExport>, Error> {
         let project = self.buffer_project(buffer)?;
-        match project.modules.get(module) {
+        match project.modules.get(&module.to_string()) {
             None => panic!("no such module"),
             Some(ElmModule::_InProject { .. }) => panic!("not implemented yet"),
             Some(ElmModule::FromDependency { exposed_modules }) => {

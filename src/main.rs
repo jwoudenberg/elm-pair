@@ -102,6 +102,10 @@ pub(crate) enum Error {
     ElmCompilationFailedToWriteCodeToTempFile(std::io::Error),
     ElmCompilationFailedToRunElmMake(std::io::Error),
     ElmNoProjectStoredForBuffer(Buffer),
+    ElmNoSuchTypeInModule {
+        type_name: String,
+        module_name: String,
+    },
 
     // Treesitter errors
     TreeSitterParsingFailed,
@@ -127,7 +131,10 @@ pub(crate) enum Error {
     NeovimDecodingOutOfRange,
     NeovimDecodingInvalidUtf8(core::str::Utf8Error),
     NeovimDecodingBufferCannotHoldString(u32),
-    NeovimDecodingNotEnoughArrayElements { expected: u32, actual: u32 },
+    NeovimDecodingNotEnoughArrayElements {
+        expected: u32,
+        actual: u32,
+    },
 }
 
 impl From<rmp::encode::ValueWriteError> for Error {
