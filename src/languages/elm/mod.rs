@@ -278,6 +278,7 @@ fn on_added_module_qualifier_to_value(
             Exposed::Constructor(ctor) => ctor.name == name,
             Exposed::Type(type_) => type_.name() == name,
             Exposed::Value(val) => val.name() == name,
+            Exposed::All(_) => true,
         })?;
     if exposed_count == 1 {
         remove_exposing_list(&mut edits, &diff.new, &import);
@@ -478,6 +479,7 @@ fn add_qualifier_to_name(
             replace(name_rope.slice(..))
         }
         Exposed::Operator { .. } => panic!("unimplemented"),
+        Exposed::All(_) => panic!("unimplemented"),
     };
     Ok(())
 }
@@ -794,6 +796,7 @@ impl<'a> Iterator for ExposedList<'a> {
                             node,
                         })
                     }
+                    DOUBLE_DOT => Exposed::All(node),
                     _ => panic!("unexpected exposed kind"),
                 };
                 return Some(exposed);
@@ -808,6 +811,7 @@ enum Exposed<'a> {
     Value(ExposedValue<'a>),
     Type(ExposedType<'a>),
     Constructor(ExposedConstructor<'a>),
+    All(Node<'a>),
 }
 
 struct ExposedOperator<'a> {
@@ -850,6 +854,7 @@ impl Exposed<'_> {
             Exposed::Value(val) => val.node,
             Exposed::Type(type_) => type_.node,
             Exposed::Constructor(ctor) => ctor.node,
+            Exposed::All(node) => *node,
         }
     }
 }
