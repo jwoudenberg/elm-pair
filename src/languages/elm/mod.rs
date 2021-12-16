@@ -19,8 +19,9 @@ const EXPOSED_OPERATOR: u16 = 94;
 const EXPOSED_UNION_CONSTRUCTORS: u16 = 93;
 const EXPOSING_LIST: u16 = 90;
 const LOWER_CASE_IDENTIFIER: u16 = 1;
-const MODULE_NAME_SEGMENT: u16 = 200;
-const UPPER_CASE_IDENTIFIER: u16 = 33;
+const MODULE_NAME_SEGMENT: u16 = 201;
+const TYPE_IDENTIFIER: u16 = 33;
+const CONSTRUCTOR_IDENTIFIER: u16 = 8;
 
 #[cfg(test)]
 mod kind_constant_tests {
@@ -44,7 +45,12 @@ mod kind_constant_tests {
         check(super::EXPOSING_LIST, "exposing_list", true);
         check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
         check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
-        check(super::UPPER_CASE_IDENTIFIER, "upper_case_identifier", true);
+        check(super::TYPE_IDENTIFIER, "type_identifier", true);
+        check(
+            super::CONSTRUCTOR_IDENTIFIER,
+            "constructor_identifier",
+            true,
+        );
     }
 }
 
@@ -95,8 +101,12 @@ impl RefactorEngine {
                 changes,
             )?,
             (
-                [UPPER_CASE_IDENTIFIER],
-                [MODULE_NAME_SEGMENT, DOT, .., UPPER_CASE_IDENTIFIER],
+                [TYPE_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+            )
+            | (
+                [CONSTRUCTOR_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
             )
             | (
                 [LOWER_CASE_IDENTIFIER],
@@ -663,7 +673,11 @@ impl QualifiedValueQuery {
                 (module_name_segment) @qualifier
                 (dot)
               )+
-              [ (lower_case_identifier) (upper_case_identifier) ] @name
+              [
+                (lower_case_identifier)
+                (type_identifier)
+                (constructor_identifier)
+              ] @name
             )
             "#;
         let query = Query::new(lang, query_str)
@@ -733,9 +747,13 @@ impl UnqualifiedValuesQuery {
                     .
                     (lower_case_identifier) @val
                 )
-                (upper_case_qid
+                (type_qid
                     .
-                    (upper_case_identifier) @val
+                    (type_identifier) @val
+                )
+                (constructor_qid
+                    .
+                    (constructor_identifier) @val
                 )
             ]"#;
         let query = Query::new(lang, query_str)
