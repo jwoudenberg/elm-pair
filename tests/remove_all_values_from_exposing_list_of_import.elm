@@ -23,19 +23,19 @@ nextWorkDay time =
 
 -- START SIMULATION
 -- MOVE CURSOR TO LINE 3 Posix
--- DELETE Posix, Weekday(..), millisToPosix,
+-- DELETE Posix, Weekday(..), millisToPosix, posixToMillis
 -- END SIMULATION
 -- === expected output below ===
 -- module Main exposing (..)
 --
--- import Time exposing ( posixToMillis)
+-- import Time
 --
 --
 -- nextWorkDay : Time.Posix -> Time.Weekday
 -- nextWorkDay time =
 --     let
 --         tomorrow =
---             posixToMillis time + (1000 * 3600 * 24) |> Time.millisToPosix
+--             Time.posixToMillis time + (1000 * 3600 * 24) |> Time.millisToPosix
 --     in
 --     case Time.toWeekday Time.utc tomorrow of
 --         Time.Sat ->
@@ -46,5 +46,3 @@ nextWorkDay time =
 --
 --         day ->
 --             day
---
---
