@@ -243,9 +243,7 @@ fn elm_export_from_union(
         idat::Union::Open(canonical_union) => {
             constructor_names(canonical_union)
         }
-        idat::Union::Closed(canonical_union) => {
-            constructor_names(canonical_union)
-        }
+        idat::Union::Closed(_) => Vec::new(),
         idat::Union::Private(_) =>
         // We're reading this information for use by other modules.
         // These external modules can't see private constructors,
