@@ -270,8 +270,11 @@ fn on_added_module_qualifier_to_value(
         .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
-    let QualifiedValue { qualifier, name } =
-        query_for_qualified_value.run_in(&mut cursor, &diff.new, parent)?;
+    let Qualified {
+        kind,
+        qualifier,
+        name,
+    } = query_for_qualified_value.run_in(&mut cursor, &diff.new, parent)?;
     if name_before != name {
         return Ok(Vec::new());
     }
@@ -288,7 +291,7 @@ fn on_added_module_qualifier_to_value(
         match &exposed {
             Exposed::Operator(_) => panic!("unimplemented"),
             Exposed::Type(type_) => {
-                if type_.name == name {
+                if type_.name == name && kind == QualifiedKind::Type {
                     if exposing_list_length == 1 {
                         remove_exposing_list(&mut edits, &diff.new, &import);
                     } else {
@@ -307,7 +310,9 @@ fn on_added_module_qualifier_to_value(
                 }
 
                 let constructors = type_.constructors(kb)?;
-                if constructors.clone().any(|ctor| *ctor == name) {
+                if constructors.clone().any(|ctor| *ctor == name)
+                    && kind == QualifiedKind::Constructor
+                {
                     // Remove `(..)` behind type from constructor this.
                     edits.push(Edit::new(
                         diff.new.buffer,
@@ -333,7 +338,7 @@ fn on_added_module_qualifier_to_value(
                 }
             }
             Exposed::Value(val) => {
-                if val.name == name {
+                if val.name == name && kind == QualifiedKind::Value {
                     if exposing_list_length == 1 {
                         remove_exposing_list(&mut edits, &diff.new, &import);
                     } else {
@@ -360,20 +365,72 @@ fn on_added_module_qualifier_to_value(
                 // occurences of the same value. If the programmer really wishes
                 // to qualify everything they can indicate so by removing the
                 // `exposing (..)` clause.
-                //
-                // TODO: distinguish between the between types and constructors
-                // here, so we don't qualify the wrong one if they have the
-                // same names.
                 let mut cursor2 = QueryCursor::new();
-                add_qualifier_to_value(
-                    query_for_unqualified_values,
-                    &mut edits,
-                    &mut cursor2,
-                    &diff.new,
-                    &import,
-                    &ExposedValue { name },
-                );
-                break;
+                match kind {
+                    QualifiedKind::Value => add_qualifier_to_value(
+                        query_for_unqualified_values,
+                        &mut edits,
+                        &mut cursor2,
+                        &diff.new,
+                        &import,
+                        &ExposedValue { name },
+                    ),
+                    QualifiedKind::Type => add_qualifier_to_type(
+                        query_for_unqualified_values,
+                        &mut edits,
+                        &mut cursor2,
+                        &diff.new,
+                        &import,
+                        &ExposedType {
+                            buffer: diff.new.buffer,
+                            exposing_constructors: false,
+                            module_name: qualifier,
+                            name,
+                        },
+                    ),
+                    QualifiedKind::Constructor => {
+                        // We know a constructor got qualified, but not which
+                        // type it belogns too. To find it, we iterate over all
+                        // the exports from the module matching the qualifier we
+                        // added. The type must be among them!
+                        let exports = match kb
+                            .module_exports(diff.new.buffer, import.name())
+                        {
+                            Ok(exports_) => exports_,
+                            Err(err) => {
+                                eprintln!(
+                                    "[error] failed to read exports of {}: {:?}",
+                                    import.name().to_string(),
+                                    err
+                                );
+                                break;
+                            }
+                        };
+                        for export in exports {
+                            match export {
+                                ElmExport::Value { .. } => {}
+                                ElmExport::Type { constructors, .. } => {
+                                    if constructors
+                                        .iter()
+                                        .any(|ctor| *ctor == name)
+                                    {
+                                        add_qualifier_to_constructors(
+                                            query_for_unqualified_values,
+                                            &mut edits,
+                                            &mut cursor2,
+                                            &diff.new,
+                                            &import,
+                                            ExposedTypeConstructors::All {
+                                                names: constructors,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
             }
         }
     }
@@ -662,7 +719,9 @@ fn add_qualifier_to_value(
 struct QualifiedValueQuery {
     query: Query,
     qualifier_index: u32,
-    name_index: u32,
+    value_index: u32,
+    type_index: u32,
+    constructor_index: u32,
 }
 
 impl QualifiedValueQuery {
@@ -674,17 +733,19 @@ impl QualifiedValueQuery {
                 (dot)
               )+
               [
-                (lower_case_identifier)
-                (type_identifier)
-                (constructor_identifier)
-              ] @name
+                (lower_case_identifier)  @value
+                (type_identifier)        @type
+                (constructor_identifier) @constructor
+              ]
             )
             "#;
         let query = Query::new(lang, query_str)
             .map_err(Error::TreeSitterFailedToParseQuery)?;
         let qualified_value_query = QualifiedValueQuery {
             qualifier_index: index_for_name(&query, "qualifier")?,
-            name_index: index_for_name(&query, "name")?,
+            value_index: index_for_name(&query, "value")?,
+            type_index: index_for_name(&query, "type")?,
+            constructor_index: index_for_name(&query, "constructor")?,
             query,
         };
         Ok(qualified_value_query)
@@ -695,9 +756,10 @@ impl QualifiedValueQuery {
         cursor: &mut QueryCursor,
         code: &'a SourceFileSnapshot,
         node: Node<'a>,
-    ) -> Result<QualifiedValue<'a>, Error> {
+    ) -> Result<Qualified<'a>, Error> {
         let mut qualifier_range = None;
-        let mut name = None;
+        let mut name_capture_index = None;
+        let mut opt_name = None;
         cursor
             .matches(&self.query, node, code)
             .next()
@@ -716,24 +778,47 @@ impl QualifiedValueQuery {
                             )
                         }
                     }
-                } else if capture.index == self.name_index {
-                    name = Some(code.slice(&capture.node.byte_range()))
+                } else {
+                    name_capture_index = Some(capture.index);
+                    opt_name = Some(code.slice(&capture.node.byte_range()))
                 }
             });
-        let val = QualifiedValue {
-            name: name.ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?,
-            qualifier: code.slice(
-                &qualifier_range
-                    .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?,
-            ),
+        let name =
+            opt_name.ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
+        let qualifier = code.slice(
+            &qualifier_range
+                .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?,
+        );
+        let kind = match name_capture_index
+            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?
+        {
+            index if index == self.value_index => QualifiedKind::Value,
+            index if index == self.type_index => QualifiedKind::Type,
+            index if index == self.constructor_index => {
+                QualifiedKind::Constructor
+            }
+            _ => panic!(),
+        };
+        let val = Qualified {
+            qualifier,
+            name,
+            kind,
         };
         Ok(val)
     }
 }
 
-struct QualifiedValue<'a> {
+struct Qualified<'a> {
     qualifier: RopeSlice<'a>,
     name: RopeSlice<'a>,
+    kind: QualifiedKind,
+}
+
+#[derive(PartialEq)]
+enum QualifiedKind {
+    Value,
+    Type,
+    Constructor,
 }
 
 struct UnqualifiedValuesQuery {
