@@ -2,7 +2,7 @@ use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::languages::elm::knowledge_base::KnowledgeBase;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::Error;
-use ropey::{Rope, RopeSlice};
+use ropey::RopeSlice;
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
 pub mod idat;
@@ -156,20 +156,18 @@ fn on_removed_constructors_from_exposing_list(
     let mut cursor2 = QueryCursor::new();
     old_import
         .exposing_list(kb, diff.old.buffer)
-        .try_for_each(|exposed| {
-            if let Exposed::Constructor { .. } = exposed {
-                add_qualifier_to_name(
+        .for_each(|exposed| {
+            if let Exposed::Constructor(ctor) = exposed {
+                add_qualifier_to_constructor(
                     query_for_unqualified_values,
                     &mut edits,
                     &mut cursor2,
                     diff,
-                    &exposed,
                     &old_import.aliased_name(),
+                    &ctor,
                 )
-            } else {
-                Ok(())
             }
-        })?;
+        });
     Ok(edits)
 }
 
@@ -218,7 +216,7 @@ fn on_removed_values_from_exposing_list(
     old_import
         .exposing_list(kb, diff.new.buffer)
         .into_iter()
-        .try_for_each(|exposed| {
+        .for_each(|exposed| {
             let node = exposed.node();
             if node.start_byte() >= removed_range.start
                 && node.end_byte() <= removed_range.end
@@ -228,13 +226,11 @@ fn on_removed_values_from_exposing_list(
                     &mut edits,
                     &mut exposed_cursor,
                     diff,
-                    &exposed,
                     &import.aliased_name(),
+                    &exposed,
                 )
-            } else {
-                Ok(())
             }
-        })?;
+        });
     Ok(edits)
 }
 
@@ -293,30 +289,29 @@ fn on_added_module_qualifier_to_value(
         // qualifies one constructor they must intend to do them all.
         import
             .exposing_list(kb, diff.new.buffer)
-            .try_for_each(|exposed_| {
+            .for_each(|exposed_| {
                 if let Exposed::Constructor(ctor_) = &exposed_ {
                     if type_name == ctor_.type_name {
-                        return add_qualifier_to_name(
+                        add_qualifier_to_constructor(
                             query_for_unqualified_values,
                             &mut edits,
                             &mut cursor2,
                             diff,
-                            &exposed_,
                             &qualifier,
+                            ctor_,
                         );
                     }
                 }
-                Ok(())
-            })?;
+            });
     } else {
         add_qualifier_to_name(
             query_for_unqualified_values,
             &mut edits,
             &mut cursor2,
             diff,
-            &exposed,
             &qualifier,
-        )?;
+            &exposed,
+        );
     }
     Ok(edits)
 }
@@ -346,17 +341,17 @@ fn on_removed_exposing_list_from_import(
         .find(|import| import.aliased_name() == qualifier)
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
         .exposing_list(kb, diff.old.buffer)
-        .try_for_each(|exposed| {
+        .for_each(|exposed| {
             let mut val_cursor = QueryCursor::new();
             add_qualifier_to_name(
                 query_for_unqualified_values,
                 &mut edits,
                 &mut val_cursor,
                 diff,
-                &exposed,
                 &qualifier,
+                &exposed,
             )
-        })?;
+        });
     Ok(edits)
 }
 
@@ -447,41 +442,110 @@ fn remove_from_exposing_list(
     Ok(())
 }
 
-// TODO: distinguish between type and constructor, so when asked to qualify
-// a name shared by a type and a constructor, we qualify the right one.
 fn add_qualifier_to_name(
     query_for_unqualified_values: &UnqualifiedValuesQuery,
     edits: &mut Vec<Edit>,
     cursor: &mut QueryCursor,
     diff: &SourceFileDiff,
-    exposed: &Exposed,
     qualifier: &RopeSlice,
-) -> Result<(), Error> {
-    let mut replace = |exposed_name| {
-        query_for_unqualified_values
-            .run(cursor, &diff.new)
-            .for_each(|node| {
-                if exposed_name == diff.new.slice(&node.byte_range()) {
-                    edits.push(Edit::new(
-                        diff.new.buffer,
-                        &mut diff.new.bytes.clone(),
-                        &(node.start_byte()..node.start_byte()),
-                        format!("{}.", qualifier),
-                    ))
-                }
-            })
-    };
+    exposed: &Exposed,
+) {
     match exposed {
-        Exposed::Value(val) => replace(val.name()),
-        Exposed::Type(type_) => replace(type_.name()),
-        Exposed::Constructor(ctor) => {
-            let name_rope = Rope::from_str(&ctor.name);
-            replace(name_rope.slice(..))
-        }
+        Exposed::Value(val) => add_qualifier_to_value(
+            query_for_unqualified_values,
+            edits,
+            cursor,
+            diff,
+            qualifier,
+            val,
+        ),
+        Exposed::Type(type_) => add_qualifier_to_type(
+            query_for_unqualified_values,
+            edits,
+            cursor,
+            diff,
+            qualifier,
+            type_,
+        ),
+        Exposed::Constructor(ctor) => add_qualifier_to_constructor(
+            query_for_unqualified_values,
+            edits,
+            cursor,
+            diff,
+            qualifier,
+            ctor,
+        ),
         Exposed::Operator { .. } => panic!("unimplemented"),
         Exposed::All(_) => panic!("unimplemented"),
     };
-    Ok(())
+}
+
+fn add_qualifier_to_constructor(
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    edits: &mut Vec<Edit>,
+    cursor: &mut QueryCursor,
+    diff: &SourceFileDiff,
+    qualifier: &RopeSlice,
+    exposed: &ExposedConstructor,
+) {
+    query_for_unqualified_values
+        .run(cursor, &diff.new)
+        .for_each(|node| {
+            if exposed.name == diff.new.slice(&node.byte_range()) {
+                edits.push(Edit::new(
+                    diff.new.buffer,
+                    &mut diff.new.bytes.clone(),
+                    &(node.start_byte()..node.start_byte()),
+                    format!("{}.", qualifier),
+                ))
+            }
+        })
+}
+
+fn add_qualifier_to_type(
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    edits: &mut Vec<Edit>,
+    cursor: &mut QueryCursor,
+    diff: &SourceFileDiff,
+    qualifier: &RopeSlice,
+    exposed: &ExposedType,
+) {
+    let exposed_name = exposed.name();
+    query_for_unqualified_values
+        .run(cursor, &diff.new)
+        .for_each(|node| {
+            if exposed_name == diff.new.slice(&node.byte_range()) {
+                edits.push(Edit::new(
+                    diff.new.buffer,
+                    &mut diff.new.bytes.clone(),
+                    &(node.start_byte()..node.start_byte()),
+                    format!("{}.", qualifier),
+                ))
+            }
+        })
+}
+
+fn add_qualifier_to_value(
+    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    edits: &mut Vec<Edit>,
+    cursor: &mut QueryCursor,
+    diff: &SourceFileDiff,
+    qualifier: &RopeSlice,
+    exposed: &ExposedValue,
+) {
+    let exposed_name = exposed.name();
+    query_for_unqualified_values
+        .run(cursor, &diff.new)
+        .for_each(|node| {
+            if exposed_name == diff.new.slice(&node.byte_range()) {
+                edits.push(Edit::new(
+                    diff.new.buffer,
+                    &mut diff.new.bytes.clone(),
+                    &(node.start_byte()..node.start_byte()),
+                    format!("{}.", qualifier),
+                ))
+            }
+        })
 }
 
 struct QualifiedValueQuery {
