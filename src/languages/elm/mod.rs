@@ -2,7 +2,7 @@ use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::languages::elm::knowledge_base::KnowledgeBase;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::Error;
-use ropey::RopeSlice;
+use ropey::{Rope, RopeSlice};
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
 pub mod idat;
@@ -12,6 +12,7 @@ pub mod knowledge_base;
 // be changed when tree-sitter-elm updates.
 const COMMA: u16 = 6;
 const DOT: u16 = 55;
+const DOUBLE_DOT: u16 = 49;
 const EXPOSED_TYPE: u16 = 92;
 const EXPOSED_VALUE: u16 = 91;
 const EXPOSED_OPERATOR: u16 = 94;
@@ -39,6 +40,7 @@ mod kind_constant_tests {
             "exposed_union_constructors",
             true,
         );
+        check(super::DOUBLE_DOT, "double_dot", true);
         check(super::EXPOSING_LIST, "exposing_list", true);
         check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
         check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
@@ -82,7 +84,8 @@ impl RefactorEngine {
         ) {
             (
                 [EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..],
+                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [DOUBLE_DOT],
                 [] | [EXPOSED_VALUE],
             ) => on_removed_values_from_exposing_list(
                 &mut self.kb,
@@ -270,28 +273,28 @@ fn on_added_module_qualifier_to_value(
         &qualifier,
     )?;
     let (exposed_count, exposed) =
-        get_exposed_by_name(kb, diff, &import, &name)?;
+        get_exposed_by(kb, diff, &import, |exposed| match exposed {
+            Exposed::Operator(_) => panic!("unimplemented"),
+            Exposed::Constructor(ctor) => ctor.name == name,
+            Exposed::Type(type_) => type_.name() == name,
+            Exposed::Value(val) => val.name() == name,
+        })?;
     if exposed_count == 1 {
         remove_exposing_list(&mut edits, &diff.new, &import);
     } else {
         remove_from_exposing_list(&mut edits, diff, &exposed)?;
     }
-    println!("{:?}", exposed.name());
     let mut cursor2 = QueryCursor::new();
-    if let Exposed::Constructor { type_name, .. } = exposed {
+    if let Exposed::Constructor(ctor) = exposed {
+        let type_name = ctor.type_name.to_string();
         // We're qualifying a constructor. In Elm you can only expose either
         // all constructors of a type or none of them, so if the programmer
         // qualifies one constructor they must intend to do them all.
-        let type_name = type_name.to_string();
         import
             .exposing_list(kb, diff.new.buffer)
             .try_for_each(|exposed_| {
-                if let Exposed::Constructor {
-                    type_name: type_name_,
-                    ..
-                } = exposed_
-                {
-                    if type_name == type_name_ {
+                if let Exposed::Constructor(ctor_) = &exposed_ {
+                    if type_name == ctor_.type_name {
                         return add_qualifier_to_name(
                             query_for_unqualified_values,
                             &mut edits,
@@ -384,18 +387,21 @@ fn get_import_by_aliased_name<'a>(
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)
 }
 
-fn get_exposed_by_name<'a>(
+fn get_exposed_by<'a, P>(
     kb: &'a mut KnowledgeBase,
     diff: &SourceFileDiff,
     import: &'a Import<'a>,
-    name: &RopeSlice,
-) -> Result<(usize, Exposed<'a>), Error> {
+    predicate: P,
+) -> Result<(usize, Exposed<'a>), Error>
+where
+    P: Fn(&Exposed) -> bool,
+{
     let mut exposing_list = import.exposing_list(kb, diff.old.buffer);
     let mut exposing_list_length = 0;
     let exposed = exposing_list
         .find(|exposed| {
             exposing_list_length += 1;
-            *name == exposed.name()
+            predicate(exposed)
         })
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     exposing_list_length += exposing_list.count();
@@ -434,7 +440,7 @@ fn remove_from_exposing_list(
     edits.push(Edit::new(
         diff.new.buffer,
         &mut diff.new.bytes.clone(),
-        &range_including_comma_and_whitespace(*exposed.node()),
+        &range_including_comma_and_whitespace(exposed.node()),
         String::new(),
     ));
     Ok(())
@@ -450,18 +456,29 @@ fn add_qualifier_to_name(
     exposed: &Exposed,
     qualifier: &RopeSlice,
 ) -> Result<(), Error> {
-    query_for_unqualified_values
-        .run(cursor, &diff.new)
-        .for_each(|node| {
-            if exposed.name() == diff.new.slice(&node.byte_range()) {
-                edits.push(Edit::new(
-                    diff.new.buffer,
-                    &mut diff.new.bytes.clone(),
-                    &(node.start_byte()..node.start_byte()),
-                    format!("{}.", qualifier),
-                ))
-            }
-        });
+    let mut replace = |exposed_name| {
+        query_for_unqualified_values
+            .run(cursor, &diff.new)
+            .for_each(|node| {
+                if exposed_name == diff.new.slice(&node.byte_range()) {
+                    edits.push(Edit::new(
+                        diff.new.buffer,
+                        &mut diff.new.bytes.clone(),
+                        &(node.start_byte()..node.start_byte()),
+                        format!("{}.", qualifier),
+                    ))
+                }
+            })
+    };
+    match exposed {
+        Exposed::Value(val) => replace(val.name()),
+        Exposed::Type(type_) => replace(type_.name()),
+        Exposed::Constructor(ctor) => {
+            let name_rope = Rope::from_str(&ctor.name);
+            replace(name_rope.slice(..))
+        }
+        Exposed::Operator { .. } => panic!("unimplemented"),
+    };
     Ok(())
 }
 
@@ -720,13 +737,13 @@ impl<'a> Iterator for ExposedList<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let cursor = self.cursor.as_mut()?;
         if let Some(name) = self.constructors.pop() {
-            return Some(Exposed::Constructor {
+            return Some(Exposed::Constructor(ExposedConstructor {
                 node: cursor.node().child(1).unwrap(),
                 type_name: self
                     .code
                     .slice(&cursor.node().child(0).unwrap().byte_range()),
                 name,
-            });
+            }));
         }
 
         while cursor.goto_next_sibling() {
@@ -749,14 +766,14 @@ impl<'a> Iterator for ExposedList<'a> {
             // comment explaining it.
             if node.is_named() && !node.byte_range().is_empty() {
                 let exposed = match node.kind_id() {
-                    EXPOSED_VALUE => Exposed::Value {
+                    EXPOSED_VALUE => Exposed::Value(ExposedValue {
                         code: self.code,
                         node,
-                    },
-                    EXPOSED_OPERATOR => Exposed::Operator {
-                        code: self.code,
+                    }),
+                    EXPOSED_OPERATOR => Exposed::Operator(ExposedOperator {
+                        _code: self.code,
                         node,
-                    },
+                    }),
                     EXPOSED_TYPE => {
                         let has_constructors = node.child(1).is_some();
                         if has_constructors {
@@ -772,10 +789,10 @@ impl<'a> Iterator for ExposedList<'a> {
                                 .unwrap()
                                 .clone();
                         }
-                        Exposed::Type {
+                        Exposed::Type(ExposedType {
                             code: self.code,
                             node,
-                        }
+                        })
                     }
                     _ => panic!("unexpected exposed kind"),
                 };
@@ -787,43 +804,52 @@ impl<'a> Iterator for ExposedList<'a> {
 }
 
 enum Exposed<'a> {
-    Operator {
-        code: &'a SourceFileSnapshot,
-        node: Node<'a>,
-    },
-    Value {
-        code: &'a SourceFileSnapshot,
-        node: Node<'a>,
-    },
-    Type {
-        code: &'a SourceFileSnapshot,
-        node: Node<'a>,
-    },
-    Constructor {
-        node: Node<'a>,
-        type_name: RopeSlice<'a>,
-        name: String,
-    },
+    Operator(ExposedOperator<'a>),
+    Value(ExposedValue<'a>),
+    Type(ExposedType<'a>),
+    Constructor(ExposedConstructor<'a>),
+}
+
+struct ExposedOperator<'a> {
+    _code: &'a SourceFileSnapshot,
+    node: Node<'a>,
+}
+
+struct ExposedValue<'a> {
+    code: &'a SourceFileSnapshot,
+    node: Node<'a>,
+}
+
+impl ExposedValue<'_> {
+    fn name(&self) -> RopeSlice {
+        self.code.slice(&self.node.byte_range())
+    }
+}
+
+struct ExposedType<'a> {
+    code: &'a SourceFileSnapshot,
+    node: Node<'a>,
+}
+
+impl ExposedType<'_> {
+    fn name(&self) -> RopeSlice {
+        self.code.slice(&self.node.child(0).unwrap().byte_range())
+    }
+}
+
+struct ExposedConstructor<'a> {
+    node: Node<'a>,
+    type_name: RopeSlice<'a>,
+    name: String,
 }
 
 impl Exposed<'_> {
-    fn name(&self) -> RopeSlice {
+    fn node(&self) -> Node<'_> {
         match self {
-            Exposed::Operator { code, node } => code.slice(&node.byte_range()),
-            Exposed::Value { code, node } => code.slice(&node.byte_range()),
-            Exposed::Type { code, node, .. } => {
-                code.slice(&node.child(0).unwrap().byte_range())
-            }
-            Exposed::Constructor { name, .. } => name.as_str().into(),
-        }
-    }
-
-    fn node(&self) -> &Node<'_> {
-        match self {
-            Exposed::Operator { node, .. } => node,
-            Exposed::Value { node, .. } => node,
-            Exposed::Type { node, .. } => node,
-            Exposed::Constructor { node, .. } => node,
+            Exposed::Operator(op) => op.node,
+            Exposed::Value(val) => val.node,
+            Exposed::Type(type_) => type_.node,
+            Exposed::Constructor(ctor) => ctor.node,
         }
     }
 }
