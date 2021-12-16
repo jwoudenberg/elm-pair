@@ -919,18 +919,21 @@ mod tests {
         }
     }
 
-    simulation_test!(add_module_qualifier_to_variable);
     simulation_test!(add_module_alias_as_qualifier_to_variable);
+    simulation_test!(add_module_qualifier_to_constructor);
     simulation_test!(add_module_qualifier_to_type);
     simulation_test!(add_module_qualifier_to_type_with_same_name);
-    simulation_test!(add_module_qualifier_to_constructor);
-    simulation_test!(remove_variable_from_exposing_list_of_import);
+    simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
+    simulation_test!(add_module_qualifier_to_variable);
     simulation_test!(remove_constructor_from_exposing_list_of_import);
-    simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
-    simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
-    simulation_test!(remove_multiple_values_from_exposing_list_of_import);
+    simulation_test!(remove_double_dot_from_exposing_list_of_import);
+    simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_clause_from_import);
     simulation_test!(remove_exposing_clause_from_import_with_as_clause);
+    simulation_test!(remove_multiple_values_from_exposing_list_of_import);
+    simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
+    simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
+    simulation_test!(remove_variable_from_exposing_list_of_import);
 
     #[derive(Debug)]
     enum Error {
