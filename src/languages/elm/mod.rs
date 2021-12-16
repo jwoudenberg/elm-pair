@@ -1089,6 +1089,9 @@ mod tests {
 
     simulation_test!(add_module_alias_as_qualifier_to_variable);
     simulation_test!(add_module_qualifier_to_constructor);
+    simulation_test!(
+        add_module_qualifier_to_constructor_from_expose_all_import
+    );
     simulation_test!(add_module_qualifier_to_type);
     simulation_test!(add_module_qualifier_to_type_with_same_name);
     simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
