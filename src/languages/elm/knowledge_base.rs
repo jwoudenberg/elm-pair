@@ -70,7 +70,7 @@ impl KnowledgeBase {
         let project = self.buffer_project(buffer)?;
         match project.modules.get(&module.to_string()) {
             None => panic!("no such module"),
-            Some(ElmModule::_InProject { .. }) => panic!("not implemented yet"),
+            Some(ElmModule::InProject { .. }) => panic!("not implemented yet"),
             Some(ElmModule::FromDependency { exposed_modules }) => {
                 Ok(exposed_modules)
             }
@@ -85,17 +85,11 @@ impl KnowledgeBase {
             // TODO: Avoid need to copy buffer_path here.
             let buffer_path = self.buffer_path(buffer)?.to_owned();
             let project_root = self.project_root(&buffer_path)?;
-            let file =
-                std::fs::File::open(project_root.join("elm.json")).unwrap();
-            let reader = BufReader::new(file);
-            let _elm_json: ElmJson = serde_json::from_reader(reader).unwrap();
-            let modules_from_dependencies =
+            // TODO: Remove harcoded Elm version.
+            let mut modules =
                 from_idat(project_root.join("elm-stuff/0.19.1/i.dat"))?;
-            let project = Project {
-                // TODO: Add project sourcefiles.
-                // TODO: Remove harcoded Elm version.
-                modules: modules_from_dependencies,
-            };
+            modules.extend(find_project_modules(project_root));
+            let project = Project { modules };
             Ok(project)
         })
     }
@@ -156,7 +150,7 @@ pub struct Project {
 
 #[derive(Debug)]
 pub enum ElmModule {
-    _InProject { path: PathBuf },
+    InProject { path: PathBuf },
     FromDependency { exposed_modules: Vec<ElmExport> },
 }
 
@@ -175,7 +169,7 @@ pub enum ElmExport {
 #[serde(rename_all = "kebab-case")]
 struct ElmJson {
     #[serde(rename = "source-directories")]
-    _source_directories: Vec<PathBuf>,
+    source_directories: Vec<PathBuf>,
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {
@@ -191,6 +185,98 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
         };
     }
     Err(Error::ElmDidNotFindCompilerBinaryOnPath)
+}
+
+fn find_project_modules(project_root: &Path) -> HashMap<String, ElmModule> {
+    // TODO: replace unwrap()'s with error logging
+    let file = std::fs::File::open(project_root.join("elm.json")).unwrap();
+    let reader = BufReader::new(file);
+    let elm_json: ElmJson = serde_json::from_reader(reader).unwrap();
+    let mut modules_found = HashMap::new();
+    for dir in elm_json.source_directories {
+        let source_dir = project_root.join(&dir);
+        find_project_modules_in_dir(
+            &source_dir,
+            &source_dir,
+            &mut modules_found,
+        );
+    }
+    modules_found
+}
+
+fn find_project_modules_in_dir(
+    dir_path: &Path,
+    source_dir: &Path,
+    modules: &mut HashMap<String, ElmModule>,
+) {
+    let dir = std::fs::read_dir(dir_path).unwrap();
+    for entry in dir {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            find_project_modules_in_dir(&path, source_dir, modules);
+        } else if path.extension() == Some(std::ffi::OsStr::new("elm")) {
+            let module_name = path
+                .with_extension("")
+                .strip_prefix(source_dir)
+                .unwrap()
+                .components()
+                .filter_map(|component| {
+                    if let std::path::Component::Normal(os_str) = component {
+                        let str = os_str.to_str().unwrap();
+                        Some(str)
+                    } else {
+                        None
+                    }
+                })
+                .my_intersperse(".")
+                .collect();
+            modules.insert(module_name, ElmModule::InProject { path });
+        }
+    }
+}
+
+// Tust nightlies already contain a `intersperse` iterator. Once that lands
+// in stable we should switch over.
+trait Intersperse: Iterator {
+    fn my_intersperse(self, separator: Self::Item) -> IntersperseState<Self>
+    where
+        Self::Item: Clone,
+        Self: Sized;
+}
+
+impl<I: Iterator> Intersperse for I {
+    fn my_intersperse(self, separator: Self::Item) -> IntersperseState<I> {
+        IntersperseState {
+            iterator: self.peekable(),
+            separator,
+            separator_is_next: false,
+        }
+    }
+}
+
+struct IntersperseState<I: Iterator> {
+    iterator: std::iter::Peekable<I>,
+    separator: I::Item,
+    separator_is_next: bool,
+}
+
+impl<I: Iterator> Iterator for IntersperseState<I>
+where
+    I::Item: Clone,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.iterator.peek().is_none() {
+            None
+        } else if self.separator_is_next {
+            self.separator_is_next = false;
+            Some(self.separator.clone())
+        } else {
+            self.separator_is_next = true;
+            self.iterator.next()
+        }
+    }
 }
 
 fn from_idat(path: PathBuf) -> Result<HashMap<String, ElmModule>, Error> {

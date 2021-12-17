@@ -1250,6 +1250,7 @@ mod tests {
     simulation_test!(remove_constructor_from_exposing_list_of_import);
     simulation_test!(remove_double_dot_from_exposing_list_of_import);
     simulation_test!(remove_exposing_all_clause_from_import);
+    simulation_test!(remove_exposing_all_clause_from_local_import);
     simulation_test!(remove_exposing_clause_from_import);
     simulation_test!(remove_exposing_clause_from_import_with_as_clause);
     simulation_test!(remove_multiple_values_from_exposing_list_of_import);
