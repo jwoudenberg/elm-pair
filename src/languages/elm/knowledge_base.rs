@@ -194,7 +194,7 @@ fn find_project_modules(project_root: &Path) -> HashMap<String, ElmModule> {
     let elm_json: ElmJson = serde_json::from_reader(reader).unwrap();
     let mut modules_found = HashMap::new();
     for dir in elm_json.source_directories {
-        let source_dir = project_root.join(&dir);
+        let source_dir = project_root.join(&dir).canonicalize().unwrap();
         find_project_modules_in_dir(
             &source_dir,
             &source_dir,
