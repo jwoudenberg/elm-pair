@@ -270,10 +270,9 @@ fn on_added_module_qualifier_to_value(
         .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
-    let Qualified {
-        kind,
+    let QualifiedReference {
         qualifier,
-        name,
+        reference: Reference { kind, name, .. },
     } = query_for_qualified_value.run_in(&mut cursor, &diff.new, parent)?;
     if name_before != name {
         return Ok(Vec::new());
@@ -291,7 +290,7 @@ fn on_added_module_qualifier_to_value(
         match &exposed {
             Exposed::Operator(_) => panic!("unimplemented"),
             Exposed::Type(type_) => {
-                if type_.name == name && kind == QualifiedKind::Type {
+                if type_.name == name && kind == ReferenceKind::Type {
                     if exposing_list_length == 1 {
                         remove_exposing_list(&mut edits, &diff.new, &import);
                     } else {
@@ -311,7 +310,7 @@ fn on_added_module_qualifier_to_value(
 
                 let constructors = type_.constructors(kb)?;
                 if constructors.clone().any(|ctor| *ctor == name)
-                    && kind == QualifiedKind::Constructor
+                    && kind == ReferenceKind::Constructor
                 {
                     // Remove `(..)` behind type from constructor this.
                     edits.push(Edit::new(
@@ -338,7 +337,7 @@ fn on_added_module_qualifier_to_value(
                 }
             }
             Exposed::Value(val) => {
-                if val.name == name && kind == QualifiedKind::Value {
+                if val.name == name && kind == ReferenceKind::Value {
                     if exposing_list_length == 1 {
                         remove_exposing_list(&mut edits, &diff.new, &import);
                     } else {
@@ -367,7 +366,7 @@ fn on_added_module_qualifier_to_value(
                 // `exposing (..)` clause.
                 let mut cursor2 = QueryCursor::new();
                 match kind {
-                    QualifiedKind::Value => add_qualifier_to_value(
+                    ReferenceKind::Value => add_qualifier_to_value(
                         query_for_unqualified_values,
                         &mut edits,
                         &mut cursor2,
@@ -375,7 +374,7 @@ fn on_added_module_qualifier_to_value(
                         &import,
                         &ExposedValue { name },
                     ),
-                    QualifiedKind::Type => add_qualifier_to_type(
+                    ReferenceKind::Type => add_qualifier_to_type(
                         query_for_unqualified_values,
                         &mut edits,
                         &mut cursor2,
@@ -388,7 +387,7 @@ fn on_added_module_qualifier_to_value(
                             name,
                         },
                     ),
-                    QualifiedKind::Constructor => {
+                    ReferenceKind::Constructor => {
                         // We know a constructor got qualified, but not which
                         // type it belogns too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
@@ -655,10 +654,9 @@ fn add_qualifier_to_constructors(
     constructors: ExposedTypeConstructors,
 ) {
     for ctor in constructors {
-        query_for_unqualified_values
-            .run(cursor, code)
-            .for_each(|node| {
-                if *ctor == code.slice(&node.byte_range()) {
+        query_for_unqualified_values.run(cursor, code).for_each(
+            |Reference { name, node, kind }| {
+                if *ctor == name && kind == ReferenceKind::Constructor {
                     edits.push(Edit::new(
                         code.buffer,
                         &mut code.bytes.clone(),
@@ -666,7 +664,8 @@ fn add_qualifier_to_constructors(
                         format!("{}.", import.aliased_name()),
                     ))
                 }
-            })
+            },
+        )
     }
 }
 
@@ -679,10 +678,9 @@ fn add_qualifier_to_type(
     exposed: &ExposedType,
 ) {
     let exposed_name = exposed.name;
-    query_for_unqualified_values
-        .run(cursor, code)
-        .for_each(|node| {
-            if exposed_name == code.slice(&node.byte_range()) {
+    query_for_unqualified_values.run(cursor, code).for_each(
+        |Reference { name, kind, node }| {
+            if exposed_name == name && kind == ReferenceKind::Type {
                 edits.push(Edit::new(
                     code.buffer,
                     &mut code.bytes.clone(),
@@ -690,7 +688,8 @@ fn add_qualifier_to_type(
                     format!("{}.", import.aliased_name()),
                 ))
             }
-        })
+        },
+    )
 }
 
 fn add_qualifier_to_value(
@@ -702,18 +701,19 @@ fn add_qualifier_to_value(
     exposed: &ExposedValue,
 ) {
     let exposed_name = exposed.name;
-    query_for_unqualified_values
-        .run(cursor, code)
-        .for_each(|node| {
-            if exposed_name == code.slice(&node.byte_range()) {
+    query_for_unqualified_values.run(cursor, code).for_each(
+        |Reference { name, node, kind }| {
+            if exposed_name == name && kind == ReferenceKind::Value {
                 edits.push(Edit::new(
                     code.buffer,
+                    // TODO: remove need for clone()
                     &mut code.bytes.clone(),
                     &(node.start_byte()..node.start_byte()),
                     format!("{}.", import.aliased_name()),
                 ))
             }
-        })
+        },
+    )
 }
 
 struct QualifiedValueQuery {
@@ -756,7 +756,7 @@ impl QualifiedValueQuery {
         cursor: &mut QueryCursor,
         code: &'a SourceFileSnapshot,
         node: Node<'a>,
-    ) -> Result<Qualified<'a>, Error> {
+    ) -> Result<QualifiedReference<'a>, Error> {
         let mut qualifier_range = None;
         let mut name_capture_index = None;
         let mut opt_name = None;
@@ -792,30 +792,35 @@ impl QualifiedValueQuery {
         let kind = match name_capture_index
             .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?
         {
-            index if index == self.value_index => QualifiedKind::Value,
-            index if index == self.type_index => QualifiedKind::Type,
+            index if index == self.value_index => ReferenceKind::Value,
+            index if index == self.type_index => ReferenceKind::Type,
             index if index == self.constructor_index => {
-                QualifiedKind::Constructor
+                ReferenceKind::Constructor
             }
             _ => panic!(),
         };
-        let val = Qualified {
+        let reference = Reference { node, name, kind };
+        let qualified = QualifiedReference {
             qualifier,
-            name,
-            kind,
+            reference,
         };
-        Ok(val)
+        Ok(qualified)
     }
 }
 
-struct Qualified<'a> {
+struct QualifiedReference<'a> {
     qualifier: RopeSlice<'a>,
+    reference: Reference<'a>,
+}
+
+struct Reference<'a> {
     name: RopeSlice<'a>,
-    kind: QualifiedKind,
+    node: Node<'a>,
+    kind: ReferenceKind,
 }
 
 #[derive(PartialEq)]
-enum QualifiedKind {
+enum ReferenceKind {
     Value,
     Type,
     Constructor,
@@ -823,27 +828,35 @@ enum QualifiedKind {
 
 struct UnqualifiedValuesQuery {
     query: Query,
+    value_index: u32,
+    type_index: u32,
+    constructor_index: u32,
 }
 
 impl UnqualifiedValuesQuery {
     fn init(lang: Language) -> Result<UnqualifiedValuesQuery, Error> {
         let query_str = r#"
             [ (value_qid
-                    .
-                    (lower_case_identifier) @val
-                )
-                (type_qid
-                    .
-                    (type_identifier) @val
-                )
-                (constructor_qid
-                    .
-                    (constructor_identifier) @val
-                )
+                .
+                (lower_case_identifier) @value
+              )
+              (type_qid
+                .
+                (type_identifier) @type
+              )
+              (constructor_qid
+                .
+                (constructor_identifier) @constructor
+              )
             ]"#;
         let query = Query::new(lang, query_str)
             .map_err(Error::TreeSitterFailedToParseQuery)?;
-        let unqualified_values_query = UnqualifiedValuesQuery { query };
+        let unqualified_values_query = UnqualifiedValuesQuery {
+            value_index: index_for_name(&query, "value")?,
+            type_index: index_for_name(&query, "type")?,
+            constructor_index: index_for_name(&query, "constructor")?,
+            query,
+        };
         Ok(unqualified_values_query)
     }
 
@@ -853,21 +866,38 @@ impl UnqualifiedValuesQuery {
         code: &'tree SourceFileSnapshot,
     ) -> UnqualifiedValues<'a, 'tree> {
         let matches = cursor.matches(&self.query, code.tree.root_node(), code);
-        UnqualifiedValues { matches }
+        UnqualifiedValues {
+            matches,
+            code,
+            query: self,
+        }
     }
 }
 
 struct UnqualifiedValues<'a, 'tree> {
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
+    code: &'a SourceFileSnapshot,
+    query: &'a UnqualifiedValuesQuery,
 }
 
 impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
-    type Item = Node<'a>;
+    type Item = Reference<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
         let capture = match_.captures.first()?;
-        Some(capture.node)
+        let kind = match capture.index {
+            index if index == self.query.value_index => ReferenceKind::Value,
+            index if index == self.query.type_index => ReferenceKind::Type,
+            index if index == self.query.constructor_index => {
+                ReferenceKind::Constructor
+            }
+            _ => panic!(),
+        };
+        let node = capture.node;
+        let name = self.code.slice(&node.byte_range());
+        let reference = Reference { node, name, kind };
+        Some(reference)
     }
 }
 
