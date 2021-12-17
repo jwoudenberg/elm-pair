@@ -112,6 +112,7 @@ pub(crate) enum Error {
         kind: u8,
         during: String,
     },
+    ElmCannotQualifyOperator(String),
 
     // Treesitter errors
     TreeSitterParsingFailed,

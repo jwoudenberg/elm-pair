@@ -288,7 +288,13 @@ fn on_added_module_qualifier_to_value(
     let exposing_list_length = import.exposing_list().count();
     for (node, exposed) in import.exposing_list() {
         match &exposed {
-            Exposed::Operator(_) => panic!("unimplemented"),
+            Exposed::Operator(op) => {
+                if op.name == name && kind == ReferenceKind::Operator {
+                    return Err(Error::ElmCannotQualifyOperator(
+                        op.name.to_string(),
+                    ));
+                }
+            }
             Exposed::Type(type_) => {
                 if type_.name == name && kind == ReferenceKind::Type {
                     if exposing_list_length == 1 {
@@ -366,6 +372,11 @@ fn on_added_module_qualifier_to_value(
                 // `exposing (..)` clause.
                 let mut cursor2 = QueryCursor::new();
                 match kind {
+                    ReferenceKind::Operator => {
+                        return Err(Error::ElmCannotQualifyOperator(
+                            name.to_string(),
+                        ))
+                    }
                     ReferenceKind::Value => add_qualifier_to_value(
                         query_for_unqualified_values,
                         &mut edits,
@@ -552,7 +563,12 @@ fn add_qualifier_to_name(
     exposed: &Exposed,
 ) {
     match exposed {
-        Exposed::Operator(_) => panic!("unimplemented"),
+        Exposed::Operator(op) => {
+            eprintln!(
+                "[error] Cannot qualify operator {:?}",
+                op.name.to_string(),
+            );
+        }
         Exposed::Type(type_) => {
             add_qualifier_to_type(
                 query_for_unqualified_values,
@@ -824,6 +840,7 @@ enum ReferenceKind {
     Value,
     Type,
     Constructor,
+    Operator,
 }
 
 struct UnqualifiedValuesQuery {
@@ -1050,7 +1067,7 @@ impl<'a> Iterator for ExposedList<'a> {
                         name: self.code.slice(&node.byte_range()),
                     }),
                     EXPOSED_OPERATOR => Exposed::Operator(ExposedOperator {
-                        _name: self.code.slice(&node.byte_range()),
+                        name: self.code.slice(&node.byte_range()),
                     }),
                     EXPOSED_TYPE => Exposed::Type(ExposedType {
                         name: self
@@ -1078,7 +1095,7 @@ enum Exposed<'a> {
 }
 
 struct ExposedOperator<'a> {
-    _name: RopeSlice<'a>,
+    name: RopeSlice<'a>,
 }
 
 struct ExposedValue<'a> {
@@ -1229,16 +1246,28 @@ mod tests {
     simulation_test!(add_module_qualifier_to_type_with_same_name);
     simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
     simulation_test!(add_module_qualifier_to_variable);
+    simulation_test!(remove_all_values_from_exposing_list_of_import);
     simulation_test!(remove_constructor_from_exposing_list_of_import);
     simulation_test!(remove_double_dot_from_exposing_list_of_import);
     simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_clause_from_import);
     simulation_test!(remove_exposing_clause_from_import_with_as_clause);
-    simulation_test!(remove_all_values_from_exposing_list_of_import);
     simulation_test!(remove_multiple_values_from_exposing_list_of_import);
+    simulation_test!(remove_operator_from_exposing_list_of_import);
     simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
     simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
     simulation_test!(remove_variable_from_exposing_list_of_import);
+
+    // --- TESTS DEMONSTRATING CURRENT BUGS ---
+
+    // The exposing lists in these tests contained an operator. It doesn't get a
+    // qualifier because Elm doesn't allow qualified operators, and as a result
+    // this refactor doesn't produce compiling code.
+    // Potential fix: Add the exposing list back containing just the operator.
+    simulation_test!(remove_exposing_clause_containing_operator_from_import);
+    simulation_test!(
+        remove_exposing_all_clause_containing_operator_from_import
+    );
 
     #[derive(Debug)]
     enum Error {
