@@ -1,34 +1,34 @@
 module Main exposing (..)
 
-import Url exposing (Protocol(..))
+import Parser.Advanced exposing (Nestable(..))
 
 
-toggleSecure : Protocol -> Protocol
-toggleSecure protocol =
-    case protocol of
-        Http ->
-            Https
+toggleNestable : Nestable -> Nestable
+toggleNestable nestable =
+    case nestable of
+        Nestable ->
+            NotNestable
 
-        Https ->
-            Http
+        NotNestable ->
+            Nestable
 
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 9 Http
--- INSERT Url.
+-- MOVE CURSOR TO LINE 9 Nestable
+-- INSERT Parser.Advanced.
 -- END SIMULATION
 -- === expected output below ===
 -- module Main exposing (..)
 --
--- import Url exposing (Protocol)
+-- import Parser.Advanced exposing (Nestable)
 --
 --
--- toggleSecure : Protocol -> Protocol
--- toggleSecure protocol =
---     case protocol of
---         Url.Http ->
---             Url.Https
+-- toggleNestable : Nestable -> Nestable
+-- toggleNestable nestable =
+--     case nestable of
+--         Parser.Advanced.Nestable ->
+--             Parser.Advanced.NotNestable
 --
---         Url.Https ->
---             Url.Http
+--         Parser.Advanced.NotNestable ->
+--             Parser.Advanced.Nestable
