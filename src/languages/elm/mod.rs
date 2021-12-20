@@ -1256,7 +1256,7 @@ mod tests {
             #[test]
             fn $name() {
                 let mut path = std::path::PathBuf::new();
-                path.push("./tests");
+                path.push("./tests/refactor-simulations");
                 let module_name = stringify!($name);
                 path.push(module_name.to_owned() + ".elm");
                 println!("Run simulation {:?}", &path);
