@@ -93,13 +93,7 @@ impl RefactorEngine {
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [DOUBLE_DOT],
                 [] | [EXPOSED_VALUE],
-            ) => on_removed_values_from_exposing_list(
-                &self.kb,
-                &self.query_for_unqualified_values,
-                &self.query_for_imports,
-                diff,
-                changes,
-            )?,
+            ) => on_removed_values_from_exposing_list(self, diff, changes)?,
             (
                 [TYPE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
@@ -111,30 +105,13 @@ impl RefactorEngine {
             | (
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-            ) => on_added_module_qualifier_to_value(
-                &self.kb,
-                &self.query_for_unqualified_values,
-                &self.query_for_imports,
-                &self.query_for_qualified_value,
-                diff,
-                changes,
-            )?,
+            ) => on_added_module_qualifier_to_value(self, diff, changes)?,
             // Remove entire exposing list.
-            ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
-                &self.kb,
-                &self.query_for_unqualified_values,
-                &self.query_for_imports,
-                diff,
-                changes,
-            )?,
+            ([EXPOSING_LIST], []) => {
+                on_removed_exposing_list_from_import(self, diff, changes)?
+            }
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
-                on_removed_constructors_from_exposing_list(
-                    &self.kb,
-                    &self.query_for_unqualified_values,
-                    &self.query_for_imports,
-                    diff,
-                    changes,
-                )?
+                on_removed_constructors_from_exposing_list(self, diff, changes)?
             }
             _ => Vec::new(),
         };
@@ -147,9 +124,7 @@ impl RefactorEngine {
 }
 
 fn on_removed_constructors_from_exposing_list(
-    kb: &KnowledgeBase,
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
-    query_for_imports: &ImportsQuery,
+    engine: &RefactorEngine,
     diff: &SourceFileDiff,
     changes: TreeChanges,
 ) -> Result<Vec<Edit>, Error> {
@@ -161,7 +136,8 @@ fn on_removed_constructors_from_exposing_list(
         .slice(&exposed_type_node.child(0).unwrap().byte_range());
     let old_import_node = exposed_type_node.parent().unwrap().parent().unwrap();
     let mut cursor = QueryCursor::new();
-    let old_import = query_for_imports
+    let old_import = engine
+        .query_for_imports
         .run_in(&mut cursor, &diff.old, old_import_node)
         .next()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
@@ -171,12 +147,12 @@ fn on_removed_constructors_from_exposing_list(
         if let Exposed::Type(type_) = exposed {
             if type_.name == type_name {
                 add_qualifier_to_constructors(
-                    query_for_unqualified_values,
+                    engine,
                     &mut edits,
                     &mut cursor2,
                     &diff.new,
                     &old_import,
-                    type_.constructors(kb)?,
+                    type_.constructors(engine)?,
                 );
                 break;
             }
@@ -186,9 +162,7 @@ fn on_removed_constructors_from_exposing_list(
 }
 
 fn on_removed_values_from_exposing_list(
-    kb: &KnowledgeBase,
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
-    query_for_imports: &ImportsQuery,
+    engine: &RefactorEngine,
     diff: &SourceFileDiff,
     changes: TreeChanges,
 ) -> Result<Vec<Edit>, Error> {
@@ -208,7 +182,8 @@ fn on_removed_values_from_exposing_list(
         .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
-    let old_import = query_for_imports
+    let old_import = engine
+        .query_for_imports
         .run_in(&mut cursor, &diff.old, old_import_node)
         .next()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
@@ -216,7 +191,8 @@ fn on_removed_values_from_exposing_list(
     // Modify the import in the new code with the name just found.
     let mut edits = Vec::new();
     let mut cursor2 = QueryCursor::new();
-    let import = query_for_imports
+    let import = engine
+        .query_for_imports
         .run(&mut cursor2, &diff.new)
         .find(|import| import.name() == old_import.name())
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
@@ -235,8 +211,7 @@ fn on_removed_values_from_exposing_list(
                 && node.end_byte() <= removed_range.end
             {
                 add_qualifier_to_name(
-                    kb,
-                    query_for_unqualified_values,
+                    engine,
                     &mut edits,
                     &mut exposed_cursor,
                     &diff.new,
@@ -249,10 +224,7 @@ fn on_removed_values_from_exposing_list(
 }
 
 fn on_added_module_qualifier_to_value(
-    kb: &KnowledgeBase,
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
-    query_for_imports: &ImportsQuery,
-    query_for_qualified_value: &QualifiedValueQuery,
+    engine: &RefactorEngine,
     diff: &SourceFileDiff,
     changes: TreeChanges,
 ) -> Result<Vec<Edit>, Error> {
@@ -273,13 +245,17 @@ fn on_added_module_qualifier_to_value(
     let QualifiedReference {
         qualifier,
         reference: Reference { kind, name, .. },
-    } = query_for_qualified_value.run_in(&mut cursor, &diff.new, parent)?;
+    } = engine.query_for_qualified_value.run_in(
+        &mut cursor,
+        &diff.new,
+        parent,
+    )?;
     if name_before != name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
     let import = get_import_by_aliased_name(
-        query_for_imports,
+        &engine.query_for_imports,
         &mut cursor,
         diff,
         &qualifier,
@@ -304,7 +280,7 @@ fn on_added_module_qualifier_to_value(
                     }
                     let mut cursor2 = QueryCursor::new();
                     add_qualifier_to_type(
-                        query_for_unqualified_values,
+                        engine,
                         &mut edits,
                         &mut cursor2,
                         &diff.new,
@@ -314,7 +290,7 @@ fn on_added_module_qualifier_to_value(
                     break;
                 }
 
-                let constructors = type_.constructors(kb)?;
+                let constructors = type_.constructors(engine)?;
                 if constructors.clone().any(|ctor| *ctor == name)
                     && kind == ReferenceKind::Constructor
                 {
@@ -332,7 +308,7 @@ fn on_added_module_qualifier_to_value(
                     // intend to do them all.
                     let mut cursor2 = QueryCursor::new();
                     add_qualifier_to_constructors(
-                        query_for_unqualified_values,
+                        engine,
                         &mut edits,
                         &mut cursor2,
                         &diff.new,
@@ -351,7 +327,7 @@ fn on_added_module_qualifier_to_value(
                     }
                     let mut cursor2 = QueryCursor::new();
                     add_qualifier_to_value(
-                        query_for_unqualified_values,
+                        engine,
                         &mut edits,
                         &mut cursor2,
                         &diff.new,
@@ -378,7 +354,7 @@ fn on_added_module_qualifier_to_value(
                         ))
                     }
                     ReferenceKind::Value => add_qualifier_to_value(
-                        query_for_unqualified_values,
+                        engine,
                         &mut edits,
                         &mut cursor2,
                         &diff.new,
@@ -386,7 +362,7 @@ fn on_added_module_qualifier_to_value(
                         &ExposedValue { name },
                     ),
                     ReferenceKind::Type => add_qualifier_to_type(
-                        query_for_unqualified_values,
+                        engine,
                         &mut edits,
                         &mut cursor2,
                         &diff.new,
@@ -403,7 +379,8 @@ fn on_added_module_qualifier_to_value(
                         // type it belogns too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let exports = match kb
+                        let exports = match engine
+                            .kb
                             .module_exports(diff.new.buffer, import.name())
                         {
                             Ok(exports_) => exports_,
@@ -425,7 +402,7 @@ fn on_added_module_qualifier_to_value(
                                         .any(|ctor| *ctor == name)
                                     {
                                         add_qualifier_to_constructors(
-                                            query_for_unqualified_values,
+                                            engine,
                                             &mut edits,
                                             &mut cursor2,
                                             &diff.new,
@@ -448,9 +425,7 @@ fn on_added_module_qualifier_to_value(
 }
 
 fn on_removed_exposing_list_from_import(
-    kb: &KnowledgeBase,
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
-    query_for_imports: &ImportsQuery,
+    engine: &RefactorEngine,
     diff: &SourceFileDiff,
     changes: TreeChanges,
 ) -> Result<Vec<Edit>, Error> {
@@ -460,14 +435,16 @@ fn on_removed_exposing_list_from_import(
         .and_then(Node::parent)
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
-    let import = query_for_imports
+    let import = engine
+        .query_for_imports
         .run_in(&mut cursor, &diff.old, import_node)
         .next()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let qualifier = import.aliased_name();
     let mut cursor_2 = QueryCursor::new();
     let mut edits = Vec::new();
-    query_for_imports
+    engine
+        .query_for_imports
         .run(&mut cursor_2, &diff.old)
         .find(|import| import.aliased_name() == qualifier)
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
@@ -475,8 +452,7 @@ fn on_removed_exposing_list_from_import(
         .for_each(|(_, exposed)| {
             let mut val_cursor = QueryCursor::new();
             add_qualifier_to_name(
-                kb,
-                query_for_unqualified_values,
+                engine,
                 &mut edits,
                 &mut val_cursor,
                 &diff.new,
@@ -554,8 +530,7 @@ fn remove_from_exposing_list(
 }
 
 fn add_qualifier_to_name(
-    kb: &KnowledgeBase,
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    engine: &RefactorEngine,
     edits: &mut Vec<Edit>,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
@@ -570,15 +545,8 @@ fn add_qualifier_to_name(
             );
         }
         Exposed::Type(type_) => {
-            add_qualifier_to_type(
-                query_for_unqualified_values,
-                edits,
-                cursor,
-                code,
-                import,
-                type_,
-            );
-            let ctors = match type_.constructors(kb) {
+            add_qualifier_to_type(engine, edits, cursor, code, import, type_);
+            let ctors = match type_.constructors(engine) {
                 Ok(ctors_) => ctors_,
                 Err(err) => {
                     return eprintln!(
@@ -589,39 +557,28 @@ fn add_qualifier_to_name(
                 }
             };
             add_qualifier_to_constructors(
-                query_for_unqualified_values,
-                edits,
-                cursor,
-                code,
-                import,
-                ctors,
+                engine, edits, cursor, code, import, ctors,
             );
         }
         Exposed::Value(val) => {
-            add_qualifier_to_value(
-                query_for_unqualified_values,
-                edits,
-                cursor,
-                code,
-                import,
-                val,
-            );
+            add_qualifier_to_value(engine, edits, cursor, code, import, val);
         }
         Exposed::All(_) => {
-            let exports = match kb.module_exports(code.buffer, import.name()) {
-                Ok(exports_) => exports_,
-                Err(err) => {
-                    return eprintln!(
-                        "[error] failed to read exports of {}: {:?}",
-                        import.name().to_string(),
-                        err
-                    );
-                }
-            };
+            let exports =
+                match engine.kb.module_exports(code.buffer, import.name()) {
+                    Ok(exports_) => exports_,
+                    Err(err) => {
+                        return eprintln!(
+                            "[error] failed to read exports of {}: {:?}",
+                            import.name().to_string(),
+                            err
+                        );
+                    }
+                };
             for export in exports {
                 match export {
                     ElmExport::Value { name } => add_qualifier_to_value(
-                        query_for_unqualified_values,
+                        engine,
                         edits,
                         cursor,
                         code,
@@ -632,7 +589,7 @@ fn add_qualifier_to_name(
                     ),
                     ElmExport::Type { name, constructors } => {
                         add_qualifier_to_type(
-                            query_for_unqualified_values,
+                            engine,
                             edits,
                             cursor,
                             code,
@@ -645,7 +602,7 @@ fn add_qualifier_to_name(
                             },
                         );
                         add_qualifier_to_constructors(
-                            query_for_unqualified_values,
+                            engine,
                             edits,
                             cursor,
                             code,
@@ -662,7 +619,7 @@ fn add_qualifier_to_name(
 }
 
 fn add_qualifier_to_constructors(
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    engine: &RefactorEngine,
     edits: &mut Vec<Edit>,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
@@ -670,8 +627,10 @@ fn add_qualifier_to_constructors(
     constructors: ExposedTypeConstructors,
 ) {
     for ctor in constructors {
-        query_for_unqualified_values.run(cursor, code).for_each(
-            |Reference { name, node, kind }| {
+        engine
+            .query_for_unqualified_values
+            .run(cursor, code)
+            .for_each(|Reference { name, node, kind }| {
                 if *ctor == name && kind == ReferenceKind::Constructor {
                     edits.push(Edit::new(
                         code.buffer,
@@ -680,13 +639,12 @@ fn add_qualifier_to_constructors(
                         format!("{}.", import.aliased_name()),
                     ))
                 }
-            },
-        )
+            })
     }
 }
 
 fn add_qualifier_to_type(
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    engine: &RefactorEngine,
     edits: &mut Vec<Edit>,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
@@ -694,8 +652,10 @@ fn add_qualifier_to_type(
     exposed: &ExposedType,
 ) {
     let exposed_name = exposed.name;
-    query_for_unqualified_values.run(cursor, code).for_each(
-        |Reference { name, kind, node }| {
+    engine
+        .query_for_unqualified_values
+        .run(cursor, code)
+        .for_each(|Reference { name, kind, node }| {
             if exposed_name == name && kind == ReferenceKind::Type {
                 edits.push(Edit::new(
                     code.buffer,
@@ -704,12 +664,11 @@ fn add_qualifier_to_type(
                     format!("{}.", import.aliased_name()),
                 ))
             }
-        },
-    )
+        })
 }
 
 fn add_qualifier_to_value(
-    query_for_unqualified_values: &UnqualifiedValuesQuery,
+    engine: &RefactorEngine,
     edits: &mut Vec<Edit>,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
@@ -717,8 +676,10 @@ fn add_qualifier_to_value(
     exposed: &ExposedValue,
 ) {
     let exposed_name = exposed.name;
-    query_for_unqualified_values.run(cursor, code).for_each(
-        |Reference { name, node, kind }| {
+    engine
+        .query_for_unqualified_values
+        .run(cursor, code)
+        .for_each(|Reference { name, node, kind }| {
             if exposed_name == name && kind == ReferenceKind::Value {
                 edits.push(Edit::new(
                     code.buffer,
@@ -728,8 +689,7 @@ fn add_qualifier_to_value(
                     format!("{}.", import.aliased_name()),
                 ))
             }
-        },
-    )
+        })
 }
 
 struct QualifiedValueQuery {
@@ -1112,13 +1072,16 @@ struct ExposedType<'a> {
 impl ExposedType<'_> {
     fn constructors<'a>(
         &'a self,
-        kb: &'a KnowledgeBase,
+        engine: &'a RefactorEngine,
     ) -> Result<ExposedTypeConstructors, Error> {
         if !self.exposing_constructors {
             return Ok(ExposedTypeConstructors::None);
         }
-        let names =
-            kb.constructors_for_type(self.buffer, self.module_name, self.name)?;
+        let names = engine.kb.constructors_for_type(
+            self.buffer,
+            self.module_name,
+            self.name,
+        )?;
         Ok(ExposedTypeConstructors::All { names })
     }
 }
