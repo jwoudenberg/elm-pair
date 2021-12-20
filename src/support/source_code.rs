@@ -69,7 +69,11 @@ fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     parser
         .set_language(tree_sitter_elm::language())
         .map_err(Error::TreeSitterSettingLanguageFailed)?;
-    match parser.parse(code.bytes().collect::<Vec<u8>>(), prev_tree) {
+    let mut callback = |offset, _| {
+        let (chunk, chunk_byte_index, _, _) = code.chunk_at_byte(offset);
+        &chunk[(offset - chunk_byte_index)..]
+    };
+    match parser.parse_with(&mut callback, prev_tree) {
         None => Err(Error::TreeSitterParsingFailed),
         Some(tree) => Ok(tree),
     }
