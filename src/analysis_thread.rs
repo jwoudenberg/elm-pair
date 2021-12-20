@@ -92,7 +92,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 }
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
-                self.refactor_engine.kb.init_buffer(buffer, path)?;
+                self.refactor_engine.init_buffer(buffer, path)?;
             }
             Msg::CompilationSucceeded(snapshot) => {
                 if self.editor_driver.contains_key(&snapshot.buffer.editor_id) {

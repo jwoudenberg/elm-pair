@@ -1,12 +1,16 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
-use crate::languages::elm::knowledge_base::{ElmExport, KnowledgeBase};
+use crate::languages::elm::dependencies::{
+    load_dependencies, ElmExport, ElmModule, ExportsQuery, ProjectInfo,
+};
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::Error;
 use ropey::{Rope, RopeSlice};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
 
+pub mod dependencies;
 pub mod idat;
-pub mod knowledge_base;
 
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
@@ -55,22 +59,31 @@ mod kind_constant_tests {
 }
 
 pub(crate) struct RefactorEngine {
-    pub(crate) kb: KnowledgeBase,
+    buffers: HashMap<Buffer, BufferInfo>,
+    projects: HashMap<PathBuf, ProjectInfo>,
     query_for_imports: ImportsQuery,
     query_for_unqualified_values: UnqualifiedValuesQuery,
     query_for_qualified_value: QualifiedValueQuery,
+    query_for_exports: ExportsQuery,
+}
+
+pub struct BufferInfo {
+    pub project_root: PathBuf,
+    pub path: PathBuf,
 }
 
 impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
         let engine = RefactorEngine {
-            kb: KnowledgeBase::new()?,
+            buffers: HashMap::new(),
+            projects: HashMap::new(),
             query_for_imports: ImportsQuery::init(language)?,
             query_for_unqualified_values: UnqualifiedValuesQuery::init(
                 language,
             )?,
             query_for_qualified_value: QualifiedValueQuery::init(language)?,
+            query_for_exports: ExportsQuery::init(language)?,
         };
 
         Ok(engine)
@@ -120,6 +133,74 @@ impl RefactorEngine {
         } else {
             Ok(Some(sort_edits(edits)))
         }
+    }
+
+    pub(crate) fn constructors_for_type<'a, 'b>(
+        &'a self,
+        buffer: Buffer,
+        module_name: RopeSlice<'b>,
+        type_name: RopeSlice<'b>,
+    ) -> Result<&'a Vec<String>, Error> {
+        self.module_exports(buffer, module_name)?
+            .iter()
+            .find_map(|export| match export {
+                ElmExport::Value { .. } => None,
+                ElmExport::Type { name, constructors } => {
+                    if type_name.eq(name) {
+                        Some(constructors)
+                    } else {
+                        None
+                    }
+                }
+            })
+            .ok_or_else(|| Error::ElmNoSuchTypeInModule {
+                module_name: module_name.to_string(),
+                type_name: type_name.to_string(),
+            })
+    }
+
+    pub(crate) fn module_exports(
+        &self,
+        buffer: Buffer,
+        module: RopeSlice,
+    ) -> Result<&Vec<ElmExport>, Error> {
+        let project = self.buffer_project(buffer)?;
+        match project.modules.get(&module.to_string()) {
+            None => panic!("no such module"),
+            Some(ElmModule { exports }) => Ok(exports),
+        }
+    }
+
+    fn buffer_project(&self, buffer: Buffer) -> Result<&ProjectInfo, Error> {
+        let buffer_info = self
+            .buffers
+            .get(&buffer)
+            .ok_or(Error::ElmNoProjectStoredForBuffer(buffer))?;
+        let project_info =
+            self.projects.get(&buffer_info.project_root).unwrap();
+        Ok(project_info)
+    }
+
+    pub(crate) fn init_buffer(
+        &mut self,
+        buffer: Buffer,
+        path: PathBuf,
+    ) -> Result<(), Error> {
+        let project_root = project_root_for_path(&path)?.to_owned();
+        self.init_project(&project_root)?;
+        let buffer_info = BufferInfo { path, project_root };
+        self.buffers.insert(buffer, buffer_info);
+        Ok(())
+    }
+
+    fn init_project(&mut self, project_root: &Path) -> Result<(), Error> {
+        if self.projects.contains_key(project_root) {
+            return Ok(());
+        }
+        let project_info =
+            load_dependencies(&self.query_for_exports, project_root)?;
+        self.projects.insert(project_root.to_owned(), project_info);
+        Ok(())
     }
 }
 
@@ -380,7 +461,6 @@ fn on_added_module_qualifier_to_value(
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
                         let exports = match engine
-                            .kb
                             .module_exports(diff.new.buffer, import.name())
                         {
                             Ok(exports_) => exports_,
@@ -565,7 +645,7 @@ fn add_qualifier_to_name(
         }
         Exposed::All(_) => {
             let exports =
-                match engine.kb.module_exports(code.buffer, import.name()) {
+                match engine.module_exports(code.buffer, import.name()) {
                     Ok(exports_) => exports_,
                     Err(err) => {
                         return eprintln!(
@@ -1077,7 +1157,7 @@ impl ExposedType<'_> {
         if !self.exposing_constructors {
             return Ok(ExposedTypeConstructors::None);
         }
-        let names = engine.kb.constructors_for_type(
+        let names = engine.constructors_for_type(
             self.buffer,
             self.module_name,
             self.name,
@@ -1105,6 +1185,24 @@ impl<'a> Iterator for ExposedTypeConstructors<'a> {
                     Some(head)
                 }
             },
+        }
+    }
+}
+
+pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
+    let mut maybe_root = path;
+    loop {
+        if maybe_root.join("elm.json").exists() {
+            return Ok(maybe_root);
+        } else {
+            match maybe_root.parent() {
+                None => {
+                    return Err(Error::NoElmJsonFoundInAnyAncestorDirectory);
+                }
+                Some(parent) => {
+                    maybe_root = parent;
+                }
+            }
         }
     }
 }
@@ -1185,7 +1283,7 @@ mod tests {
         let diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
         let mut refactor_engine = RefactorEngine::new()?;
-        refactor_engine.kb.init_buffer(buffer, path.to_owned())?;
+        refactor_engine.init_buffer(buffer, path.to_owned())?;
         match refactor_engine.respond_to_change(&diff, tree_changes)? {
             None => Ok("No refactor for this change.".to_owned()),
             Some(refactor) => {
