@@ -9,37 +9,20 @@ use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 
 pub struct KnowledgeBase {
-    buffer_path: HashMap<Buffer, PathBuf>,
-    buffer_project: HashMap<Buffer, Project>,
-    compilation_params: HashMap<Buffer, CompilationParams>,
-    project_root: HashMap<PathBuf, PathBuf>,
-}
-
-macro_rules! memoize {
-    ($cache:expr, $question:expr, $answer:expr) => {{
-        if !$cache.contains_key($question) {
-            let res = match $answer {
-                Ok(ok) => ok,
-                Err(err) => return Err(err),
-            };
-            $cache.insert($question.clone(), res);
-        }
-        Ok($cache.get($question).unwrap())
-    }};
+    buffers: HashMap<Buffer, BufferInfo>,
+    projects: HashMap<PathBuf, ProjectInfo>,
 }
 
 impl KnowledgeBase {
     pub fn new() -> KnowledgeBase {
         KnowledgeBase {
-            buffer_path: HashMap::new(),
-            buffer_project: HashMap::new(),
-            project_root: HashMap::new(),
-            compilation_params: HashMap::new(),
+            buffers: HashMap::new(),
+            projects: HashMap::new(),
         }
     }
 
     pub(crate) fn constructors_for_type<'a, 'b>(
-        &'a mut self,
+        &'a self,
         buffer: Buffer,
         module_name: RopeSlice<'b>,
         type_name: RopeSlice<'b>,
@@ -63,7 +46,7 @@ impl KnowledgeBase {
     }
 
     pub(crate) fn module_exports(
-        &mut self,
+        &self,
         buffer: Buffer,
         module: RopeSlice,
     ) -> Result<&Vec<ElmExport>, Error> {
@@ -78,73 +61,69 @@ impl KnowledgeBase {
     }
 
     pub(crate) fn buffer_project(
+        &self,
+        buffer: Buffer,
+    ) -> Result<&ProjectInfo, Error> {
+        let buffer_info = self
+            .buffers
+            .get(&buffer)
+            .ok_or(Error::ElmNoProjectStoredForBuffer(buffer))?;
+        let project_info =
+            self.projects.get(&buffer_info.project_root).unwrap();
+        Ok(project_info)
+    }
+
+    pub(crate) fn init_buffer(
         &mut self,
         buffer: Buffer,
-    ) -> Result<&Project, Error> {
-        memoize!(self.buffer_project, &buffer, {
-            // TODO: Avoid need to copy buffer_path here.
-            let buffer_path = self.buffer_path(buffer)?.to_owned();
-            let project_root = self.project_root(&buffer_path)?;
-            // TODO: Remove harcoded Elm version.
-            let mut modules =
-                from_idat(project_root.join("elm-stuff/0.19.1/i.dat"))?;
-            modules.extend(find_project_modules(project_root));
-            let project = Project { modules };
-            Ok(project)
-        })
+        path: PathBuf,
+    ) -> Result<(), Error> {
+        let project_root = project_root_for_path(&path)?.to_owned();
+        self.init_project(&project_root)?;
+        let buffer_info = BufferInfo { path, project_root };
+        self.buffers.insert(buffer, buffer_info);
+        Ok(())
     }
 
-    pub(crate) fn get_compilation_params(
-        &mut self,
-        buffer: Buffer,
-    ) -> Result<&CompilationParams, Error> {
-        memoize!(self.compilation_params, &buffer, {
-            let buffer_path = self.buffer_path(buffer)?.to_owned();
-            let root = self.project_root(&buffer_path)?.to_owned();
-            let elm_bin = find_executable("elm")?;
-            Ok(CompilationParams { root, elm_bin })
-        })
-    }
-
-    pub(crate) fn insert_buffer_path(&mut self, buffer: Buffer, path: PathBuf) {
-        self.buffer_path.insert(buffer, path);
-    }
-
-    fn buffer_path(&mut self, buffer: Buffer) -> Result<&PathBuf, Error> {
-        memoize!(self.buffer_path, &buffer, {
-            Err(Error::ElmNoProjectStoredForBuffer(buffer))
-        })
-    }
-
-    // TODO: return path to `elm.json` instead.
-    fn project_root(&mut self, maybe_root: &Path) -> Result<&PathBuf, Error> {
-        memoize!(self.project_root, &maybe_root.to_path_buf(), {
-            if maybe_root.join("elm.json").exists() {
-                Ok(maybe_root.to_owned())
-            } else {
-                // TODO: find a way that queries for multiple file can share a
-                // reference to the same PathBuf.
-                match maybe_root.parent() {
-                    None => Err(Error::NoElmJsonFoundInAnyAncestorDirectory),
-                    Some(parent) => {
-                        let root = self.project_root(&parent.to_owned())?;
-                        Ok(root.to_owned())
-                    }
-                }
-            }
-        })
+    fn init_project(&mut self, project_root: &Path) -> Result<(), Error> {
+        if self.projects.contains_key(project_root) {
+            return Ok(());
+        }
+        // TODO: Remove harcoded Elm version.
+        let mut modules =
+            from_idat(project_root.join("elm-stuff/0.19.1/i.dat"))?;
+        modules.extend(find_project_modules(project_root));
+        let project_info = ProjectInfo { modules };
+        self.projects.insert(project_root.to_owned(), project_info);
+        Ok(())
     }
 }
 
-pub struct CompilationParams {
-    // Root of the Elm project containing this source file.
-    pub root: PathBuf,
-    // Absolute path to the `elm` compiler.
-    pub elm_bin: PathBuf,
+pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
+    let mut maybe_root = path;
+    loop {
+        if maybe_root.join("elm.json").exists() {
+            return Ok(maybe_root);
+        } else {
+            match maybe_root.parent() {
+                None => {
+                    return Err(Error::NoElmJsonFoundInAnyAncestorDirectory);
+                }
+                Some(parent) => {
+                    maybe_root = parent;
+                }
+            }
+        }
+    }
+}
+
+pub struct BufferInfo {
+    pub project_root: PathBuf,
+    pub path: PathBuf,
 }
 
 #[derive(Debug)]
-pub struct Project {
+pub struct ProjectInfo {
     pub modules: HashMap<String, ElmModule>,
 }
 
@@ -170,21 +149,6 @@ pub enum ElmExport {
 struct ElmJson {
     #[serde(rename = "source-directories")]
     source_directories: Vec<PathBuf>,
-}
-
-fn find_executable(name: &str) -> Result<PathBuf, Error> {
-    let cwd = std::env::current_dir()
-        .map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
-    let path = std::env::var_os("PATH").ok_or(Error::DidNotFindPathEnvVar)?;
-    let dirs = std::env::split_paths(&path);
-    for dir in dirs {
-        let mut bin_path = cwd.join(dir);
-        bin_path.push(name);
-        if bin_path.is_file() {
-            return Ok(bin_path);
-        };
-    }
-    Err(Error::ElmDidNotFindCompilerBinaryOnPath)
 }
 
 fn find_project_modules(project_root: &Path) -> HashMap<String, ElmModule> {

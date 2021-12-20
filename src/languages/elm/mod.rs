@@ -79,7 +79,7 @@ impl RefactorEngine {
     // TODO: try to return an Iterator instead of a Vector.
     // TODO: Try remove Vector from TreeChanges type.
     pub(crate) fn respond_to_change<'a>(
-        &mut self,
+        &self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
@@ -94,7 +94,7 @@ impl RefactorEngine {
                 | [DOUBLE_DOT],
                 [] | [EXPOSED_VALUE],
             ) => on_removed_values_from_exposing_list(
-                &mut self.kb,
+                &self.kb,
                 &self.query_for_unqualified_values,
                 &self.query_for_imports,
                 diff,
@@ -112,7 +112,7 @@ impl RefactorEngine {
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
             ) => on_added_module_qualifier_to_value(
-                &mut self.kb,
+                &self.kb,
                 &self.query_for_unqualified_values,
                 &self.query_for_imports,
                 &self.query_for_qualified_value,
@@ -121,7 +121,7 @@ impl RefactorEngine {
             )?,
             // Remove entire exposing list.
             ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
-                &mut self.kb,
+                &self.kb,
                 &self.query_for_unqualified_values,
                 &self.query_for_imports,
                 diff,
@@ -129,7 +129,7 @@ impl RefactorEngine {
             )?,
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
                 on_removed_constructors_from_exposing_list(
-                    &mut self.kb,
+                    &self.kb,
                     &self.query_for_unqualified_values,
                     &self.query_for_imports,
                     diff,
@@ -147,7 +147,7 @@ impl RefactorEngine {
 }
 
 fn on_removed_constructors_from_exposing_list(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     query_for_unqualified_values: &UnqualifiedValuesQuery,
     query_for_imports: &ImportsQuery,
     diff: &SourceFileDiff,
@@ -186,7 +186,7 @@ fn on_removed_constructors_from_exposing_list(
 }
 
 fn on_removed_values_from_exposing_list(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     query_for_unqualified_values: &UnqualifiedValuesQuery,
     query_for_imports: &ImportsQuery,
     diff: &SourceFileDiff,
@@ -249,7 +249,7 @@ fn on_removed_values_from_exposing_list(
 }
 
 fn on_added_module_qualifier_to_value(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     query_for_unqualified_values: &UnqualifiedValuesQuery,
     query_for_imports: &ImportsQuery,
     query_for_qualified_value: &QualifiedValueQuery,
@@ -448,7 +448,7 @@ fn on_added_module_qualifier_to_value(
 }
 
 fn on_removed_exposing_list_from_import(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     query_for_unqualified_values: &UnqualifiedValuesQuery,
     query_for_imports: &ImportsQuery,
     diff: &SourceFileDiff,
@@ -554,7 +554,7 @@ fn remove_from_exposing_list(
 }
 
 fn add_qualifier_to_name(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     query_for_unqualified_values: &UnqualifiedValuesQuery,
     edits: &mut Vec<Edit>,
     cursor: &mut QueryCursor,
@@ -1112,7 +1112,7 @@ struct ExposedType<'a> {
 impl ExposedType<'_> {
     fn constructors<'a>(
         &'a self,
-        kb: &'a mut KnowledgeBase,
+        kb: &'a KnowledgeBase,
     ) -> Result<ExposedTypeConstructors, Error> {
         if !self.exposing_constructors {
             return Ok(ExposedTypeConstructors::None);
@@ -1222,9 +1222,7 @@ mod tests {
         let diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
         let mut refactor_engine = RefactorEngine::new()?;
-        refactor_engine
-            .kb
-            .insert_buffer_path(buffer, path.to_owned());
+        refactor_engine.kb.init_buffer(buffer, path.to_owned())?;
         match refactor_engine.respond_to_change(&diff, tree_changes)? {
             None => Ok("No refactor for this change.".to_owned()),
             Some(refactor) => {
