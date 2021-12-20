@@ -40,7 +40,7 @@ impl SourceFileSnapshot {
         bytes: Rope,
     ) -> Result<SourceFileSnapshot, Error> {
         let snapshot = SourceFileSnapshot {
-            tree: parse(None, &bytes)?,
+            tree: parse_rope(None, &bytes)?,
             buffer,
             bytes,
             revision: 0,
@@ -51,7 +51,7 @@ impl SourceFileSnapshot {
     pub(crate) fn apply_edit(&mut self, edit: InputEdit) -> Result<(), Error> {
         self.revision += 1;
         self.tree.edit(&edit);
-        let new_tree = parse(Some(&self.tree), &self.bytes)?;
+        let new_tree = parse_rope(Some(&self.tree), &self.bytes)?;
         self.tree = new_tree;
         Ok(())
     }
@@ -64,7 +64,7 @@ impl SourceFileSnapshot {
 }
 
 // TODO: reuse parser.
-fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
+fn parse_rope(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
@@ -74,6 +74,18 @@ fn parse(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
         &chunk[(offset - chunk_byte_index)..]
     };
     match parser.parse_with(&mut callback, prev_tree) {
+        None => Err(Error::TreeSitterParsingFailed),
+        Some(tree) => Ok(tree),
+    }
+}
+
+// TODO: reuse parser.
+pub(crate) fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Tree, Error> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(tree_sitter_elm::language())
+        .map_err(Error::TreeSitterSettingLanguageFailed)?;
+    match parser.parse(bytes, None) {
         None => Err(Error::TreeSitterParsingFailed),
         Some(tree) => Ok(tree),
     }

@@ -65,7 +65,7 @@ impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
         let engine = RefactorEngine {
-            kb: KnowledgeBase::new(),
+            kb: KnowledgeBase::new()?,
             query_for_imports: ImportsQuery::init(language)?,
             query_for_unqualified_values: UnqualifiedValuesQuery::init(
                 language,

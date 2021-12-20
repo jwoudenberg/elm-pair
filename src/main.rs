@@ -112,7 +112,9 @@ pub(crate) enum Error {
         kind: u8,
         during: String,
     },
+    ElmModuleReadingUtf8Failed(std::str::Utf8Error),
     ElmCannotQualifyOperator(String),
+    ElmFailedToReadFile(std::io::Error),
 
     // Treesitter errors
     TreeSitterParsingFailed,
