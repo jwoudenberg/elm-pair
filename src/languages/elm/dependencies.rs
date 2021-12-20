@@ -124,12 +124,10 @@ fn parse_module(
 
 pub struct ExportsQuery {
     query: Query,
-    pattern_query: Query,
     exposed_all_index: u32,
     exposed_value_index: u32,
     exposed_type_index: u32,
     value_index: u32,
-    pattern_index: u32,
     type_index: u32,
 }
 
@@ -148,27 +146,28 @@ impl ExportsQuery {
                 )
               )
               (value_declaration
-                [
                   (function_declaration_left
                     .
                     (lower_case_identifier) @value
                   )
-                  (pattern) @pattern
-                ]
               )
               (type_alias_declaration
                 name: (type_identifier) @type
               )
               (type_declaration
                 name: (type_identifier) @type
-                unionVariant: (union_variant
-                  name: (constructor_identifier) @constructor
-                )+
+                (union_variant
+                    name: (constructor_identifier) @constructor
+                )
+                (
+                    "|"
+                    (union_variant
+                        name: (constructor_identifier) @constructor
+                    )
+                )*
               )
-            ]+"#;
+            ]"#;
         let query = Query::new(lang, query_str)
-            .map_err(Error::TreeSitterFailedToParseQuery)?;
-        let pattern_query = Query::new(lang, r"(lower_pattern)")
             .map_err(Error::TreeSitterFailedToParseQuery)?;
         let exports_query = ExportsQuery {
             exposed_all_index: index_for_name(&query, "exposed_all")?,
@@ -176,9 +175,7 @@ impl ExportsQuery {
             exposed_type_index: index_for_name(&query, "exposed_type")?,
             value_index: index_for_name(&query, "value")?,
             type_index: index_for_name(&query, "type")?,
-            pattern_index: index_for_name(&query, "pattern")?,
             query,
-            pattern_query,
         };
         Ok(exports_query)
     }
@@ -224,35 +221,9 @@ impl ExportsQuery {
                     };
                     exports.push(export);
                 }
-            } else if self.pattern_index == capture.index {
-                let mut pattern_cursor = QueryCursor::new();
-                let pattern_vars = pattern_cursor
-                    .matches(&self.pattern_query, capture.node, code)
-                    .filter_map(|match_| {
-                        if let [capture, ..] = match_.captures {
-                            Some(capture)
-                        } else {
-                            None
-                        }
-                    });
-                for var in pattern_vars {
-                    let name = code_slice(code, var.node.byte_range())?;
-                    if exposed.has(&Exposed::Value(name)) {
-                        let export = ElmExport::Value {
-                            name: name.to_owned(),
-                        };
-                        exports.push(export);
-                    }
-                }
             } else if self.type_index == capture.index {
                 let name = code_slice(code, capture.node.byte_range())?;
-                if exposed.has(&Exposed::Type(name)) {
-                    let export = ElmExport::Type {
-                        name: name.to_owned(),
-                        constructors: Vec::new(),
-                    };
-                    exports.push(export);
-                } else if exposed.has(&Exposed::TypeWithConstructors(name)) {
+                if exposed.has(&Exposed::TypeWithConstructors(name)) {
                     let constructors = rest
                         .iter()
                         .map(|ctor_capture| {
@@ -263,6 +234,12 @@ impl ExportsQuery {
                     let export = ElmExport::Type {
                         name: name.to_owned(),
                         constructors,
+                    };
+                    exports.push(export);
+                } else if exposed.has(&Exposed::Type(name)) {
+                    let export = ElmExport::Type {
+                        name: name.to_owned(),
+                        constructors: Vec::new(),
                     };
                     exports.push(export);
                 }
@@ -424,4 +401,51 @@ fn elm_export_from_alias(
         name,
         constructors: Vec::new(),
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::languages::elm::dependencies::{
+        parse_module, ElmModule, ExportsQuery, Intersperse,
+    };
+    use crate::test_support::included_answer_test as ia_test;
+    use crate::Error;
+    use std::path::Path;
+
+    macro_rules! exports_scanning_test {
+        ($name:ident) => {
+            #[test]
+            fn $name() {
+                let mut path = std::path::PathBuf::new();
+                path.push("./tests/exports-scanning");
+                let module_name = stringify!($name);
+                path.push(module_name.to_owned() + ".elm");
+                println!("Run simulation {:?}", &path);
+                run_exports_scanning_test(&path);
+            }
+        };
+    }
+
+    fn run_exports_scanning_test(path: &Path) {
+        match run_exports_scanning_test_helper(path) {
+            Err(err) => panic!("simulation failed with: {:?}", err),
+            Ok(res) => ia_test::assert_eq_answer_in(&res, path),
+        }
+    }
+
+    fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
+        let language = tree_sitter_elm::language();
+        let query_for_exports = ExportsQuery::init(language)?;
+        let ElmModule { exports } = parse_module(&query_for_exports, path)?;
+        let output = exports
+            .into_iter()
+            .map(|export| format!("{:?}", export))
+            .my_intersperse("\n".to_owned())
+            .collect();
+        Ok(output)
+    }
+
+    exports_scanning_test!(exposing_all);
+    exports_scanning_test!(exposing_minimal);
+    exports_scanning_test!(hiding_constructors);
 }
