@@ -137,6 +137,9 @@ impl RefactorEngine {
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
                 [LOWER_CASE_IDENTIFIER],
             ) => on_removed_module_qualifier_from_value(self, diff, changes)?,
+            ([], [EXPOSING_LIST]) => {
+                on_added_exposing_list_to_import(self, diff, changes)?
+            }
             ([EXPOSING_LIST], []) => {
                 on_removed_exposing_list_from_import(self, diff, changes)?
             }
@@ -842,6 +845,37 @@ fn on_added_module_qualifier_to_value(
             }
         }
     }
+    Ok(edits)
+}
+
+fn on_added_exposing_list_to_import(
+    engine: &RefactorEngine,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    let import_node = changes
+        .new_added
+        .first()
+        .and_then(Node::parent)
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut cursor = QueryCursor::new();
+    let import = engine
+        .query_for_imports
+        .run_in(&mut cursor, &diff.new, import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut edits = Vec::new();
+    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
+    import.exposing_list().into_iter().for_each(|(_, exposed)| {
+        remove_qualifier_for_exposed(
+            engine,
+            &diff.new,
+            project_info,
+            &import,
+            &exposed,
+            &mut edits,
+        )
+    });
     Ok(edits)
 }
 
@@ -1694,6 +1728,7 @@ mod tests {
     simulation_test!(add_value_to_exposing_list);
     simulation_test!(add_type_to_exposing_list);
     simulation_test!(add_type_exposing_constructors_to_exposing_list);
+    simulation_test!(add_exposing_list);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
