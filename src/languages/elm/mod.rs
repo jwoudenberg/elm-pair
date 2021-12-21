@@ -97,22 +97,26 @@ impl RefactorEngine {
         changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
         // debug_print_tree_changes(diff, &changes);
-        let edits = match (
-            attach_kinds(&changes.old_removed).as_slice(),
-            attach_kinds(&changes.new_added).as_slice(),
-        ) {
-            (
-                [],
-                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [DOUBLE_DOT],
-            ) => on_added_values_to_exposing_list(self, diff, changes)?,
+        let before = attach_kinds(&changes.old_removed);
+        let after = attach_kinds(&changes.new_added);
+        let edits = match (before.as_slice(), after.as_slice()) {
             (
                 [EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [DOUBLE_DOT],
-                [] | [EXPOSED_VALUE],
-            ) => on_removed_values_from_exposing_list(self, diff, changes)?,
+                | [DOUBLE_DOT]
+                | [],
+                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [DOUBLE_DOT]
+                | [],
+            ) if !(before.is_empty() && after.is_empty()) => {
+                on_changed_values_in_exposing_list(
+                    self,
+                    diff,
+                    changes.old_parent,
+                    changes.new_parent,
+                )?
+            }
             (
                 [TYPE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
@@ -303,49 +307,6 @@ fn on_removed_constructors_from_exposing_list(
     Ok(edits)
 }
 
-fn on_added_values_to_exposing_list(
-    engine: &RefactorEngine,
-    diff: &SourceFileDiff,
-    changes: TreeChanges,
-) -> Result<Vec<Edit>, Error> {
-    let import_node = changes
-        .new_added
-        .first()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let mut cursor = QueryCursor::new();
-    let import = engine
-        .query_for_imports
-        .run_in(&mut cursor, &diff.new, import_node)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let added_range = changes.new_added.first().unwrap().start_byte()
-        ..changes.new_added.last().unwrap().end_byte();
-    let mut edits = Vec::new();
-    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
-    import
-        .exposing_list()
-        .into_iter()
-        .for_each(|(node, exposed)| {
-            if node.start_byte() >= added_range.start
-                && node.end_byte() <= added_range.end
-            {
-                remove_qualifier_for_exposed(
-                    engine,
-                    &diff.new,
-                    project_info,
-                    &import,
-                    &exposed,
-                    &mut edits,
-                )
-            }
-        });
-    Ok(edits)
-}
-
 fn remove_qualifier_for_exposed(
     engine: &RefactorEngine,
     code: &SourceFileSnapshot,
@@ -470,24 +431,16 @@ fn remove_qualifier_for_exposed(
     }
 }
 
-fn on_removed_values_from_exposing_list(
+fn on_changed_values_in_exposing_list(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
-    changes: TreeChanges,
+    old_parent: Node,
+    new_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    match changes.new_added.as_slice() {
-        [] => {}
-        [node] if diff.new.slice(&node.byte_range()) == "" => {}
-        _ => return Ok(Vec::new()),
-    }
+    println!("HIHI");
 
     // TODO: Figure out better approach to tree-traversal.
-    let old_import_node = changes
-        .old_removed
-        .first()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+    let old_import_node = old_parent
         .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
@@ -497,38 +450,53 @@ fn on_removed_values_from_exposing_list(
         .next()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
 
-    // Modify the import in the new code with the name just found.
-    let mut edits = Vec::new();
-    let mut cursor2 = QueryCursor::new();
-    let import = engine
-        .query_for_imports
-        .run(&mut cursor2, &diff.new)
-        .find(|import| import.name() == old_import.name())
+    let new_import_node = new_parent
+        .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let new_exposed_count = import.exposing_list().count();
-    if new_exposed_count == 0 {
-        remove_exposing_list(&mut edits, &diff.new, &import);
-    }
-    let removed_range = changes.old_removed.first().unwrap().start_byte()
-        ..changes.old_removed.last().unwrap().end_byte();
-    let mut exposed_cursor = QueryCursor::new();
-    old_import
+    let mut cursor2 = QueryCursor::new();
+    let new_import = engine
+        .query_for_imports
+        .run_in(&mut cursor2, &diff.new, new_import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+
+    let mut edits = Vec::new();
+
+    let mut cursor3 = QueryCursor::new();
+    let new_exposed = new_import
         .exposing_list()
-        .into_iter()
-        .for_each(|(node, exposed)| {
-            if node.start_byte() >= removed_range.start
-                && node.end_byte() <= removed_range.end
-            {
-                add_qualifier_to_name(
-                    engine,
-                    &mut edits,
-                    &mut exposed_cursor,
-                    &diff.new,
-                    &import,
-                    &exposed,
-                )
-            }
-        });
+        .map(|(_, exposed)| exposed)
+        .collect::<Vec<Exposed>>();
+    old_import.exposing_list().for_each(|(_, exposed)| {
+        if !new_exposed.contains(&exposed) {
+            add_qualifier_to_name(
+                engine,
+                &mut edits,
+                &mut cursor3,
+                &diff.new,
+                &new_import,
+                &exposed,
+            )
+        }
+    });
+
+    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
+    let old_exposed = old_import
+        .exposing_list()
+        .map(|(_, exposed)| exposed)
+        .collect::<Vec<Exposed>>();
+    new_import.exposing_list().for_each(|(_, exposed)| {
+        if !old_exposed.contains(&exposed) {
+            remove_qualifier_for_exposed(
+                engine,
+                &diff.new,
+                project_info,
+                &new_import,
+                &exposed,
+                &mut edits,
+            )
+        }
+    });
     Ok(edits)
 }
 
@@ -1612,6 +1580,7 @@ impl<'a> Iterator for ExposedList<'a> {
     }
 }
 
+#[derive(PartialEq)]
 enum Exposed<'a> {
     Operator(ExposedOperator<'a>),
     Value(ExposedValue<'a>),
@@ -1619,14 +1588,17 @@ enum Exposed<'a> {
     All(Node<'a>),
 }
 
+#[derive(PartialEq)]
 struct ExposedOperator<'a> {
     name: RopeSlice<'a>,
 }
 
+#[derive(PartialEq)]
 struct ExposedValue<'a> {
     name: RopeSlice<'a>,
 }
 
+#[derive(PartialEq)]
 struct ExposedType<'a> {
     name: RopeSlice<'a>,
     buffer: Buffer,
@@ -1791,9 +1763,7 @@ mod tests {
     simulation_test!(add_module_qualifier_to_type_with_same_name);
     simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
     simulation_test!(add_module_qualifier_to_variable);
-    simulation_test!(remove_all_values_from_exposing_list_of_import);
     simulation_test!(remove_constructor_from_exposing_list_of_import);
-    simulation_test!(remove_double_dot_from_exposing_list_of_import);
     simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_all_clause_from_local_import);
     simulation_test!(remove_exposing_clause_from_import);
@@ -1821,6 +1791,7 @@ mod tests {
     simulation_test!(add_type_exposing_constructors_to_exposing_list);
     simulation_test!(add_exposing_list);
     simulation_test!(add_exposing_all_list);
+    simulation_test!(add_and_remove_items_in_exposing_list);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 

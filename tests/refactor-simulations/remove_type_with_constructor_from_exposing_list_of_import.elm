@@ -1,6 +1,6 @@
 module Main exposing (..)
 
-import Parser.Advanced exposing (Nestable(..))
+import Parser.Advanced exposing (Nestable(..), Parser)
 
 
 toggleNestable : Nestable -> Nestable
@@ -16,12 +16,12 @@ toggleNestable nestable =
 
 -- START SIMULATION
 -- MOVE CURSOR TO LINE 3 Nestable
--- DELETE Nestable(..)
+-- DELETE Nestable(..),
 -- END SIMULATION
 -- === expected output below ===
 -- module Main exposing (..)
 --
--- import Parser.Advanced
+-- import Parser.Advanced exposing ( Parser)
 --
 --
 -- toggleNestable : Parser.Advanced.Nestable -> Parser.Advanced.Nestable

@@ -129,7 +129,9 @@ pub(crate) struct SourceFileDiff {
 
 pub(crate) struct TreeChanges<'a> {
     pub old_removed: Vec<Node<'a>>,
+    pub old_parent: Node<'a>,
     pub new_added: Vec<Node<'a>>,
+    pub new_parent: Node<'a>,
 }
 
 pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
@@ -137,23 +139,31 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let new_code = &diff.new;
     let mut old = diff.old.tree.walk();
     let mut new = diff.new.tree.walk();
+    let mut old_parent = old.node();
+    let mut new_parent = new.node();
     loop {
         match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new)
         {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
+                    old_parent,
+                    new_parent,
                     old_removed: Vec::new(),
                     new_added: Vec::new(),
                 }
             }
             FirstChangedSibling::OldAtFirstAdditional => {
                 return TreeChanges {
+                    old_parent,
+                    new_parent,
                     old_removed: collect_remaining_siblings(old),
                     new_added: Vec::new(),
                 }
             }
             FirstChangedSibling::NewAtFirstAdditional => {
                 return TreeChanges {
+                    old_parent,
+                    new_parent,
                     old_removed: Vec::new(),
                     new_added: collect_remaining_siblings(new),
                 }
@@ -177,6 +187,8 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
             && first_old_changed.child_count() > 0
             && first_new_changed.child_count() > 0
         {
+            old_parent = old.node();
+            new_parent = new.node();
             old.goto_first_child();
             new.goto_first_child();
             continue;
@@ -195,6 +207,8 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         }
 
         return TreeChanges {
+            old_parent,
+            new_parent,
             old_removed,
             new_added,
         };
