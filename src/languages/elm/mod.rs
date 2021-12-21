@@ -372,7 +372,56 @@ fn remove_qualifier_for_exposed(
             )
         }
         Exposed::All(_) => {
-            panic!("unimplemented")
+            project_info
+                .modules
+                .get(&import.name().to_string())
+                .unwrap()
+                .exports
+                .iter()
+                .for_each(|export| match export {
+                    ElmExport::Value { name } => {
+                        remove_qualifier_from_name(
+                            engine,
+                            code,
+                            edits,
+                            &QualifiedReference {
+                                qualifier: import.name(),
+                                reference: Reference {
+                                    kind: ReferenceKind::Value,
+                                    name: Rope::from_str(name).slice(..),
+                                },
+                            },
+                        );
+                    }
+                    ElmExport::Type { name, constructors } => {
+                        remove_qualifier_from_name(
+                            engine,
+                            code,
+                            edits,
+                            &QualifiedReference {
+                                qualifier: import.name(),
+                                reference: Reference {
+                                    kind: ReferenceKind::Type,
+                                    name: Rope::from_str(name).slice(..),
+                                },
+                            },
+                        );
+                        for ctor in constructors.iter() {
+                            remove_qualifier_from_name(
+                                engine,
+                                code,
+                                edits,
+                                &QualifiedReference {
+                                    qualifier: import.name(),
+                                    reference: Reference {
+                                        kind: ReferenceKind::Constructor,
+                                        name: Rope::from_str(ctor).slice(..),
+                                    },
+                                },
+                            );
+                        }
+                    }
+                });
         }
         // Operators cannot be qualified, so if we add one to an
         // exposed list there's nothing to _unqualify_.
@@ -1729,6 +1778,7 @@ mod tests {
     simulation_test!(add_type_to_exposing_list);
     simulation_test!(add_type_exposing_constructors_to_exposing_list);
     simulation_test!(add_exposing_list);
+    simulation_test!(add_exposing_all_list);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
