@@ -4,7 +4,6 @@ use crate::languages::elm::dependencies::{
 };
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::Error;
-use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -102,6 +101,12 @@ impl RefactorEngine {
             attach_kinds(&changes.old_removed).as_slice(),
             attach_kinds(&changes.new_added).as_slice(),
         ) {
+            (
+                [],
+                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [DOUBLE_DOT],
+            ) => on_added_values_to_exposing_list(self, diff, changes)?,
             (
                 [EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
@@ -254,6 +259,63 @@ fn on_removed_constructors_from_exposing_list(
     Ok(edits)
 }
 
+fn on_added_values_to_exposing_list(
+    engine: &RefactorEngine,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    let import_node = changes
+        .new_added
+        .first()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .parent()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .parent()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut cursor = QueryCursor::new();
+    let import = engine
+        .query_for_imports
+        .run_in(&mut cursor, &diff.new, import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let added_range = changes.new_added.first().unwrap().start_byte()
+        ..changes.new_added.last().unwrap().end_byte();
+    let mut edits = Vec::new();
+    import
+        .exposing_list()
+        .into_iter()
+        .for_each(|(node, exposed)| {
+            if node.start_byte() >= added_range.start
+                && node.end_byte() <= added_range.end
+            {
+                match exposed {
+                    Exposed::Value(val) => remove_qualifier_from_name(
+                        engine,
+                        &diff.new,
+                        &mut edits,
+                        &QualifiedReference {
+                            qualifier: import.aliased_name(),
+                            reference: Reference {
+                                kind: ReferenceKind::Value,
+                                name: val.name,
+                            },
+                        },
+                    ),
+                    Exposed::Type(_type) => {
+                        panic!("unimplemented")
+                    }
+                    Exposed::All(_) => {
+                        panic!("unimplemented")
+                    }
+                    // Operators cannot be qualified, so if we add one to an
+                    // exposed list there's nothing to _unqualify_.
+                    Exposed::Operator(_op) => {}
+                }
+            }
+        });
+    Ok(edits)
+}
+
 fn on_removed_values_from_exposing_list(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
@@ -335,16 +397,12 @@ fn on_removed_module_qualifier_from_value(
         .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
-    let QualifiedReference {
-        qualifier,
-        reference,
-        ..
-    } = engine
+    let (_, reference) = engine
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.old, parent)
         .next()
         .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
-    if name_now != reference.name {
+    if name_now != reference.reference.name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
@@ -353,57 +411,85 @@ fn on_removed_module_qualifier_from_value(
         &engine.query_for_imports,
         &mut cursor2,
         &diff.new,
-        &qualifier,
+        &reference.qualifier,
     )?;
-    let mut cursor3 = QueryCursor::new();
-    let empty_vec = Vec::new();
-    let (ctor_type, ctor_names) =
-        if reference.kind == ReferenceKind::Constructor {
-            let project_info = engine.buffer_project(diff.new.buffer).unwrap();
-            project_info
-                .modules
-                .get(&import.name().to_string())
-                .unwrap()
-                .exports
-                .iter()
-                .find_map(|export| match export {
-                    ElmExport::Value { .. } => None,
-                    ElmExport::Type { name, constructors } => {
-                        if constructors.contains(&reference.name.to_string()) {
-                            Some((Some(name), constructors))
-                        } else {
-                            None
+    if reference.reference.kind == ReferenceKind::Constructor {
+        let project_info = engine.buffer_project(diff.new.buffer).unwrap();
+        project_info
+            .modules
+            .get(&import.name().to_string())
+            .unwrap()
+            .exports
+            .iter()
+            .for_each(|export| match export {
+                ElmExport::Value { .. } => {}
+                ElmExport::Type { name, constructors } => {
+                    if constructors
+                        .contains(&reference.reference.name.to_string())
+                    {
+                        for ctor in constructors.iter() {
+                            remove_qualifier_from_name(
+                                engine,
+                                &diff.new,
+                                &mut edits,
+                                &QualifiedReference {
+                                    qualifier: reference.qualifier,
+                                    reference: Reference {
+                                        kind: ReferenceKind::Constructor,
+                                        name: Rope::from_str(ctor).slice(..),
+                                    },
+                                },
+                            );
                         }
+                        add_to_exposing_list(
+                            &import,
+                            &reference.reference,
+                            Some(name),
+                            &diff.new,
+                            &mut edits,
+                        );
                     }
-                })
-                .unwrap_or((None, &empty_vec))
-        } else {
-            (None, &empty_vec)
-        };
-    for qualified in engine.query_for_qualified_values.run_in(
-        &mut cursor3,
-        &diff.new,
-        diff.new.tree.root_node(),
+                }
+            });
+    } else {
+        remove_qualifier_from_name(engine, &diff.new, &mut edits, &reference);
+        add_to_exposing_list(
+            &import,
+            &reference.reference,
+            None,
+            &diff.new,
+            &mut edits,
+        );
+    };
+    Ok(edits)
+}
+
+fn remove_qualifier_from_name(
+    engine: &RefactorEngine,
+    code: &SourceFileSnapshot,
+    edits: &mut Vec<Edit>,
+    reference: &QualifiedReference,
+) {
+    let mut cursor = QueryCursor::new();
+    for (node, qualified) in engine.query_for_qualified_values.run_in(
+        &mut cursor,
+        code,
+        code.tree.root_node(),
     ) {
-        if qualified.qualifier == qualifier
-            && (qualified.reference.kind == reference.kind
-                && qualified.reference.name == reference.name)
-            || (qualified.reference.kind == ReferenceKind::Constructor)
-                && ctor_names.contains(&qualified.reference.name.to_string())
-        {
+        if &qualified == reference {
             edits.push(Edit::new(
-                diff.new.buffer,
-                &mut diff.new.bytes.clone(),
+                code.buffer,
+                &mut code.bytes.clone(),
                 // The +1 makes it include the trailing dot between qualifier
                 // and qualified value.
-                &(qualified.qualifier_range.start
-                    ..(qualified.qualifier_range.end + 1)),
+                &(node.start_byte()
+                    ..(node.start_byte()
+                        + reference.qualifier.len_bytes()
+                        + 1)),
                 String::new(),
             ));
         }
     }
-    add_to_exposing_list(&import, &reference, ctor_type, &diff.new, &mut edits);
-    Ok(edits)
 }
 
 // Add a name to the list of values exposed from a particular module.
@@ -512,11 +598,14 @@ fn on_added_module_qualifier_to_value(
         .parent()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
-    let QualifiedReference {
-        qualifier,
-        reference: Reference { kind, name, .. },
-        ..
-    } = engine
+    let (
+        _,
+        QualifiedReference {
+            qualifier,
+            reference: Reference { kind, name, .. },
+            ..
+        },
+    ) = engine
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.new, parent)
         .next()
@@ -901,7 +990,7 @@ fn add_qualifier_to_constructors(
         engine
             .query_for_unqualified_values
             .run(cursor, code)
-            .for_each(|Reference { name, node, kind }| {
+            .for_each(|(node, Reference { name, kind })| {
                 if *ctor == name && kind == ReferenceKind::Constructor {
                     edits.push(Edit::new(
                         code.buffer,
@@ -926,7 +1015,7 @@ fn add_qualifier_to_type(
     engine
         .query_for_unqualified_values
         .run(cursor, code)
-        .for_each(|Reference { name, kind, node }| {
+        .for_each(|(node, Reference { name, kind })| {
             if exposed_name == name && kind == ReferenceKind::Type {
                 edits.push(Edit::new(
                     code.buffer,
@@ -950,7 +1039,7 @@ fn add_qualifier_to_value(
     engine
         .query_for_unqualified_values
         .run(cursor, code)
-        .for_each(|Reference { name, node, kind }| {
+        .for_each(|(node, Reference { name, kind })| {
             if exposed_name == name && kind == ReferenceKind::Value {
                 edits.push(Edit::new(
                     code.buffer,
@@ -1021,7 +1110,7 @@ struct QualifiedReferences<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
-    type Item = QualifiedReference<'a>;
+    type Item = (Node<'a>, QualifiedReference<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut qualifier_range = None;
@@ -1065,29 +1154,24 @@ impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
             }
             _ => panic!(),
         };
-        let reference = Reference {
-            node: root_node.unwrap(),
-            name,
-            kind,
-        };
+        let reference = Reference { name, kind };
         let qualified = QualifiedReference {
             qualifier,
-            qualifier_range,
             reference,
         };
-        Some(qualified)
+        Some((root_node.unwrap(), qualified))
     }
 }
 
+#[derive(PartialEq)]
 struct QualifiedReference<'a> {
     qualifier: RopeSlice<'a>,
-    qualifier_range: Range<usize>,
     reference: Reference<'a>,
 }
 
+#[derive(PartialEq)]
 struct Reference<'a> {
     name: RopeSlice<'a>,
-    node: Node<'a>,
     kind: ReferenceKind,
 }
 
@@ -1154,7 +1238,7 @@ struct UnqualifiedValues<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
-    type Item = Reference<'a>;
+    type Item = (Node<'a>, Reference<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
@@ -1169,8 +1253,8 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
         };
         let node = capture.node;
         let name = self.code.slice(&node.byte_range());
-        let reference = Reference { node, name, kind };
-        Some(reference)
+        let reference = Reference { name, kind };
+        Some((node, reference))
     }
 }
 
@@ -1546,6 +1630,7 @@ mod tests {
     simulation_test!(remove_module_qualifier_from_constructor);
     simulation_test!(remove_module_qualifier_from_exposed_constructor);
     simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
+    simulation_test!(add_value_to_exposing_list);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
