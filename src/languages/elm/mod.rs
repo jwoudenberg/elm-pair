@@ -337,14 +337,14 @@ fn on_removed_module_qualifier_from_value(
     let mut cursor = QueryCursor::new();
     let QualifiedReference {
         qualifier,
-        reference: Reference { kind, name, .. },
+        reference,
         ..
     } = engine
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.old, parent)
         .next()
         .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
-    if name_now != name {
+    if name_now != reference.name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
@@ -362,8 +362,8 @@ fn on_removed_module_qualifier_from_value(
         diff.new.tree.root_node(),
     ) {
         if qualified.qualifier == qualifier
-            && qualified.reference.kind == kind
-            && qualified.reference.name == name
+            && qualified.reference.kind == reference.kind
+            && qualified.reference.name == reference.name
         {
             edits.push(Edit::new(
                 diff.new.buffer,
@@ -376,8 +376,17 @@ fn on_removed_module_qualifier_from_value(
             ));
         }
     }
+    add_to_exposing_list(&import, &reference, &diff.new, &mut edits);
+    Ok(edits)
+}
 
-    // Add value to exposing list.
+// Add a name to the list of values exposed from a particular module.
+fn add_to_exposing_list(
+    import: &Import,
+    Reference { name, kind, .. }: &Reference,
+    code: &SourceFileSnapshot,
+    edits: &mut Vec<Edit>,
+) {
     match kind {
         ReferenceKind::Value => {
             let mut insert_point = None;
@@ -386,48 +395,48 @@ fn on_removed_module_qualifier_from_value(
                     Exposed::Operator(op) => op.name,
                     Exposed::Value(val) => val.name,
                     Exposed::Type(type_) => type_.name,
-                    Exposed::All(_) => panic!("TODO: do nothing in this case"),
+                    Exposed::All(_) => {
+                        return;
+                    }
                 };
-                insert_point = Some((node, exposed_name));
-                if name > exposed_name {
-                    break;
+                insert_point = Some(node);
+                // Insert right before this item to maintain alphabetic order.
+                // If the exposing list wasn't ordered alphabetically the insert
+                // place might appear random.
+                if name > &exposed_name {
+                    let insert_at = node.end_byte();
+                    return edits.push(Edit::new(
+                        code.buffer,
+                        &mut code.bytes.clone(),
+                        &(insert_at..insert_at),
+                        format!(", {}", name),
+                    ));
                 }
             }
 
             match insert_point {
                 None => {
                     edits.push(Edit::new(
-                        diff.new.buffer,
-                        &mut diff.new.bytes.clone(),
+                        code.buffer,
+                        &mut code.bytes.clone(),
                         &(import.root_node.end_byte()
                             ..import.root_node.end_byte()),
                         format!(" exposing ({})", name),
                     ));
                 }
-                Some((node, exposed_name)) => {
-                    if name > exposed_name {
-                        let insert_at = node.end_byte();
-                        edits.push(Edit::new(
-                            diff.new.buffer,
-                            &mut diff.new.bytes.clone(),
-                            &(insert_at..insert_at),
-                            format!(", {}", name),
-                        ));
-                    } else {
-                        let insert_at = node.start_byte();
-                        edits.push(Edit::new(
-                            diff.new.buffer,
-                            &mut diff.new.bytes.clone(),
-                            &(insert_at..insert_at),
-                            format!(", {}", name),
-                        ));
-                    }
+                Some(node) => {
+                    let insert_at = node.start_byte();
+                    edits.push(Edit::new(
+                        code.buffer,
+                        &mut code.bytes.clone(),
+                        &(insert_at..insert_at),
+                        format!(", {}", name),
+                    ));
                 }
             }
         }
         _ => panic!(),
     }
-    Ok(edits)
 }
 
 fn on_added_module_qualifier_to_value(
@@ -1478,6 +1487,7 @@ mod tests {
         remove_module_qualifier_inserting_variable_at_end_of_exposing_list
     );
     simulation_test!(remove_module_qualifier_for_module_without_exposing_list);
+    simulation_test!(remove_module_qualifier_for_module_exposing_all);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
