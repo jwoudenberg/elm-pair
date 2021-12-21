@@ -143,6 +143,9 @@ impl RefactorEngine {
             ([EXPOSING_LIST], []) => {
                 on_removed_exposing_list_from_import(self, diff, changes)?
             }
+            ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
+                on_added_constructors_to_exposing_list(self, diff, changes)?
+            }
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
                 on_removed_constructors_from_exposing_list(self, diff, changes)?
             }
@@ -222,6 +225,44 @@ impl RefactorEngine {
         self.projects.insert(project_root.to_owned(), project_info);
         Ok(())
     }
+}
+
+fn on_added_constructors_to_exposing_list(
+    engine: &RefactorEngine,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
+    let node = changes.new_added.first().unwrap();
+    let exposed_type_node = node.parent().unwrap();
+    let type_name = diff
+        .new
+        .slice(&exposed_type_node.child(0).unwrap().byte_range());
+    let import_node = exposed_type_node.parent().unwrap().parent().unwrap();
+    let mut cursor = QueryCursor::new();
+    let import = engine
+        .query_for_imports
+        .run_in(&mut cursor, &diff.new, import_node)
+        .next()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut edits = Vec::new();
+    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
+    for (_, exposed) in import.exposing_list() {
+        if let Exposed::Type(type_) = &exposed {
+            if type_.name == type_name {
+                remove_qualifier_for_exposed(
+                    engine,
+                    &diff.new,
+                    project_info,
+                    &import,
+                    &exposed,
+                    &mut edits,
+                );
+                break;
+            }
+        }
+    }
+    Ok(edits)
 }
 
 fn on_removed_constructors_from_exposing_list(
@@ -1776,6 +1817,7 @@ mod tests {
     simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
     simulation_test!(add_value_to_exposing_list);
     simulation_test!(add_type_to_exposing_list);
+    simulation_test!(add_constructors_for_type_to_exposing_list);
     simulation_test!(add_type_exposing_constructors_to_exposing_list);
     simulation_test!(add_exposing_list);
     simulation_test!(add_exposing_all_list);
