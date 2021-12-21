@@ -4,6 +4,7 @@ use crate::languages::elm::dependencies::{
 };
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::Error;
+use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -63,7 +64,7 @@ pub(crate) struct RefactorEngine {
     projects: HashMap<PathBuf, ProjectInfo>,
     query_for_imports: ImportsQuery,
     query_for_unqualified_values: UnqualifiedValuesQuery,
-    query_for_qualified_value: QualifiedValueQuery,
+    query_for_qualified_values: QualifiedValuesQuery,
     query_for_exports: ExportsQuery,
 }
 
@@ -82,7 +83,7 @@ impl RefactorEngine {
             query_for_unqualified_values: UnqualifiedValuesQuery::init(
                 language,
             )?,
-            query_for_qualified_value: QualifiedValueQuery::init(language)?,
+            query_for_qualified_values: QualifiedValuesQuery::init(language)?,
             query_for_exports: ExportsQuery::init(language)?,
         };
 
@@ -119,7 +120,18 @@ impl RefactorEngine {
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
             ) => on_added_module_qualifier_to_value(self, diff, changes)?,
-            // Remove entire exposing list.
+            (
+                [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+                [TYPE_IDENTIFIER],
+            )
+            | (
+                [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
+                [CONSTRUCTOR_IDENTIFIER],
+            )
+            | (
+                [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
+                [LOWER_CASE_IDENTIFIER],
+            ) => on_removed_module_qualifier_from_value(self, diff, changes)?,
             ([EXPOSING_LIST], []) => {
                 on_removed_exposing_list_from_import(self, diff, changes)?
             }
@@ -304,6 +316,114 @@ fn on_removed_values_from_exposing_list(
     Ok(edits)
 }
 
+fn on_removed_module_qualifier_from_value(
+    engine: &RefactorEngine,
+    diff: &SourceFileDiff,
+    changes: TreeChanges,
+) -> Result<Vec<Edit>, Error> {
+    let name_now = diff.new.slice(
+        &changes
+            .new_added
+            .first()
+            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+            .byte_range(),
+    );
+    let parent = changes
+        .old_removed
+        .first()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
+        .parent()
+        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let mut cursor = QueryCursor::new();
+    let QualifiedReference {
+        qualifier,
+        reference: Reference { kind, name, .. },
+        ..
+    } = engine
+        .query_for_qualified_values
+        .run_in(&mut cursor, &diff.old, parent)
+        .next()
+        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
+    if name_now != name {
+        return Ok(Vec::new());
+    }
+    let mut edits = Vec::new();
+    let mut cursor2 = QueryCursor::new();
+    let import = get_import_by_aliased_name(
+        &engine.query_for_imports,
+        &mut cursor2,
+        &diff.new,
+        &qualifier,
+    )?;
+    let mut cursor3 = QueryCursor::new();
+    for qualified in engine.query_for_qualified_values.run_in(
+        &mut cursor3,
+        &diff.new,
+        diff.new.tree.root_node(),
+    ) {
+        if qualified.qualifier == qualifier
+            && qualified.reference.kind == kind
+            && qualified.reference.name == name
+        {
+            edits.push(Edit::new(
+                diff.new.buffer,
+                &mut diff.new.bytes.clone(),
+                // The +1 makes it include the trailing dot between qualifier
+                // and qualified value.
+                &(qualified.qualifier_range.start
+                    ..(qualified.qualifier_range.end + 1)),
+                String::new(),
+            ));
+        }
+    }
+
+    // Add value to exposing list.
+    match kind {
+        ReferenceKind::Value => {
+            let mut insert_point = None;
+            for (node, exposed) in import.exposing_list() {
+                let exposed_name = match exposed {
+                    Exposed::Operator(op) => op.name,
+                    Exposed::Value(val) => val.name,
+                    Exposed::Type(type_) => type_.name,
+                    Exposed::All(_) => panic!("TODO: do nothing in this case"),
+                };
+                insert_point = Some((node, exposed_name));
+                if name > exposed_name {
+                    break;
+                }
+            }
+
+            match insert_point {
+                None => {
+                    panic!("TODO: insert exposing list");
+                }
+                Some((node, exposed_name)) => {
+                    if name > exposed_name {
+                        let insert_at = node.end_byte();
+                        edits.push(Edit::new(
+                            diff.new.buffer,
+                            &mut diff.new.bytes.clone(),
+                            &(insert_at..insert_at),
+                            format!(", {}", name),
+                        ));
+                    } else {
+                        let insert_at = node.start_byte();
+                        edits.push(Edit::new(
+                            diff.new.buffer,
+                            &mut diff.new.bytes.clone(),
+                            &(insert_at..insert_at),
+                            format!(", {}", name),
+                        ));
+                    }
+                }
+            }
+        }
+        _ => panic!(),
+    }
+    Ok(edits)
+}
+
 fn on_added_module_qualifier_to_value(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
@@ -326,19 +446,21 @@ fn on_added_module_qualifier_to_value(
     let QualifiedReference {
         qualifier,
         reference: Reference { kind, name, .. },
-    } = engine.query_for_qualified_value.run_in(
-        &mut cursor,
-        &diff.new,
-        parent,
-    )?;
+        ..
+    } = engine
+        .query_for_qualified_values
+        .run_in(&mut cursor, &diff.new, parent)
+        .next()
+        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
     if name_before != name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
+    let mut cursor2 = QueryCursor::new();
     let import = get_import_by_aliased_name(
         &engine.query_for_imports,
-        &mut cursor,
-        diff,
+        &mut cursor2,
+        &diff.new,
         &qualifier,
     )?;
 
@@ -562,11 +684,11 @@ fn remove_exposing_list(
 fn get_import_by_aliased_name<'a>(
     query_for_imports: &'a ImportsQuery,
     cursor: &'a mut QueryCursor,
-    diff: &'a SourceFileDiff,
+    code: &'a SourceFileSnapshot,
     qualifier: &'a RopeSlice,
 ) -> Result<Import<'a>, Error> {
     query_for_imports
-        .run(cursor, &diff.new)
+        .run(cursor, code)
         .find(|import| import.aliased_name() == *qualifier)
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)
 }
@@ -772,16 +894,17 @@ fn add_qualifier_to_value(
         })
 }
 
-struct QualifiedValueQuery {
+struct QualifiedValuesQuery {
     query: Query,
+    root_index: u32,
     qualifier_index: u32,
     value_index: u32,
     type_index: u32,
     constructor_index: u32,
 }
 
-impl QualifiedValueQuery {
-    fn init(lang: Language) -> Result<QualifiedValueQuery, Error> {
+impl QualifiedValuesQuery {
+    fn init(lang: Language) -> Result<QualifiedValuesQuery, Error> {
         let query_str = r#"
             (_
               (
@@ -793,11 +916,12 @@ impl QualifiedValueQuery {
                 (type_identifier)        @type
                 (constructor_identifier) @constructor
               ]
-            )
+            ) @root
             "#;
         let query = Query::new(lang, query_str)
             .map_err(Error::TreeSitterFailedToParseQuery)?;
-        let qualified_value_query = QualifiedValueQuery {
+        let qualified_value_query = QualifiedValuesQuery {
+            root_index: index_for_name(&query, "root")?,
             qualifier_index: index_for_name(&query, "qualifier")?,
             value_index: index_for_name(&query, "value")?,
             type_index: index_for_name(&query, "type")?,
@@ -807,65 +931,88 @@ impl QualifiedValueQuery {
         Ok(qualified_value_query)
     }
 
-    fn run_in<'a>(
-        &self,
-        cursor: &mut QueryCursor,
-        code: &'a SourceFileSnapshot,
-        node: Node<'a>,
-    ) -> Result<QualifiedReference<'a>, Error> {
+    fn run_in<'a, 'tree>(
+        &'a self,
+        cursor: &'a mut QueryCursor,
+        code: &'tree SourceFileSnapshot,
+        node: Node<'tree>,
+    ) -> QualifiedReferences<'a, 'tree> {
+        QualifiedReferences {
+            code,
+            query: self,
+            matches: cursor.matches(&self.query, node, code),
+        }
+    }
+}
+
+struct QualifiedReferences<'a, 'tree> {
+    query: &'a QualifiedValuesQuery,
+    code: &'tree SourceFileSnapshot,
+    matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
+}
+
+impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
+    type Item = QualifiedReference<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         let mut qualifier_range = None;
+        let mut root_node = None;
         let mut name_capture_index = None;
         let mut opt_name = None;
-        cursor
-            .matches(&self.query, node, code)
-            .next()
-            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?
-            .captures
-            .iter()
-            .for_each(|capture| {
-                if capture.index == self.qualifier_index {
-                    match &qualifier_range {
-                        None => {
-                            qualifier_range = Some(capture.node.byte_range())
-                        }
-                        Some(existing_range) => {
-                            qualifier_range = Some(
-                                existing_range.start..capture.node.end_byte(),
-                            )
-                        }
+        let match_ = self.matches.next()?;
+        match_.captures.iter().for_each(|capture| {
+            if capture.index == self.query.root_index {
+                root_node = Some(capture.node);
+            }
+            if capture.index == self.query.qualifier_index {
+                match &qualifier_range {
+                    None => qualifier_range = Some(capture.node.byte_range()),
+                    Some(existing_range) => {
+                        qualifier_range =
+                            Some(existing_range.start..capture.node.end_byte())
                     }
-                } else {
-                    name_capture_index = Some(capture.index);
-                    opt_name = Some(code.slice(&capture.node.byte_range()))
                 }
-            });
-        let name =
-            opt_name.ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
-        let qualifier = code.slice(
-            &qualifier_range
-                .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?,
-        );
+            } else {
+                name_capture_index = Some(capture.index);
+                opt_name = Some(self.code.slice(&capture.node.byte_range()))
+            }
+        });
+        let name = opt_name
+            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)
+            .unwrap();
+
+        let qualifier_range = qualifier_range
+            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)
+            .unwrap();
+        let qualifier = self.code.slice(&qualifier_range);
         let kind = match name_capture_index
-            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?
+            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)
+            .unwrap()
         {
-            index if index == self.value_index => ReferenceKind::Value,
-            index if index == self.type_index => ReferenceKind::Type,
-            index if index == self.constructor_index => {
+            index if index == self.query.value_index => ReferenceKind::Value,
+            index if index == self.query.type_index => ReferenceKind::Type,
+            index if index == self.query.constructor_index => {
                 ReferenceKind::Constructor
             }
             _ => panic!(),
         };
-        let reference = Reference { node, name, kind };
+        let reference = Reference {
+            node: root_node.unwrap(),
+            name,
+            kind,
+        };
         let qualified = QualifiedReference {
             qualifier,
+            qualifier_range,
             reference,
         };
-        Ok(qualified)
+        Some(qualified)
     }
 }
 
 struct QualifiedReference<'a> {
     qualifier: RopeSlice<'a>,
+    qualifier_range: Range<usize>,
     reference: Reference<'a>,
 }
 
@@ -1296,6 +1443,7 @@ mod tests {
         }
     }
 
+    // Qualifying values
     simulation_test!(add_module_alias_as_qualifier_to_variable);
     simulation_test!(add_module_qualifier_to_constructor);
     simulation_test!(
@@ -1317,6 +1465,9 @@ mod tests {
     simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
     simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
     simulation_test!(remove_variable_from_exposing_list_of_import);
+
+    // Removing module qualifiers from values
+    simulation_test!(remove_module_qualifier_from_variable);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
