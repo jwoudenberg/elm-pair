@@ -388,8 +388,14 @@ fn add_to_exposing_list(
     edits: &mut Vec<Edit>,
 ) {
     match kind {
-        ReferenceKind::Value => {
-            let mut insert_point = None;
+        ReferenceKind::Value
+        | ReferenceKind::Type
+        | ReferenceKind::Operator => {
+            let mut last_node = None;
+
+            // Find the first node in the existing exposing list alphabetically
+            // coming after the node we're looking to insert, then insert in
+            // front of that node.
             for (node, exposed) in import.exposing_list() {
                 let exposed_name = match exposed {
                     Exposed::Operator(op) => op.name,
@@ -399,22 +405,25 @@ fn add_to_exposing_list(
                         return;
                     }
                 };
-                insert_point = Some(node);
+                last_node = Some(node);
                 // Insert right before this item to maintain alphabetic order.
                 // If the exposing list wasn't ordered alphabetically the insert
                 // place might appear random.
-                if name > &exposed_name {
-                    let insert_at = node.end_byte();
+                if name < &exposed_name {
+                    let insert_at = node.start_byte();
                     return edits.push(Edit::new(
                         code.buffer,
                         &mut code.bytes.clone(),
                         &(insert_at..insert_at),
-                        format!(", {}", name),
+                        format!("{}, ", name),
                     ));
                 }
             }
 
-            match insert_point {
+            // We didn't find anything in the exposing list alphabetically
+            // after us. Either we come alphabetically after all currently
+            // exposed elements, or there is no exposing list at all.
+            match last_node {
                 None => {
                     edits.push(Edit::new(
                         code.buffer,
@@ -425,7 +434,7 @@ fn add_to_exposing_list(
                     ));
                 }
                 Some(node) => {
-                    let insert_at = node.start_byte();
+                    let insert_at = node.end_byte();
                     edits.push(Edit::new(
                         code.buffer,
                         &mut code.bytes.clone(),
@@ -1483,6 +1492,7 @@ mod tests {
 
     // Removing module qualifiers from values
     simulation_test!(remove_module_qualifier_from_variable);
+    simulation_test!(remove_module_qualifier_from_type);
     simulation_test!(
         remove_module_qualifier_inserting_variable_at_end_of_exposing_list
     );

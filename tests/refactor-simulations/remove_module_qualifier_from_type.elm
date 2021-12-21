@@ -1,18 +1,18 @@
 module Main exposing (..)
 
-import Json.Decode exposing (Decoder, field)
+import Json.Decode exposing (field, int)
 
 
-sumDecoder : Decoder Int
+sumDecoder : Json.Decode.Decoder Int
 sumDecoder =
     Json.Decode.map2 (+)
-        (field "x" Json.Decode.int)
-        (field "y" Json.Decode.int)
+        (field "x" int)
+        (field "y" int)
 
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 9 Json.
+-- MOVE CURSOR TO LINE 6 Json.
 -- DELETE Json.Decode.
 -- END SIMULATION
 -- === expected output below ===
