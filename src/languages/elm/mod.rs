@@ -396,7 +396,13 @@ fn on_removed_module_qualifier_from_value(
 
             match insert_point {
                 None => {
-                    panic!("TODO: insert exposing list");
+                    edits.push(Edit::new(
+                        diff.new.buffer,
+                        &mut diff.new.bytes.clone(),
+                        &(import.root_node.end_byte()
+                            ..import.root_node.end_byte()),
+                        format!(" exposing ({})", name),
+                    ));
                 }
                 Some((node, exposed_name)) => {
                     if name > exposed_name {
@@ -1176,7 +1182,7 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
         });
         Some(Import {
             code: self.code,
-            _root_node: nodes[self.query.root_index as usize]?,
+            root_node: nodes[self.query.root_index as usize]?,
             name_node: nodes[self.query.name_index as usize]?,
             as_clause_node: nodes[self.query.as_clause_index as usize],
             exposing_list_node: nodes[self.query.exposing_list_index as usize],
@@ -1186,7 +1192,7 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
 
 struct Import<'a> {
     code: &'a SourceFileSnapshot,
-    _root_node: Node<'a>,
+    root_node: Node<'a>,
     name_node: Node<'a>,
     as_clause_node: Option<Node<'a>>,
     exposing_list_node: Option<Node<'a>>,
@@ -1468,6 +1474,10 @@ mod tests {
 
     // Removing module qualifiers from values
     simulation_test!(remove_module_qualifier_from_variable);
+    simulation_test!(
+        remove_module_qualifier_inserting_variable_at_end_of_exposing_list
+    );
+    simulation_test!(remove_module_qualifier_for_module_without_exposing_list);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
