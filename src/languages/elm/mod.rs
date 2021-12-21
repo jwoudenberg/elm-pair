@@ -356,14 +356,40 @@ fn on_removed_module_qualifier_from_value(
         &qualifier,
     )?;
     let mut cursor3 = QueryCursor::new();
+    let empty_vec = Vec::new();
+    let (ctor_type, ctor_names) =
+        if reference.kind == ReferenceKind::Constructor {
+            let project_info = engine.buffer_project(diff.new.buffer).unwrap();
+            project_info
+                .modules
+                .get(&import.name().to_string())
+                .unwrap()
+                .exports
+                .iter()
+                .find_map(|export| match export {
+                    ElmExport::Value { .. } => None,
+                    ElmExport::Type { name, constructors } => {
+                        if constructors.contains(&reference.name.to_string()) {
+                            Some((Some(name), constructors))
+                        } else {
+                            None
+                        }
+                    }
+                })
+                .unwrap_or((None, &empty_vec))
+        } else {
+            (None, &empty_vec)
+        };
     for qualified in engine.query_for_qualified_values.run_in(
         &mut cursor3,
         &diff.new,
         diff.new.tree.root_node(),
     ) {
         if qualified.qualifier == qualifier
-            && qualified.reference.kind == reference.kind
-            && qualified.reference.name == reference.name
+            && (qualified.reference.kind == reference.kind
+                && qualified.reference.name == reference.name)
+            || (qualified.reference.kind == ReferenceKind::Constructor)
+                && ctor_names.contains(&qualified.reference.name.to_string())
         {
             edits.push(Edit::new(
                 diff.new.buffer,
@@ -376,75 +402,94 @@ fn on_removed_module_qualifier_from_value(
             ));
         }
     }
-    add_to_exposing_list(&import, &reference, &diff.new, &mut edits);
+    add_to_exposing_list(&import, &reference, ctor_type, &diff.new, &mut edits);
     Ok(edits)
 }
 
 // Add a name to the list of values exposed from a particular module.
 fn add_to_exposing_list(
     import: &Import,
-    Reference { name, kind, .. }: &Reference,
+    reference: &Reference,
+    ctor_type: Option<&String>,
     code: &SourceFileSnapshot,
     edits: &mut Vec<Edit>,
 ) {
-    match kind {
-        ReferenceKind::Value
-        | ReferenceKind::Type
-        | ReferenceKind::Operator => {
-            let mut last_node = None;
+    let (target_exposed_name, insert_str) = match ctor_type {
+        Some(type_name) => (type_name.to_owned(), format!("{}(..)", type_name)),
+        None => (reference.name.to_string(), reference.name.to_string()),
+    };
 
-            // Find the first node in the existing exposing list alphabetically
-            // coming after the node we're looking to insert, then insert in
-            // front of that node.
-            for (node, exposed) in import.exposing_list() {
-                let exposed_name = match exposed {
-                    Exposed::Operator(op) => op.name,
-                    Exposed::Value(val) => val.name,
-                    Exposed::Type(type_) => type_.name,
-                    Exposed::All(_) => {
-                        return;
+    let mut last_node = None;
+
+    // Find the first node in the existing exposing list alphabetically
+    // coming after the node we're looking to insert, then insert in
+    // front of that node.
+    for (node, exposed) in import.exposing_list() {
+        let exposed_name = match exposed {
+            Exposed::Operator(op) => op.name,
+            Exposed::Value(val) => val.name,
+            Exposed::Type(type_) => type_.name,
+            Exposed::All(_) => {
+                return;
+            }
+        };
+        last_node = Some(node);
+        // Insert right before this item to maintain alphabetic order.
+        // If the exposing list wasn't ordered alphabetically the insert
+        // place might appear random.
+        match std::cmp::Ord::cmp(
+            &target_exposed_name,
+            &exposed_name.to_string(),
+        ) {
+            std::cmp::Ordering::Equal => {
+                return if ctor_type.is_some() {
+                    // node.child(1) is the node corresponding to the exposed
+                    // contructors: `(..)`.
+                    if node.child(1).is_none() {
+                        let insert_at = node.end_byte();
+                        return edits.push(Edit::new(
+                            code.buffer,
+                            &mut code.bytes.clone(),
+                            &(insert_at..insert_at),
+                            "(..)".to_string(),
+                        ));
                     }
                 };
-                last_node = Some(node);
-                // Insert right before this item to maintain alphabetic order.
-                // If the exposing list wasn't ordered alphabetically the insert
-                // place might appear random.
-                if name < &exposed_name {
-                    let insert_at = node.start_byte();
-                    return edits.push(Edit::new(
-                        code.buffer,
-                        &mut code.bytes.clone(),
-                        &(insert_at..insert_at),
-                        format!("{}, ", name),
-                    ));
-                }
             }
-
-            // We didn't find anything in the exposing list alphabetically
-            // after us. Either we come alphabetically after all currently
-            // exposed elements, or there is no exposing list at all.
-            match last_node {
-                None => {
-                    edits.push(Edit::new(
-                        code.buffer,
-                        &mut code.bytes.clone(),
-                        &(import.root_node.end_byte()
-                            ..import.root_node.end_byte()),
-                        format!(" exposing ({})", name),
-                    ));
-                }
-                Some(node) => {
-                    let insert_at = node.end_byte();
-                    edits.push(Edit::new(
-                        code.buffer,
-                        &mut code.bytes.clone(),
-                        &(insert_at..insert_at),
-                        format!(", {}", name),
-                    ));
-                }
+            std::cmp::Ordering::Less => {
+                let insert_at = node.start_byte();
+                return edits.push(Edit::new(
+                    code.buffer,
+                    &mut code.bytes.clone(),
+                    &(insert_at..insert_at),
+                    format!("{}, ", insert_str),
+                ));
             }
+            std::cmp::Ordering::Greater => {}
         }
-        _ => panic!(),
+    }
+
+    // We didn't find anything in the exposing list alphabetically
+    // after us. Either we come alphabetically after all currently
+    // exposed elements, or there is no exposing list at all.
+    match last_node {
+        None => {
+            edits.push(Edit::new(
+                code.buffer,
+                &mut code.bytes.clone(),
+                &(import.root_node.end_byte()..import.root_node.end_byte()),
+                format!(" exposing ({})", insert_str),
+            ));
+        }
+        Some(node) => {
+            let insert_at = node.end_byte();
+            edits.push(Edit::new(
+                code.buffer,
+                &mut code.bytes.clone(),
+                &(insert_at..insert_at),
+                format!(", {}", insert_str),
+            ));
+        }
     }
 }
 
@@ -1498,6 +1543,9 @@ mod tests {
     );
     simulation_test!(remove_module_qualifier_for_module_without_exposing_list);
     simulation_test!(remove_module_qualifier_for_module_exposing_all);
+    simulation_test!(remove_module_qualifier_from_constructor);
+    simulation_test!(remove_module_qualifier_from_exposed_constructor);
+    simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
