@@ -281,6 +281,7 @@ fn on_added_values_to_exposing_list(
     let added_range = changes.new_added.first().unwrap().start_byte()
         ..changes.new_added.last().unwrap().end_byte();
     let mut edits = Vec::new();
+    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
     import
         .exposing_list()
         .into_iter()
@@ -288,32 +289,92 @@ fn on_added_values_to_exposing_list(
             if node.start_byte() >= added_range.start
                 && node.end_byte() <= added_range.end
             {
-                match exposed {
-                    Exposed::Value(val) => remove_qualifier_from_name(
-                        engine,
-                        &diff.new,
-                        &mut edits,
-                        &QualifiedReference {
-                            qualifier: import.aliased_name(),
-                            reference: Reference {
-                                kind: ReferenceKind::Value,
-                                name: val.name,
-                            },
-                        },
-                    ),
-                    Exposed::Type(_type) => {
-                        panic!("unimplemented")
-                    }
-                    Exposed::All(_) => {
-                        panic!("unimplemented")
-                    }
-                    // Operators cannot be qualified, so if we add one to an
-                    // exposed list there's nothing to _unqualify_.
-                    Exposed::Operator(_op) => {}
-                }
+                remove_qualifier_for_exposed(
+                    engine,
+                    &diff.new,
+                    project_info,
+                    &import,
+                    &exposed,
+                    &mut edits,
+                )
             }
         });
     Ok(edits)
+}
+
+fn remove_qualifier_for_exposed(
+    engine: &RefactorEngine,
+    code: &SourceFileSnapshot,
+    project_info: &ProjectInfo,
+    import: &Import,
+    exposed: &Exposed,
+    edits: &mut Vec<Edit>,
+) {
+    match exposed {
+        Exposed::Value(val) => remove_qualifier_from_name(
+            engine,
+            code,
+            edits,
+            &QualifiedReference {
+                qualifier: import.aliased_name(),
+                reference: Reference {
+                    kind: ReferenceKind::Value,
+                    name: val.name,
+                },
+            },
+        ),
+        Exposed::Type(type_) => {
+            if type_.exposing_constructors {
+                project_info
+                    .modules
+                    .get(&import.name().to_string())
+                    .unwrap()
+                    .exports
+                    .iter()
+                    .for_each(|export| match export {
+                        ElmExport::Value { .. } => {}
+                        ElmExport::Type { name, constructors } => {
+                            if name == &type_.name {
+                                for ctor in constructors.iter() {
+                                    remove_qualifier_from_name(
+                                        engine,
+                                        code,
+                                        edits,
+                                        &QualifiedReference {
+                                            qualifier: import.name(),
+                                            reference: Reference {
+                                                kind:
+                                                    ReferenceKind::Constructor,
+                                                name: Rope::from_str(ctor)
+                                                    .slice(..),
+                                            },
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    });
+            }
+            remove_qualifier_from_name(
+                engine,
+                code,
+                edits,
+                &QualifiedReference {
+                    qualifier: import.aliased_name(),
+                    reference: Reference {
+                        kind: ReferenceKind::Type,
+                        name: type_.name,
+                    },
+                },
+            )
+        }
+        Exposed::All(_) => {
+            panic!("unimplemented")
+        }
+        // Operators cannot be qualified, so if we add one to an
+        // exposed list there's nothing to _unqualify_.
+        Exposed::Operator(_op) => {}
+    }
 }
 
 fn on_removed_values_from_exposing_list(
@@ -533,7 +594,7 @@ fn add_to_exposing_list(
                     // contructors: `(..)`.
                     if node.child(1).is_none() {
                         let insert_at = node.end_byte();
-                        return edits.push(Edit::new(
+                        edits.push(Edit::new(
                             code.buffer,
                             &mut code.bytes.clone(),
                             &(insert_at..insert_at),
@@ -1631,6 +1692,8 @@ mod tests {
     simulation_test!(remove_module_qualifier_from_exposed_constructor);
     simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
     simulation_test!(add_value_to_exposing_list);
+    simulation_test!(add_type_to_exposing_list);
+    simulation_test!(add_type_exposing_constructors_to_exposing_list);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
