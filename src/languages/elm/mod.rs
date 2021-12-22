@@ -2,6 +2,7 @@ use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::languages::elm::dependencies::{
     load_dependencies, ElmExport, ElmModule, ExportsQuery, ProjectInfo,
 };
+use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::Error;
 use ropey::{Rope, RopeSlice};
@@ -743,8 +744,8 @@ fn on_added_module_qualifier_to_value(
                         {
                             Ok(exports_) => exports_,
                             Err(err) => {
-                                eprintln!(
-                                    "[error] failed to read exports of {}: {:?}",
+                                log::error!(
+                                    "failed to read exports of {}: {:?}",
                                     import.name().to_string(),
                                     err
                                 );

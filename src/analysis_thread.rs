@@ -1,4 +1,5 @@
 use crate::languages::elm;
+use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::HashMap;
@@ -56,19 +57,21 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
             if let Some(editor_driver) =
                 editor_driver.get(&diff.new.buffer.editor_id)
             {
-                eprintln!(
-                    "[info] diffing revision {:?} against {:?} for buffer {:?}",
-                    diff.new.revision, diff.old.revision, diff.old.buffer
+                log::info!(
+                    "diffing revision {:?} against {:?} for buffer {:?}",
+                    diff.new.revision,
+                    diff.old.revision,
+                    diff.old.buffer,
                 );
                 let tree_changes = diff_trees(&diff);
                 match refactor_engine.respond_to_change(&diff, tree_changes) {
                     Ok(Some(refactor)) => {
-                        eprintln!("[info] applying refactor to editor");
+                        log::info!("applying refactor to editor");
                         editor_driver.apply_edits(refactor);
                     }
                     Ok(None) => {}
                     Err(err) => {
-                        eprintln!("[warn] failed to create refactor: {:?}", err)
+                        log::error!("failed to create refactor: {:?}", err)
                     }
                 }
             }

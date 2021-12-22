@@ -1,5 +1,6 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
+use crate::support::log;
 use crate::support::source_code::{
     byte_to_point, Buffer, Edit, SourceFileSnapshot,
 };
@@ -276,8 +277,8 @@ impl<R: Read> EditorEvent for NeovimEvent<R> {
             )?;
             Ok(BufferChange::ModifiedBuffer { code, edit })
         } else {
-            eprintln!(
-                "[warn] received incremental buffer update before full update"
+            log::error!(
+                "received incremental buffer update before full update"
             );
             // TODO: re-attach buffer to get initial lines event.
             Ok(BufferChange::NoChanges)
@@ -538,10 +539,7 @@ where
         match self.write_refactor(refactor) {
             Ok(()) => true,
             Err(err) => {
-                eprintln!(
-                    "[warn] failed sending refactor to neovim: {:?}",
-                    err
-                );
+                log::error!("failed sending refactor to neovim: {:?}", err);
                 false
             }
         }

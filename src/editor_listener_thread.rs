@@ -1,6 +1,7 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
+use crate::support::log;
 use crate::support::source_code::{Buffer, SourceFileSnapshot};
 use crate::{Error, MVar};
 use ropey::Rope;
@@ -63,8 +64,8 @@ impl EditorListenerLoop {
         editor_id: u32,
         editor: E,
     ) -> Result<(), Error> {
-        eprintln!(
-            "[info] editor {} connected and given id {:?}",
+        log::info!(
+            "editor {} connected and given id {:?}",
             editor.name(),
             editor_id
         );
@@ -86,7 +87,7 @@ impl EditorListenerLoop {
                     path,
                     buffer,
                 } => {
-                    eprintln!("[info] new buffer opened: {:?}", buffer);
+                    log::info!("new buffer opened: {:?}", buffer);
                     self.compilation_sender.send(
                         compilation_thread::Msg::OpenedNewSourceFile {
                             buffer,
@@ -117,7 +118,7 @@ impl EditorListenerLoop {
         })?;
         self.analysis_sender
             .send(analysis_thread::Msg::EditorDisconnected(editor_id))?;
-        eprintln!("[info] editor with id {:?} disconnected", editor_id);
+        log::info!("editor with id {:?} disconnected", editor_id);
         Ok(())
     }
 

@@ -1,6 +1,7 @@
 use crate::analysis_thread;
 use crate::languages::elm::project_root_for_path;
 use crate::sized_stack::SizedStack;
+use crate::support::log;
 use crate::support::source_code::{Buffer, SourceFileSnapshot};
 use crate::{Error, MsgLoop};
 use std::collections::HashMap;
@@ -57,9 +58,10 @@ impl MsgLoop<Error> for CompilationLoop {
             .get_mut(&snapshot.buffer)
             .ok_or(Error::ElmNoProjectStoredForBuffer(snapshot.buffer))?;
         if is_new_revision(&mut buffer_info.last_checked_revision, &snapshot) {
-            eprintln!(
-                "[info] running compilation for revision {:?} of buffer {:?}",
-                snapshot.revision, snapshot.buffer
+            log::info!(
+                "running compilation for revision {:?} of buffer {:?}",
+                snapshot.revision,
+                snapshot.buffer
             );
             if does_snapshot_compile(buffer_info, &snapshot)? {
                 self.analysis_sender.send(

@@ -1,6 +1,7 @@
 use mvar::MVar;
 use std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
+use support::log;
 use support::source_code::{Buffer, SourceFileSnapshot};
 use tree_sitter::Node;
 
@@ -20,7 +21,7 @@ pub fn main() {
     std::process::exit(match run() {
         Ok(()) => 0,
         Err(err) => {
-            eprintln!("[fatal] encountered unexpected error: {:?}", err);
+            log::error!("application exits because of: {:?}", err);
             1
         }
     });
