@@ -129,7 +129,12 @@ impl RefactorEngine {
             | (
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-            ) => on_added_module_qualifier_to_value(self, diff, changes)?,
+            ) => on_added_module_qualifier_to_value(
+                self,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
             (
                 [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
                 [TYPE_IDENTIFIER],
@@ -141,18 +146,35 @@ impl RefactorEngine {
             | (
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
                 [LOWER_CASE_IDENTIFIER],
-            ) => on_removed_module_qualifier_from_value(self, diff, changes)?,
-            ([], [EXPOSING_LIST]) => {
-                on_added_exposing_list_to_import(self, diff, changes)?
-            }
-            ([EXPOSING_LIST], []) => {
-                on_removed_exposing_list_from_import(self, diff, changes)?
-            }
+            ) => on_removed_module_qualifier_from_value(
+                self,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
+            ([], [EXPOSING_LIST]) => on_added_exposing_list_to_import(
+                self,
+                &diff.new,
+                changes.new_parent,
+            )?,
+            ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
+                self,
+                diff,
+                changes.old_parent,
+            )?,
             ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
-                on_added_constructors_to_exposing_list(self, diff, changes)?
+                on_added_constructors_to_exposing_list(
+                    self,
+                    diff,
+                    changes.new_parent,
+                )?
             }
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
-                on_removed_constructors_from_exposing_list(self, diff, changes)?
+                on_removed_constructors_from_exposing_list(
+                    self,
+                    diff,
+                    changes.old_parent,
+                )?
             }
             _ => Vec::new(),
         };
@@ -235,15 +257,11 @@ impl RefactorEngine {
 fn on_added_constructors_to_exposing_list(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
-    changes: TreeChanges,
+    parent: Node,
 ) -> Result<Vec<Edit>, Error> {
     // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
-    let node = changes.new_added.first().unwrap();
-    let exposed_type_node = node.parent().unwrap();
-    let type_name = diff
-        .new
-        .slice(&exposed_type_node.child(0).unwrap().byte_range());
-    let import_node = exposed_type_node.parent().unwrap().parent().unwrap();
+    let type_name = diff.new.slice(&parent.child(0).unwrap().byte_range());
+    let import_node = parent.parent().unwrap().parent().unwrap();
     let mut cursor = QueryCursor::new();
     let import = engine
         .query_for_imports
@@ -280,15 +298,11 @@ fn on_added_constructors_to_exposing_list(
 fn on_removed_constructors_from_exposing_list(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
-    changes: TreeChanges,
+    old_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
     // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
-    let node = changes.old_removed.first().unwrap();
-    let exposed_type_node = node.parent().unwrap();
-    let type_name = diff
-        .old
-        .slice(&exposed_type_node.child(0).unwrap().byte_range());
-    let old_import_node = exposed_type_node.parent().unwrap().parent().unwrap();
+    let type_name = diff.old.slice(&old_parent.child(0).unwrap().byte_range());
+    let old_import_node = old_parent.parent().unwrap().parent().unwrap();
     let mut cursor = QueryCursor::new();
     let old_import = engine
         .query_for_imports
@@ -405,22 +419,15 @@ fn on_changed_values_in_exposing_list(
 fn on_removed_module_qualifier_from_value(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
-    changes: TreeChanges,
+    old_parent: Node,
+    new_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    let name_now = diff.new.slice(
-        &changes
-            .new_added
-            .first()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .byte_range(),
-    );
-    let parent = changes
-        .old_removed
-        .first()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
+    let (_, new_reference) = engine
+        .query_for_unqualified_values
+        .run_in(&mut cursor, &diff.new, new_parent)
+        .next()
+        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
     let (
         _,
         QualifiedReference {
@@ -429,10 +436,10 @@ fn on_removed_module_qualifier_from_value(
         },
     ) = engine
         .query_for_qualified_values
-        .run_in(&mut cursor, &diff.old, parent)
+        .run_in(&mut cursor, &diff.old, old_parent)
         .next()
         .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
-    if name_now != reference.name {
+    if new_reference.name != reference.name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
@@ -606,22 +613,15 @@ fn add_to_exposing_list(
 fn on_added_module_qualifier_to_value(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
-    changes: TreeChanges,
+    old_parent: Node,
+    new_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    let name_before = diff.old.slice(
-        &changes
-            .old_removed
-            .first()
-            .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-            .byte_range(),
-    );
-    let parent = changes
-        .new_added
-        .first()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
+    let (_, old_reference) = engine
+        .query_for_unqualified_values
+        .run_in(&mut cursor, &diff.old, old_parent)
+        .next()
+        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
     let (
         _,
         QualifiedReference {
@@ -630,10 +630,10 @@ fn on_added_module_qualifier_to_value(
         },
     ) = engine
         .query_for_qualified_values
-        .run_in(&mut cursor, &diff.new, parent)
+        .run_in(&mut cursor, &diff.new, new_parent)
         .next()
         .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
-    if name_before != reference.name {
+    if old_reference.name != reference.name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
@@ -790,21 +790,16 @@ fn on_added_module_qualifier_to_value(
 
 fn on_added_exposing_list_to_import(
     engine: &RefactorEngine,
-    diff: &SourceFileDiff,
-    changes: TreeChanges,
+    code: &SourceFileSnapshot,
+    new_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    let import_node = changes
-        .new_added
-        .first()
-        .and_then(Node::parent)
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
     let import = engine
         .query_for_imports
-        .run_in(&mut cursor, &diff.new, import_node)
+        .run_in(&mut cursor, code, new_parent)
         .next()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
+    let project_info = engine.buffer_project(code.buffer).unwrap();
     let module = project_info
         .modules
         .get(&import.name().to_string())
@@ -818,7 +813,7 @@ fn on_added_exposing_list_to_import(
     let mut edits = Vec::new();
     remove_qualifier_from_references(
         engine,
-        &diff.new,
+        code,
         &mut edits,
         &import.name(),
         references_to_unqualify,
@@ -829,17 +824,12 @@ fn on_added_exposing_list_to_import(
 fn on_removed_exposing_list_from_import(
     engine: &RefactorEngine,
     diff: &SourceFileDiff,
-    changes: TreeChanges,
+    old_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    let import_node = changes
-        .old_removed
-        .first()
-        .and_then(Node::parent)
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let mut cursor = QueryCursor::new();
     let import = engine
         .query_for_imports
-        .run_in(&mut cursor, &diff.old, import_node)
+        .run_in(&mut cursor, &diff.old, old_parent)
         .next()
         .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
     let qualifier = import.aliased_name();
@@ -1153,7 +1143,16 @@ impl UnqualifiedValuesQuery {
         cursor: &'a mut QueryCursor,
         code: &'tree SourceFileSnapshot,
     ) -> UnqualifiedValues<'a, 'tree> {
-        let matches = cursor.matches(&self.query, code.tree.root_node(), code);
+        self.run_in(cursor, code, code.tree.root_node())
+    }
+
+    fn run_in<'a, 'tree>(
+        &'a self,
+        cursor: &'a mut QueryCursor,
+        code: &'tree SourceFileSnapshot,
+        node: Node<'tree>,
+    ) -> UnqualifiedValues<'a, 'tree> {
+        let matches = cursor.matches(&self.query, node, code);
         UnqualifiedValues {
             matches,
             code,
