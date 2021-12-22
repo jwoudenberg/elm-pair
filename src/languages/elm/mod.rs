@@ -380,22 +380,10 @@ fn on_changed_values_in_exposing_list(
         });
     });
 
-    let mut references_to_qualify = HashSet::new();
-    let mut references_unchanged = HashSet::new();
-    for reference in old_references.drain() {
-        if new_references.contains(&reference) {
-            references_unchanged.insert(reference);
-        } else {
-            references_to_qualify.insert(reference);
-        }
-    }
-
-    let mut references_to_unqualify = HashSet::new();
-    for reference in new_references.drain() {
-        if !references_unchanged.contains(&reference) {
-            references_to_unqualify.insert(reference);
-        }
-    }
+    let references_to_qualify = old_references
+        .into_iter()
+        .filter(|reference| !new_references.contains(reference))
+        .collect();
 
     let mut edits = Vec::new();
     add_qualifier_to_references(
@@ -412,7 +400,7 @@ fn on_changed_values_in_exposing_list(
         &diff.new,
         &mut edits,
         &new_import.name(),
-        references_to_unqualify,
+        new_references,
     );
     Ok(edits)
 }
