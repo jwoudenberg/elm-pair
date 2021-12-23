@@ -29,6 +29,18 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
+    // Ensure only a single elm-pair is running at a time.
+    let lock_file_path = "/tmp/elm-pair.lock";
+    std::fs::File::create(lock_file_path)
+        .and_then(|file| fs2::FileExt::try_lock_exclusive(&file))
+        .map_err(|err| {
+            log::mk_err!(
+                "failed obtaining lock on {}: {:?}",
+                lock_file_path,
+                err
+            )
+        })?;
+
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
     let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
