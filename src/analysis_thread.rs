@@ -95,6 +95,8 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 }
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
+                // TODO: We error here if elm-stuff/i.dat is missing. Figure out
+                // something that won't bring the application down in this case.
                 self.refactor_engine.init_buffer(buffer, path)?;
             }
             Msg::CompilationSucceeded(snapshot) => {
