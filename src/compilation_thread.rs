@@ -97,18 +97,12 @@ fn does_snapshot_compile(
     // Write lates code to temporary file. We don't compile the original source
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
-    let mut temp_path = buffer_info.root.join("elm-stuff/elm-pair");
-    std::fs::create_dir_all(&temp_path).map_err(|err| {
-        log::mk_err!(
-            "error while creating directory elm-stuff/elm-pair: {:?}",
-            err
-        )
-    })?;
-    temp_path.push("Temp.elm");
+    let temp_path = crate::elm_pair_dir()?.join("Temp.elm");
     std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
         .map_err(|err| {
             log::mk_err!(
-                "error while writing to file elm-stuff/elm-pair/Temp.elm: {:?}",
+                "error while writing to file {:?}: {:?}",
+                temp_path,
                 err
             )
         })?;

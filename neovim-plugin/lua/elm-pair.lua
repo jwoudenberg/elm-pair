@@ -6,7 +6,7 @@ function _G.elm_pair_on_elm_buffer()
 end
 
 local function start()
-    _G.elm_pair_channel = vim.fn.sockconnect("pipe", "/tmp/elm-pair.sock",
+    _G.elm_pair_channel = vim.fn.sockconnect("pipe", "/tmp/elm-pair/socket",
                                              {rpc = true})
 
     _G.elm_pair_on_elm_buffer()

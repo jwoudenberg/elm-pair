@@ -1,4 +1,5 @@
 use mvar::MVar;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use support::log;
@@ -30,12 +31,12 @@ pub fn main() {
 
 fn run() -> Result<(), Error> {
     // Ensure only a single elm-pair is running at a time.
-    let lock_file_path = "/tmp/elm-pair.lock";
-    std::fs::File::create(lock_file_path)
+    let lock_file_path = elm_pair_dir()?.join("lockfile");
+    std::fs::File::create(&lock_file_path)
         .and_then(|file| fs2::FileExt::try_lock_exclusive(&file))
         .map_err(|err| {
             log::mk_err!(
-                "failed obtaining lock on {}: {:?}",
+                "failed obtaining lock on {:?}: {:?}",
                 lock_file_path,
                 err
             )
@@ -68,6 +69,15 @@ fn run() -> Result<(), Error> {
 
     // Main thread continues as analysis thread.
     analysis_thread::run(&latest_code, analysis_receiver)
+}
+
+fn elm_pair_dir() -> Result<PathBuf, Error> {
+    // TODO: place this in the users' data directory.
+    let dir = PathBuf::from("/tmp/elm-pair");
+    std::fs::create_dir_all(&dir).map_err(|err| {
+        log::mk_err!("error while creating directory {:?}: {:?}", dir, err)
+    })?;
+    Ok(dir)
 }
 
 fn spawn_thread<M, E, F>(error_channel: Sender<M>, f: F)

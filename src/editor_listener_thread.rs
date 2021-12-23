@@ -24,11 +24,11 @@ pub(crate) fn run(
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
-    let socket_path = "/tmp/elm-pair.sock";
+    let socket_path = crate::elm_pair_dir()?.join("socket");
     // Delete the socket file in case a previous run left it behind.
-    std::fs::remove_file(socket_path).unwrap_or(());
-    let listener = UnixListener::bind(socket_path).map_err(|err| {
-        log::mk_err!("error while creating socket: {:?}", err)
+    std::fs::remove_file(&socket_path).unwrap_or(());
+    let listener = UnixListener::bind(&socket_path).map_err(|err| {
+        log::mk_err!("error while creating socket {:?}: {:?}", socket_path, err)
     })?;
     for (editor_id, socket) in listener.incoming().into_iter().enumerate() {
         match socket {
