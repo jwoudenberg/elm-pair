@@ -25,6 +25,8 @@ pub(crate) fn run(
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
     let socket_path = "/tmp/elm-pair.sock";
+    // Delete the socket file in case a previous run left it behind.
+    std::fs::remove_file(socket_path).unwrap_or(());
     let listener = UnixListener::bind(socket_path).map_err(|err| {
         log::mk_err!("error while creating socket: {:?}", err)
     })?;
