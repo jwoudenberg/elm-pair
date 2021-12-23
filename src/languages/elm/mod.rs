@@ -1591,7 +1591,14 @@ mod tests {
 
     fn run_simulation_test(path: &Path) {
         match run_simulation_test_helper(path) {
-            Err(err) => panic!("simulation failed with: {:?}", err),
+            Err(Error::ElmPair(err)) => {
+                eprintln!("{:?}", err);
+                panic!();
+            }
+            Err(Error::RunningSimulation(err)) => {
+                eprintln!("{:?}", err);
+                panic!();
+            }
             Ok(res) => ia_test::assert_eq_answer_in(&res, path),
         }
     }

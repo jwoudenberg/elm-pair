@@ -498,7 +498,10 @@ mod tests {
 
     fn run_exports_scanning_test(path: &Path) {
         match run_exports_scanning_test_helper(path) {
-            Err(err) => panic!("simulation failed with: {:?}", err),
+            Err(err) => {
+                eprintln!("{:?}", err);
+                panic!();
+            }
             Ok(res) => ia_test::assert_eq_answer_in(&res, path),
         }
     }
