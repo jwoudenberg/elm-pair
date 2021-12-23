@@ -25,16 +25,23 @@ pub(crate) fn run(
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
     let socket_path = "/tmp/elm-pair.sock";
-    let listener =
-        UnixListener::bind(socket_path).map_err(Error::SocketCreationFailed)?;
+    let listener = UnixListener::bind(socket_path).map_err(|err| {
+        log::mk_err!("error while creating socket: {:?}", err)
+    })?;
     for (editor_id, socket) in listener.incoming().into_iter().enumerate() {
-        spawn_editor_thread(
-            active_buffer.clone(),
-            compilation_sender.clone(),
-            analysis_sender.clone(),
-            editor_id as u32,
-            socket.map_err(Error::AcceptingIncomingSocketConnectionFailed)?,
-        );
+        match socket {
+            Err(err) => {
+                log::error!("failed to accept editor connection: {:?}", err,);
+                continue;
+            }
+            Ok(accepted_socket) => spawn_editor_thread(
+                active_buffer.clone(),
+                compilation_sender.clone(),
+                analysis_sender.clone(),
+                editor_id as u32,
+                accepted_socket,
+            ),
+        };
     }
     Ok(())
 }
@@ -46,15 +53,28 @@ pub(crate) fn spawn_editor_thread(
     editor_id: u32,
     socket: UnixStream,
 ) {
-    crate::spawn_thread(analysis_sender.clone(), move || {
-        let neovim = neovim::Neovim::from_unix_socket(socket, editor_id)?;
-        EditorListenerLoop {
-            active_buffer,
-            compilation_sender,
-            analysis_sender,
-            inactive_buffers: HashMap::new(),
+    std::thread::spawn(move || {
+        let res = neovim::Neovim::from_unix_socket(socket, editor_id).and_then(
+            |neovim| {
+                EditorListenerLoop {
+                    active_buffer,
+                    compilation_sender,
+                    analysis_sender,
+                    inactive_buffers: HashMap::new(),
+                }
+                .start(editor_id as u32, neovim)
+            },
+        );
+        match res {
+            Ok(()) => {}
+            Err(err) => {
+                log::error!(
+                    "thread for editor {:?} failed with error: {:?}",
+                    editor_id,
+                    err
+                )
+            }
         }
-        .start(editor_id as u32, neovim)
     });
 }
 

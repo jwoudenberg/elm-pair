@@ -53,10 +53,13 @@ impl MsgLoop<Error> for CompilationLoop {
             None => return Ok(()),
             Some(code) => code,
         };
-        let buffer_info = self
-            .buffer_info
-            .get_mut(&snapshot.buffer)
-            .ok_or(Error::ElmNoProjectStoredForBuffer(snapshot.buffer))?;
+        let buffer_info =
+            self.buffer_info.get_mut(&snapshot.buffer).ok_or_else(|| {
+                log::mk_err!(
+                    "no elm project stored for buffer {:?}",
+                    snapshot.buffer
+                )
+            })?;
         if is_new_revision(&mut buffer_info.last_checked_revision, &snapshot) {
             log::info!(
                 "running compilation for revision {:?} of buffer {:?}",
@@ -95,11 +98,20 @@ fn does_snapshot_compile(
     // file, because the version stored on disk is likely ahead or behind the
     // version in the editor.
     let mut temp_path = buffer_info.root.join("elm-stuff/elm-pair");
-    std::fs::create_dir_all(&temp_path)
-        .map_err(Error::ElmCompilationFailedToCreateTempDir)?;
+    std::fs::create_dir_all(&temp_path).map_err(|err| {
+        log::mk_err!(
+            "error while creating directory elm-stuff/elm-pair: {:?}",
+            err
+        )
+    })?;
     temp_path.push("Temp.elm");
     std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
-        .map_err(Error::ElmCompilationFailedToWriteCodeToTempFile)?;
+        .map_err(|err| {
+            log::mk_err!(
+                "error while writing to file elm-stuff/elm-pair/Temp.elm: {:?}",
+                err
+            )
+        })?;
 
     // Run Elm compiler against temporary file.
     let output = std::process::Command::new(&buffer_info.elm_bin)
@@ -108,7 +120,7 @@ fn does_snapshot_compile(
         .arg(temp_path)
         .current_dir(&buffer_info.root)
         .output()
-        .map_err(Error::ElmCompilationFailedToRunElmMake)?;
+        .map_err(|err| log::mk_err!("error running `elm make`: {:?}", err))?;
 
     Ok(output.status.success())
 }
@@ -133,9 +145,12 @@ impl BufferInfo {
 }
 
 fn find_executable(name: &str) -> Result<PathBuf, Error> {
-    let cwd = std::env::current_dir()
-        .map_err(Error::CouldNotReadCurrentWorkingDirectory)?;
-    let path = std::env::var_os("PATH").ok_or(Error::DidNotFindPathEnvVar)?;
+    let cwd = std::env::current_dir().map_err(|err| {
+        log::mk_err!("error reading current working directory: {:?}", err)
+    })?;
+    let path = std::env::var_os("PATH").ok_or_else(|| {
+        log::mk_err!("could not read $PATH environment variable")
+    })?;
     let dirs = std::env::split_paths(&path);
     for dir in dirs {
         let mut bin_path = cwd.join(dir);
@@ -144,5 +159,7 @@ fn find_executable(name: &str) -> Result<PathBuf, Error> {
             return Ok(bin_path);
         };
     }
-    Err(Error::ElmDidNotFindCompilerBinaryOnPath)
+    Err(log::mk_err!(
+        "could not find elm binary anywhere on the $PATH"
+    ))
 }

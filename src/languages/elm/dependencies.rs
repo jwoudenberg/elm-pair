@@ -1,13 +1,13 @@
 use crate::languages::elm::idat;
-use crate::Error;
-use core::ops::Range;
+use crate::support::log;
+use crate::support::log::Error;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{BufReader, Read};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
-use tree_sitter::{Language, Query, QueryCursor, Tree};
+use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
 #[derive(Debug)]
 pub struct ProjectInfo {
@@ -43,7 +43,7 @@ pub(crate) fn load_dependencies(
 ) -> Result<ProjectInfo, Error> {
     // TODO: Remove harcoded Elm version.
     let mut modules = from_idat(project_root.join("elm-stuff/0.19.1/i.dat"))?;
-    modules.extend(find_project_modules(query_for_exports, project_root));
+    modules.extend(find_project_modules(query_for_exports, project_root)?);
     let project_info = ProjectInfo { modules };
     Ok(project_info)
 }
@@ -51,33 +51,69 @@ pub(crate) fn load_dependencies(
 fn find_project_modules(
     query_for_exports: &ExportsQuery,
     project_root: &Path,
-) -> HashMap<String, ElmModule> {
-    // TODO: replace unwrap()'s with error logging
-    let file = std::fs::File::open(project_root.join("elm.json")).unwrap();
+) -> Result<HashMap<String, ElmModule>, Error> {
+    let file =
+        std::fs::File::open(project_root.join("elm.json")).map_err(|err| {
+            log::mk_err!("error while reading elm.json: {:?}", err)
+        })?;
     let reader = BufReader::new(file);
-    let elm_json: ElmJson = serde_json::from_reader(reader).unwrap();
+    let elm_json: ElmJson = serde_json::from_reader(reader).map_err(|err| {
+        log::mk_err!("error while parsing elm.json: {:?}", err)
+    })?;
     let mut modules_found = HashMap::new();
     for dir in elm_json.source_directories {
-        let source_dir = project_root.join(&dir).canonicalize().unwrap();
-        find_project_modules_in_dir(
-            query_for_exports,
-            &source_dir,
-            &source_dir,
-            &mut modules_found,
-        );
+        match project_root.join(&dir).canonicalize() {
+            Ok(source_dir) => find_project_modules_in_dir(
+                query_for_exports,
+                &source_dir,
+                &source_dir,
+                &mut modules_found,
+            ),
+            Err(err) => {
+                // If a source directory does not exist skip it. We'll still
+                // read the other directories, but if the missing directory is
+                // added later we'll need to load it then.
+                log::error!(
+                    "error while canonicalizing source directory {:?}: {:?}",
+                    dir,
+                    err
+                )
+            }
+        };
     }
-    modules_found
+    Ok(modules_found)
 }
 
+// This function finds as many modules as it can and so logs rather than fails
+// when it encounters an error.
 fn find_project_modules_in_dir(
     query_for_exports: &ExportsQuery,
     dir_path: &Path,
     source_dir: &Path,
     modules: &mut HashMap<String, ElmModule>,
 ) {
-    let dir = std::fs::read_dir(dir_path).unwrap();
-    for entry in dir {
-        let path = entry.unwrap().path();
+    let read_dir = match std::fs::read_dir(dir_path) {
+        Ok(d) => d,
+        Err(err) => {
+            return log::error!(
+                "error while reading contents of source directory {:?}: {:?}",
+                dir_path,
+                err
+            );
+        }
+    };
+    let valid_paths = read_dir.filter_map(|entry| match entry {
+        Ok(entry_) => Some(entry_.path()),
+        Err(err) => {
+            log::error!(
+                "error while reading entry of source (sub)directory {:?}: {:?}",
+                dir_path,
+                err
+            );
+            None
+        }
+    });
+    for path in valid_paths {
         if path.is_dir() {
             find_project_modules_in_dir(
                 query_for_exports,
@@ -86,36 +122,58 @@ fn find_project_modules_in_dir(
                 modules,
             );
         } else if path.extension() == Some(std::ffi::OsStr::new("elm")) {
-            let module_name = path
-                .with_extension("")
-                .strip_prefix(source_dir)
-                .unwrap()
-                .components()
-                .filter_map(|component| {
-                    if let std::path::Component::Normal(os_str) = component {
-                        let str = os_str.to_str().unwrap();
-                        Some(str)
-                    } else {
-                        None
-                    }
-                })
-                .my_intersperse(".")
-                .collect();
-            let elm_module = parse_module(query_for_exports, &path).unwrap();
+            let module_name = match module_name_from_path(source_dir, &path) {
+                Ok(name) => name,
+                Err(err) => {
+                    log::error!("I've skipped scanning a source path because I encountered an error: {:?}", err);
+                    continue;
+                }
+            };
+            let elm_module = match parse_module(query_for_exports, &path) {
+                Ok(module) => module,
+                Err(err) => {
+                    log::error!("I've skipped scanning a source path because I encountered an error: {:?}", err);
+                    continue;
+                }
+            };
             modules.insert(module_name, elm_module);
         }
     }
+}
+
+fn module_name_from_path(
+    source_dir: &Path,
+    path: &Path,
+) -> Result<String, Error> {
+    path.with_extension("")
+        .strip_prefix(source_dir)
+        .map_err(|err|
+            log::mk_err!("error stripping source directory {:?} from elm module path {:?}: {:?}", path, source_dir, err)
+        )?
+        .components()
+        .filter_map(|component| {
+            if let std::path::Component::Normal(os_str) = component {
+                Some(os_str.to_str().ok_or(os_str))
+            } else {
+                None
+            }
+        })
+        .my_intersperse(Ok("."))
+        .collect::<Result<String, &std::ffi::OsStr>>()
+        .map_err(|os_str|
+            log::mk_err!("directory segment of Elm module used in module name is not valid UTF8: {:?}", os_str)
+        )
 }
 
 fn parse_module(
     query_for_exports: &ExportsQuery,
     path: &Path,
 ) -> Result<ElmModule, Error> {
-    let mut file =
-        std::fs::File::open(path).map_err(Error::ElmFailedToReadFile)?;
+    let mut file = std::fs::File::open(path)
+        .map_err(|err| log::mk_err!("failed to open module file: {:?}", err))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
-        .map_err(Error::ElmFailedToReadFile)?;
+        .map_err(|err| log::mk_err!("failed to read module file: {:?}", err))?;
     let tree = crate::support::source_code::parse_bytes(&bytes)?;
     let exports = query_for_exports.run(&tree, &bytes)?;
     let elm_module = ElmModule { exports };
@@ -167,8 +225,9 @@ impl ExportsQuery {
                 )*
               )
             ]"#;
-        let query = Query::new(lang, query_str)
-            .map_err(Error::TreeSitterFailedToParseQuery)?;
+        let query = Query::new(lang, query_str).map_err(|err| {
+            log::mk_err!("Failed to parse tree-sitter ExportsQuery: {:?}", err)
+        })?;
         let exports_query = ExportsQuery {
             exposed_all_index: index_for_name(&query, "exposed_all")?,
             exposed_value_index: index_for_name(&query, "exposed_value")?,
@@ -197,16 +256,15 @@ impl ExportsQuery {
             if self.exposed_all_index == capture.index {
                 exposed = ExposedList::All;
             } else if self.exposed_value_index == capture.index {
-                let val = Exposed::Value(code_slice(
-                    code,
-                    capture.node.byte_range(),
-                )?);
+                let val = Exposed::Value(code_slice(code, &capture.node)?);
                 exposed = exposed.add(val);
             } else if self.exposed_type_index == capture.index {
-                let name = code_slice(
-                    code,
-                    capture.node.child(0).unwrap().byte_range(),
-                )?;
+                let name_node = capture.node.child(0).ok_or_else(|| {
+                    log::mk_err!(
+                        "could not find name node of type in exposing list"
+                    )
+                })?;
+                let name = code_slice(code, &name_node)?;
                 let val = if capture.node.child(1).is_some() {
                     Exposed::TypeWithConstructors(name)
                 } else {
@@ -214,7 +272,7 @@ impl ExportsQuery {
                 };
                 exposed = exposed.add(val);
             } else if self.value_index == capture.index {
-                let name = code_slice(code, capture.node.byte_range())?;
+                let name = code_slice(code, &capture.node)?;
                 if exposed.has(&Exposed::Value(name)) {
                     let export = ElmExport::Value {
                         name: name.to_owned(),
@@ -222,12 +280,12 @@ impl ExportsQuery {
                     exports.push(export);
                 }
             } else if self.type_index == capture.index {
-                let name = code_slice(code, capture.node.byte_range())?;
+                let name = code_slice(code, &capture.node)?;
                 if exposed.has(&Exposed::TypeWithConstructors(name)) {
                     let constructors = rest
                         .iter()
                         .map(|ctor_capture| {
-                            code_slice(code, ctor_capture.node.byte_range())
+                            code_slice(code, &ctor_capture.node)
                                 .map(std::borrow::ToOwned::to_owned)
                         })
                         .collect::<Result<Vec<String>, Error>>()?;
@@ -282,14 +340,24 @@ enum Exposed<'a> {
 
 impl Eq for Exposed<'_> {}
 
-fn code_slice(code: &[u8], range: Range<usize>) -> Result<&str, Error> {
-    std::str::from_utf8(&code[range]).map_err(Error::ElmModuleReadingUtf8Failed)
+fn code_slice<'a>(code: &'a [u8], node: &Node) -> Result<&'a str, Error> {
+    std::str::from_utf8(&code[node.byte_range()]).map_err(|err| {
+        log::mk_err!(
+            "Failed to decode code slice for node {} as UTF8: {:?}",
+            node.kind(),
+            err
+        )
+    })
 }
 
-fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
-    query
-        .capture_index_for_name(name)
-        .ok_or(Error::TreeSitterQueryDoesNotHaveExpectedIndex)
+pub(crate) fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
+    query.capture_index_for_name(name).ok_or_else(|| {
+        log::mk_err!(
+            "failed to find index {} in tree-sitter query: {:?}",
+            name,
+            query
+        )
+    })
 }
 
 // Tust nightlies already contain a `intersperse` iterator. Once that lands
@@ -337,7 +405,9 @@ where
 }
 
 fn from_idat(path: PathBuf) -> Result<HashMap<String, ElmModule>, Error> {
-    let file = std::fs::File::open(path).unwrap();
+    let file = std::fs::File::open(path).map_err(|err| {
+        log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
+    })?;
     let reader = BufReader::new(file);
     let iter =
         idat::parse(reader)?
@@ -408,8 +478,8 @@ mod tests {
     use crate::languages::elm::dependencies::{
         parse_module, ElmModule, ExportsQuery, Intersperse,
     };
+    use crate::support::log::Error;
     use crate::test_support::included_answer_test as ia_test;
-    use crate::Error;
     use std::path::Path;
 
     macro_rules! exports_scanning_test {

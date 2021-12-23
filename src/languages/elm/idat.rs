@@ -1,6 +1,7 @@
 // A parser for `elm-stuff/0.19.1/i.dat` files.
 
-use crate::Error;
+use crate::support::log;
+use crate::support::log::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Read;
 
@@ -20,34 +21,35 @@ struct IdatParser<R> {
 
 impl<R: Read> IdatParser<R> {
     fn data_binary_int(&mut self) -> Result<i64, Error> {
-        self.reader
-            .read_i64::<BigEndian>()
-            .map_err(Error::ElmIdatReadingFailed)
+        self.reader.read_i64::<BigEndian>().map_err(|err| {
+            log::mk_err!("error reading i64 from i.dat: {:?}", err)
+        })
     }
 
     fn data_binary_word8(&mut self) -> Result<u8, Error> {
         let mut bytes = [0];
-        self.reader
-            .read_exact(&mut bytes)
-            .map_err(Error::ElmIdatReadingFailed)?;
+        self.reader.read_exact(&mut bytes).map_err(|err| {
+            log::mk_err!("error reading u8 from i.dat: {:?}", err)
+        })?;
         Ok(bytes[0])
     }
 
     fn data_binary_word16(&mut self) -> Result<u16, Error> {
-        self.reader
-            .read_u16::<BigEndian>()
-            .map_err(Error::ElmIdatReadingFailed)
+        self.reader.read_u16::<BigEndian>().map_err(|err| {
+            log::mk_err!("error reading u16 from i.dat: {:?}", err)
+        })
     }
 
     fn elm_utf8_under256(&mut self) -> Result<String, Error> {
         let len = self.data_binary_word8()? as usize;
         let mut full_bytes = [0; 256];
         let mut bytes = &mut full_bytes[0..len];
-        self.reader
-            .read_exact(&mut bytes)
-            .map_err(Error::ElmIdatReadingFailed)?;
-        let str = std::str::from_utf8(bytes)
-            .map_err(Error::ElmIdatReadingUtf8Failed)?;
+        self.reader.read_exact(&mut bytes).map_err(|err| {
+            log::mk_err!("error reading text from i.dat: {:?}", err)
+        })?;
+        let str = std::str::from_utf8(bytes).map_err(|err| {
+            log::mk_err!("error decoding i.dat bytest as utf8: {:?}", err)
+        })?;
         Ok(str.to_owned())
     }
 
@@ -59,10 +61,10 @@ impl<R: Read> IdatParser<R> {
         match kind {
             0 => Ok(None),
             1 => val(self).map(Some),
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "Maybe".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading Maybe from i.dat",
+                kind
+            )),
         }
     }
 
@@ -136,10 +138,10 @@ impl<R: Read> IdatParser<R> {
                 )?;
                 Ok(DependencyInterface::Private(package_name, unions, aliases))
             }
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "DependencyInterface".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading DependencyInterface from i.dat",
+                kind
+            )),
         }
     }
 
@@ -189,10 +191,10 @@ impl<R: Read> IdatParser<R> {
             0 => Ok(CtorOpts::Normal),
             1 => Ok(CtorOpts::Enum),
             2 => Ok(CtorOpts::Unbox),
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "CtorOpts".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading CtorOpts from i.dat",
+                kind
+            )),
         }
     }
 
@@ -216,10 +218,10 @@ impl<R: Read> IdatParser<R> {
             0 => self.elm_canonical_union().map(Union::Open),
             1 => self.elm_canonical_union().map(Union::Closed),
             2 => self.elm_canonical_union().map(Union::Private),
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "Union".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading Union from i.dat",
+                kind
+            )),
         }
     }
 
@@ -228,10 +230,10 @@ impl<R: Read> IdatParser<R> {
         match kind {
             0 => self.elm_canonical_alias().map(Alias::Public),
             1 => self.elm_canonical_alias().map(Alias::Private),
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "Alias".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading Alias from i.dat",
+                kind
+            )),
         }
     }
 
@@ -254,10 +256,10 @@ impl<R: Read> IdatParser<R> {
             0 => Ok(BinopAssociativity::Left),
             1 => Ok(BinopAssociativity::Non),
             2 => Ok(BinopAssociativity::Right),
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "BinopAssociativity".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading BinopAssocioativity from i.dat",
+                kind
+            )),
         }
     }
 
@@ -339,10 +341,10 @@ impl<R: Read> IdatParser<R> {
                 let type_ = self.elm_type()?;
                 Ok(AliasType::Filled(Box::new(type_)))
             }
-            _ => Err(Error::ElmIdatReadingUnexpectedKind {
-                kind,
-                during: "AliasType".to_owned(),
-            }),
+            _ => Err(log::mk_err!(
+                "encountered unexpected kind {:?} reading AliasType from i.dat",
+                kind
+            )),
         }
     }
 }

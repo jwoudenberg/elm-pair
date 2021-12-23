@@ -3,4 +3,4 @@
 
 # Watch source files and recompile when any change.
 
-git ls-files | entr -c -s "cargo clippy --tests && cargo test $1"
+git ls-files | entr -cc -s "cargo clippy --tests && cargo test $1"

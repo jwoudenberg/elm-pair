@@ -1,15 +1,16 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::languages::elm::dependencies::{
-    load_dependencies, ElmExport, ElmModule, ExportsQuery, ProjectInfo,
+    index_for_name, load_dependencies, ElmExport, ElmModule, ExportsQuery,
+    ProjectInfo,
 };
 use crate::support::log;
+use crate::support::log::Error;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
-use crate::Error;
 use ropey::{Rope, RopeSlice};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tree_sitter::{Language, Node, Query, QueryCursor, TreeCursor};
+use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
 
 pub mod dependencies;
 pub mod idat;
@@ -204,10 +205,7 @@ impl RefactorEngine {
                     }
                 }
             })
-            .ok_or_else(|| Error::ElmNoSuchTypeInModule {
-                module_name: module_name.to_string(),
-                type_name: type_name.to_string(),
-            })
+            .ok_or_else(|| log::mk_err!("did not find type in module"))
     }
 
     pub(crate) fn module_exports(
@@ -217,18 +215,21 @@ impl RefactorEngine {
     ) -> Result<&Vec<ElmExport>, Error> {
         let project = self.buffer_project(buffer)?;
         match project.modules.get(&module.to_string()) {
-            None => panic!("no such module"),
+            None => Err(log::mk_err!("did not find module")),
             Some(ElmModule { exports }) => Ok(exports),
         }
     }
 
     fn buffer_project(&self, buffer: Buffer) -> Result<&ProjectInfo, Error> {
-        let buffer_info = self
-            .buffers
-            .get(&buffer)
-            .ok_or(Error::ElmNoProjectStoredForBuffer(buffer))?;
-        let project_info =
-            self.projects.get(&buffer_info.project_root).unwrap();
+        let buffer_info = self.buffers.get(&buffer).ok_or_else(|| {
+            log::mk_err!("no project on file for buffer {:?}", buffer)
+        })?;
+        let project_info = self
+            .projects
+            .get(&buffer_info.project_root)
+            .ok_or_else(|| {
+                log::mk_err!("did not find project for buffer {:?}", buffer)
+            })?;
         Ok(project_info)
     }
 
@@ -260,22 +261,20 @@ fn on_added_constructors_to_exposing_list(
     diff: &SourceFileDiff,
     parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
-    let type_name = diff.new.slice(&parent.child(0).unwrap().byte_range());
-    let import_node = parent.parent().unwrap().parent().unwrap();
-    let mut cursor = QueryCursor::new();
-    let import = engine
-        .query_for_imports
-        .run_in(&mut cursor, &diff.new, import_node)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
-    let module = project_info
-        .modules
-        .get(&import.name().to_string())
-        .unwrap();
+    let type_name_node = parent.child(0).ok_or_else(|| {
+        log::mk_err!("did not find node with type name of exposed constructor")
+    })?;
+    let type_name = diff.new.slice(&type_name_node.byte_range());
+    let import_node =
+        parent.parent().and_then(|n| n.parent()).ok_or_else(|| {
+            log::mk_err!("did not find parent import of exposed constructor")
+        })?;
+    let import = parse_import_node(engine, &diff.new, import_node)?;
+    let project_info = engine.buffer_project(diff.new.buffer)?;
+    let module = get_elm_module(project_info, &import.name())?;
     let mut references_to_unqualify = HashSet::new();
-    for (_, exposed) in import.exposing_list() {
+    for result in import.exposing_list() {
+        let (_, exposed) = result?;
         if let Exposed::Type(type_) = &exposed {
             if type_.name == type_name {
                 exposed.for_each_reference(module, |reference| {
@@ -292,8 +291,17 @@ fn on_added_constructors_to_exposing_list(
         &mut edits,
         &import.name(),
         references_to_unqualify,
-    );
+    )?;
     Ok(edits)
+}
+
+fn get_elm_module<'a>(
+    project_info: &'a ProjectInfo,
+    name: &RopeSlice,
+) -> Result<&'a ElmModule, Error> {
+    project_info.modules.get(&name.to_string()).ok_or_else(|| {
+        log::mk_err!("could not find module named {}", name.to_string())
+    })
 }
 
 fn on_removed_constructors_from_exposing_list(
@@ -301,17 +309,22 @@ fn on_removed_constructors_from_exposing_list(
     diff: &SourceFileDiff,
     old_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    // TODO: remove unwrap()'s, clone()'s, and otherwise clean up.
-    let type_name = diff.old.slice(&old_parent.child(0).unwrap().byte_range());
-    let old_import_node = old_parent.parent().unwrap().parent().unwrap();
-    let mut cursor = QueryCursor::new();
-    let old_import = engine
-        .query_for_imports
-        .run_in(&mut cursor, &diff.old, old_import_node)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let type_name_node = old_parent.child(0).ok_or_else(|| {
+        log::mk_err!("could not find name node of exposed type node")
+    })?;
+    let type_name = diff.old.slice(&type_name_node.byte_range());
+    let old_import_node = old_parent
+        .parent()
+        .and_then(|n| n.parent())
+        .ok_or_else(|| {
+            log::mk_err!(
+                "could not find import parent node of exposed type node"
+            )
+        })?;
+    let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let mut references_to_qualify = HashSet::new();
-    for (_, exposed) in old_import.exposing_list() {
+    for result in old_import.exposing_list() {
+        let (_, exposed) = result?;
         if let Exposed::Type(type_) = exposed {
             if type_.name == type_name {
                 for ctor in type_.constructors(engine)? {
@@ -332,7 +345,7 @@ fn on_removed_constructors_from_exposing_list(
         &diff.new,
         &old_import,
         references_to_qualify,
-    );
+    )?;
     Ok(edits)
 }
 
@@ -342,43 +355,33 @@ fn on_changed_values_in_exposing_list(
     old_parent: Node,
     new_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    // TODO: Figure out better approach to tree-traversal.
-    let old_import_node = old_parent
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let mut cursor = QueryCursor::new();
-    let old_import = engine
-        .query_for_imports
-        .run_in(&mut cursor, &diff.old, old_import_node)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
-    let module = project_info
-        .modules
-        .get(&old_import.name().to_string())
-        .unwrap();
+    let old_import_node = old_parent.parent().ok_or_else(|| {
+        log::mk_err!("could not find parent import node of exposing list")
+    })?;
+    let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
+    let project_info = engine.buffer_project(diff.new.buffer)?;
+    let module = get_elm_module(project_info, &old_import.name())?;
     let mut old_references = HashSet::new();
-    old_import.exposing_list().for_each(|(_, exposed)| {
+    for result in old_import.exposing_list() {
+        let (_, exposed) = result?;
         exposed.for_each_reference(module, |reference| {
             old_references.insert(reference);
         });
-    });
+    }
 
-    let new_import_node = new_parent
-        .parent()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let mut cursor2 = QueryCursor::new();
-    let new_import = engine
-        .query_for_imports
-        .run_in(&mut cursor2, &diff.new, new_import_node)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let new_import_node = new_parent.parent().ok_or_else(|| {
+        log::mk_err!(
+            "could not find import node as parent of exposing list node"
+        )
+    })?;
+    let new_import = parse_import_node(engine, &diff.new, new_import_node)?;
     let mut new_references = HashSet::new();
-    new_import.exposing_list().for_each(|(_, exposed)| {
+    for result in new_import.exposing_list() {
+        let (_, exposed) = result?;
         exposed.for_each_reference(module, |reference| {
             new_references.insert(reference);
         });
-    });
+    }
 
     let references_to_qualify = old_references
         .into_iter()
@@ -393,7 +396,7 @@ fn on_changed_values_in_exposing_list(
         &diff.new,
         &new_import,
         references_to_qualify,
-    );
+    )?;
 
     remove_qualifier_from_references(
         engine,
@@ -401,7 +404,7 @@ fn on_changed_values_in_exposing_list(
         &mut edits,
         &new_import.name(),
         new_references,
-    );
+    )?;
     Ok(edits)
 }
 
@@ -416,7 +419,9 @@ fn on_removed_module_qualifier_from_value(
         .query_for_unqualified_values
         .run_in(&mut cursor, &diff.new, new_parent)
         .next()
-        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
+        .ok_or_else(|| {
+            log::mk_err!("parsing unqualified value node using query failed")
+        })??;
     let (
         _,
         QualifiedReference {
@@ -427,25 +432,19 @@ fn on_removed_module_qualifier_from_value(
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.old, old_parent)
         .next()
-        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
     if new_reference.name != reference.name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
-    let mut cursor2 = QueryCursor::new();
-    let import = get_import_by_aliased_name(
-        &engine.query_for_imports,
-        &mut cursor2,
-        &diff.new,
-        &qualifier,
-    )?;
+    let import =
+        get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if reference.kind == ReferenceKind::Constructor {
-        let project_info = engine.buffer_project(diff.new.buffer).unwrap();
-        let module = project_info
-            .modules
-            .get(&import.name().to_string())
-            .unwrap();
+        let project_info = engine.buffer_project(diff.new.buffer)?;
+        let module = get_elm_module(project_info, &import.name())?;
         for export in module.exports.iter() {
             match export {
                 ElmExport::Value { .. } => {}
@@ -463,7 +462,7 @@ fn on_removed_module_qualifier_from_value(
                             Some(name),
                             &diff.new,
                             &mut edits,
-                        );
+                        )?;
                         references_to_unqualify.insert(reference);
                         break;
                     }
@@ -471,7 +470,7 @@ fn on_removed_module_qualifier_from_value(
             }
         }
     } else {
-        add_to_exposing_list(&import, &reference, None, &diff.new, &mut edits);
+        add_to_exposing_list(&import, &reference, None, &diff.new, &mut edits)?;
         references_to_unqualify.insert(reference);
     };
     remove_qualifier_from_references(
@@ -480,7 +479,7 @@ fn on_removed_module_qualifier_from_value(
         &mut edits,
         &qualifier.slice(..),
         references_to_unqualify,
-    );
+    )?;
     Ok(edits)
 }
 
@@ -490,14 +489,15 @@ fn remove_qualifier_from_references(
     edits: &mut Vec<Edit>,
     qualifier: &RopeSlice,
     references: HashSet<Reference>,
-) {
+) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
     let qualified_references = engine.query_for_qualified_values.run_in(
         &mut cursor,
         code,
         code.tree.root_node(),
     );
-    for (node, qualified) in qualified_references {
+    for reference_or_error in qualified_references {
+        let (node, qualified) = reference_or_error?;
         if references.contains(&qualified.reference) {
             edits.push(Edit::new(
                 code.buffer,
@@ -510,6 +510,7 @@ fn remove_qualifier_from_references(
             ));
         }
     }
+    Ok(())
 }
 
 // Add a name to the list of values exposed from a particular module.
@@ -519,7 +520,7 @@ fn add_to_exposing_list(
     ctor_type: Option<&String>,
     code: &SourceFileSnapshot,
     edits: &mut Vec<Edit>,
-) {
+) -> Result<(), Error> {
     let (target_exposed_name, insert_str) = match ctor_type {
         Some(type_name) => (type_name.to_owned(), format!("{}(..)", type_name)),
         None => (reference.name.to_string(), reference.name.to_string()),
@@ -530,13 +531,14 @@ fn add_to_exposing_list(
     // Find the first node in the existing exposing list alphabetically
     // coming after the node we're looking to insert, then insert in
     // front of that node.
-    for (node, exposed) in import.exposing_list() {
+    for result in import.exposing_list() {
+        let (node, exposed) = result?;
         let exposed_name = match exposed {
             Exposed::Operator(op) => op.name,
             Exposed::Value(val) => val.name,
             Exposed::Type(type_) => type_.name,
             Exposed::All => {
-                return;
+                return Ok(());
             }
         };
         last_node = Some(node);
@@ -548,7 +550,7 @@ fn add_to_exposing_list(
             &exposed_name.to_string(),
         ) {
             std::cmp::Ordering::Equal => {
-                return if ctor_type.is_some() {
+                if ctor_type.is_some() {
                     // node.child(1) is the node corresponding to the exposed
                     // contructors: `(..)`.
                     if node.child(1).is_none() {
@@ -561,15 +563,17 @@ fn add_to_exposing_list(
                         ));
                     }
                 };
+                return Ok(());
             }
             std::cmp::Ordering::Less => {
                 let insert_at = node.start_byte();
-                return edits.push(Edit::new(
+                edits.push(Edit::new(
                     code.buffer,
                     &mut code.bytes.clone(),
                     &(insert_at..insert_at),
                     format!("{}, ", insert_str),
                 ));
+                return Ok(());
             }
             std::cmp::Ordering::Greater => {}
         }
@@ -597,6 +601,7 @@ fn add_to_exposing_list(
             ));
         }
     }
+    Ok(())
 }
 
 fn on_added_module_qualifier_to_value(
@@ -610,7 +615,9 @@ fn on_added_module_qualifier_to_value(
         .query_for_unqualified_values
         .run_in(&mut cursor, &diff.old, old_parent)
         .next()
-        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
+        .ok_or_else(|| {
+            log::mk_err!("parsing unqualified value node using query failed")
+        })??;
     let (
         _,
         QualifiedReference {
@@ -621,29 +628,27 @@ fn on_added_module_qualifier_to_value(
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.new, new_parent)
         .next()
-        .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)?;
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
     if old_reference.name != reference.name {
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
-    let mut cursor2 = QueryCursor::new();
-    let import = get_import_by_aliased_name(
-        &engine.query_for_imports,
-        &mut cursor2,
-        &diff.new,
-        &qualifier,
-    )?;
+    let import =
+        get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
 
     let exposing_list_length = import.exposing_list().count();
     let mut references_to_qualify = HashSet::new();
-    for (node, exposed) in import.exposing_list() {
+    for result in import.exposing_list() {
+        let (node, exposed) = result?;
         match &exposed {
             Exposed::Operator(op) => {
                 if op.name == reference.name
                     && reference.kind == ReferenceKind::Operator
                 {
-                    return Err(Error::ElmCannotQualifyOperator(
-                        op.name.to_string(),
+                    return Err(log::mk_err!(
+                        "cannot qualify operator, Elm doesn't allow it!"
                     ));
                 }
             }
@@ -668,10 +673,13 @@ fn on_added_module_qualifier_to_value(
                     && reference.kind == ReferenceKind::Constructor
                 {
                     // Remove `(..)` behind type from constructor this.
+                    let exposing_ctors_node = node.child(1).ok_or_else(||
+                        log::mk_err!("could not find `(..)` node behind exposed type")
+                    )?;
                     edits.push(Edit::new(
                         diff.new.buffer,
                         &mut diff.new.bytes.clone(),
-                        &node.child(1).unwrap().byte_range(),
+                        &exposing_ctors_node.byte_range(),
                         String::new(),
                     ));
 
@@ -715,9 +723,9 @@ fn on_added_module_qualifier_to_value(
                 // `exposing (..)` clause.
                 match reference.kind {
                     ReferenceKind::Operator => {
-                        return Err(Error::ElmCannotQualifyOperator(
-                            reference.name.to_string(),
-                        ))
+                        return Err(log::mk_err!(
+                            "cannot qualify operator, Elm doesn't allow it!"
+                        ));
                     }
                     ReferenceKind::Value | ReferenceKind::Type => {
                         references_to_qualify.insert(reference.clone());
@@ -773,7 +781,7 @@ fn on_added_module_qualifier_to_value(
         &diff.new,
         &import,
         references_to_qualify,
-    );
+    )?;
     Ok(edits)
 }
 
@@ -782,23 +790,16 @@ fn on_added_exposing_list_to_import(
     code: &SourceFileSnapshot,
     new_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    let mut cursor = QueryCursor::new();
-    let import = engine
-        .query_for_imports
-        .run_in(&mut cursor, code, new_parent)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
-    let project_info = engine.buffer_project(code.buffer).unwrap();
-    let module = project_info
-        .modules
-        .get(&import.name().to_string())
-        .unwrap();
+    let import = parse_import_node(engine, code, new_parent)?;
+    let project_info = engine.buffer_project(code.buffer)?;
+    let module = get_elm_module(project_info, &import.name())?;
     let mut references_to_unqualify = HashSet::new();
-    import.exposing_list().into_iter().for_each(|(_, exposed)| {
+    for result in import.exposing_list() {
+        let (_, exposed) = result?;
         exposed.for_each_reference(module, |reference| {
             references_to_unqualify.insert(reference);
         })
-    });
+    }
     let mut edits = Vec::new();
     remove_qualifier_from_references(
         engine,
@@ -806,7 +807,7 @@ fn on_added_exposing_list_to_import(
         &mut edits,
         &import.name(),
         references_to_unqualify,
-    );
+    )?;
     Ok(edits)
 }
 
@@ -815,33 +816,21 @@ fn on_removed_exposing_list_from_import(
     diff: &SourceFileDiff,
     old_parent: Node,
 ) -> Result<Vec<Edit>, Error> {
-    let mut cursor = QueryCursor::new();
-    let import = engine
-        .query_for_imports
-        .run_in(&mut cursor, &diff.old, old_parent)
-        .next()
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?;
+    let import = parse_import_node(engine, &diff.old, old_parent)?;
     let qualifier = import.aliased_name();
-    let mut cursor_2 = QueryCursor::new();
     let mut edits = Vec::new();
     let mut val_cursor = QueryCursor::new();
-    let project_info = engine.buffer_project(diff.new.buffer).unwrap();
-    let module = project_info
-        .modules
-        .get(&import.name().to_string())
-        .unwrap();
+    let project_info = engine.buffer_project(diff.new.buffer)?;
+    let module = get_elm_module(project_info, &import.name())?;
     let mut references_to_qualify = HashSet::new();
-    engine
-        .query_for_imports
-        .run(&mut cursor_2, &diff.old)
-        .find(|import| import.aliased_name() == qualifier)
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)?
-        .exposing_list()
-        .for_each(|(_, exposed)| {
-            exposed.for_each_reference(module, |reference| {
-                references_to_qualify.insert(reference);
-            })
+    let import =
+        get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
+    for result in import.exposing_list() {
+        let (_, exposed) = result?;
+        exposed.for_each_reference(module, |reference| {
+            references_to_qualify.insert(reference);
         });
+    }
     add_qualifier_to_references(
         engine,
         &mut edits,
@@ -849,7 +838,7 @@ fn on_removed_exposing_list_from_import(
         &diff.new,
         &import,
         references_to_qualify,
-    );
+    )?;
     Ok(edits)
 }
 
@@ -870,15 +859,20 @@ fn remove_exposing_list(
 }
 
 fn get_import_by_aliased_name<'a>(
-    query_for_imports: &'a ImportsQuery,
-    cursor: &'a mut QueryCursor,
+    engine: &RefactorEngine,
     code: &'a SourceFileSnapshot,
-    qualifier: &Rope,
+    qualifier: &RopeSlice,
 ) -> Result<Import<'a>, Error> {
-    query_for_imports
-        .run(cursor, code)
+    let mut cursor = QueryCursor::new();
+    engine
+        .query_for_imports
+        .run(&mut cursor, code)
         .find(|import| import.aliased_name() == *qualifier)
-        .ok_or(Error::TreeSitterExpectedNodeDoesNotExist)
+        .ok_or_else(|| {
+            log::mk_err!(
+                "could not find an import with the requested aliased name"
+            )
+        })
 }
 
 fn remove_from_exposing_list(
@@ -926,20 +920,20 @@ fn add_qualifier_to_references(
     code: &SourceFileSnapshot,
     import: &Import,
     references: HashSet<Reference>,
-) {
-    engine
-        .query_for_unqualified_values
-        .run(cursor, code)
-        .for_each(|(node, reference)| {
-            if references.contains(&reference) {
-                edits.push(Edit::new(
-                    code.buffer,
-                    &mut code.bytes.clone(),
-                    &(node.start_byte()..node.start_byte()),
-                    format!("{}.", import.aliased_name()),
-                ))
-            }
-        })
+) -> Result<(), Error> {
+    let results = engine.query_for_unqualified_values.run(cursor, code);
+    for result in results {
+        let (node, reference) = result?;
+        if references.contains(&reference) {
+            edits.push(Edit::new(
+                code.buffer,
+                &mut code.bytes.clone(),
+                &(node.start_byte()..node.start_byte()),
+                format!("{}.", import.aliased_name()),
+            ))
+        }
+    }
+    Ok(())
 }
 
 struct QualifiedValuesQuery {
@@ -966,8 +960,12 @@ impl QualifiedValuesQuery {
               ]
             ) @root
             "#;
-        let query = Query::new(lang, query_str)
-            .map_err(Error::TreeSitterFailedToParseQuery)?;
+        let query = Query::new(lang, query_str).map_err(|err| {
+            log::mk_err!(
+                "failed to parse tree-sitter QualifiedValuesQuery: {:?}",
+                err
+            )
+        })?;
         let qualified_value_query = QualifiedValuesQuery {
             root_index: index_for_name(&query, "root")?,
             qualifier_index: index_for_name(&query, "qualifier")?,
@@ -1000,14 +998,22 @@ struct QualifiedReferences<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
-    type Item = (Node<'a>, QualifiedReference);
+    type Item = Result<(Node<'a>, QualifiedReference), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let match_ = self.matches.next()?;
+        Some(self.parse_match(match_))
+    }
+}
+
+impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
+    fn parse_match(
+        &self,
+        match_: QueryMatch<'a, 'tree>,
+    ) -> Result<(Node<'a>, QualifiedReference), Error> {
         let mut qualifier_range = None;
         let mut root_node = None;
-        let mut name_capture_index = None;
-        let mut opt_name = None;
-        let match_ = self.matches.next()?;
+        let mut opt_name_capture = None;
         match_.captures.iter().for_each(|capture| {
             if capture.index == self.query.root_index {
                 root_node = Some(capture.node);
@@ -1021,38 +1027,45 @@ impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
                     }
                 }
             } else {
-                name_capture_index = Some(capture.index);
-                opt_name = Some(self.code.slice(&capture.node.byte_range()))
+                opt_name_capture = Some(capture)
             }
         });
-        let name = opt_name
-            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)
-            .unwrap();
-
-        let qualifier_range = qualifier_range
-            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)
-            .unwrap();
+        let name_capture = opt_name_capture.ok_or_else(|| {
+            log::mk_err!("match of qualified reference did not include name")
+        })?;
+        let qualifier_range = qualifier_range.ok_or_else(|| {
+            log::mk_err!(
+                "match of qualified reference did not include qualifier"
+            )
+        })?;
         let qualifier = self.code.slice(&qualifier_range);
-        let kind = match name_capture_index
-            .ok_or(Error::TreeSitterQueryReturnedNotEnoughMatches)
-            .unwrap()
-        {
+        let kind = match name_capture.index {
             index if index == self.query.value_index => ReferenceKind::Value,
             index if index == self.query.type_index => ReferenceKind::Type,
             index if index == self.query.constructor_index => {
                 ReferenceKind::Constructor
             }
-            _ => panic!(),
+            index => return Err(log::mk_err!(
+                "name in match of qualified reference has unexpected index {:?}",
+                index,
+            )),
         };
         let reference = Reference {
-            name: name.into(),
+            name: self.code.slice(&name_capture.node.byte_range()).into(),
             kind,
         };
         let qualified = QualifiedReference {
             qualifier: qualifier.into(),
             reference,
         };
-        Some((root_node.unwrap(), qualified))
+        Ok((
+            root_node.ok_or_else(|| {
+                log::mk_err!(
+                    "match of qualified reference did not include root node"
+                )
+            })?,
+            qualified,
+        ))
     }
 }
 
@@ -1116,8 +1129,12 @@ impl UnqualifiedValuesQuery {
                 (constructor_identifier) @constructor
               )
             ]"#;
-        let query = Query::new(lang, query_str)
-            .map_err(Error::TreeSitterFailedToParseQuery)?;
+        let query = Query::new(lang, query_str).map_err(|err| {
+            log::mk_err!(
+                "failed to parse tree-sitter UnqualifiedValuesQuery: {:?}",
+                err
+            )
+        })?;
         let unqualified_values_query = UnqualifiedValuesQuery {
             value_index: index_for_name(&query, "value")?,
             type_index: index_for_name(&query, "type")?,
@@ -1157,7 +1174,7 @@ struct UnqualifiedValues<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
-    type Item = (Node<'a>, Reference);
+    type Item = Result<(Node<'a>, Reference), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
@@ -1168,7 +1185,9 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
             index if index == self.query.constructor_index => {
                 ReferenceKind::Constructor
             }
-            _ => panic!(),
+            index => return Some(Err(log::mk_err!(
+                "query for unqualified values captured name with unexpected index {:?}", index
+            )))
         };
         let node = capture.node;
         let name = self.code.slice(&node.byte_range());
@@ -1176,7 +1195,7 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
             name: name.into(),
             kind,
         };
-        Some((node, reference))
+        Some(Ok((node, reference)))
     }
 }
 
@@ -1200,8 +1219,9 @@ impl ImportsQuery {
                 exposing: (exposing_list)? @exposing_list
             ) @root
             "#;
-        let query = Query::new(lang, query_str)
-            .map_err(Error::TreeSitterFailedToParseQuery)?;
+        let query = Query::new(lang, query_str).map_err(|err| {
+            log::mk_err!("failed to parse tree-sitter ImportsQuery: {:?}", err)
+        })?;
         let imports_query = ImportsQuery {
             root_index: index_for_name(&query, "root")?,
             name_index: index_for_name(&query, "name")?,
@@ -1242,7 +1262,7 @@ struct Imports<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
-    type Item = Import<'a>;
+    type Item = Import<'tree>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut nodes: [Option<Node>; 4] = [None; 4];
@@ -1301,7 +1321,7 @@ struct ExposedList<'a> {
 }
 
 impl<'a> Iterator for ExposedList<'a> {
-    type Item = (Node<'a>, Exposed<'a>);
+    type Item = Result<(Node<'a>, Exposed<'a>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let cursor = self.cursor.as_mut()?;
@@ -1331,18 +1351,28 @@ impl<'a> Iterator for ExposedList<'a> {
                     EXPOSED_OPERATOR => Exposed::Operator(ExposedOperator {
                         name: self.code.slice(&node.byte_range()),
                     }),
-                    EXPOSED_TYPE => Exposed::Type(ExposedType {
+                    EXPOSED_TYPE => {
+                        let type_name_node = match node.child(0) {
+                              Some(node) => node,
+                              None => {
+                                return Some(Err(log::mk_err!("did not find name node for type in exposing list")));
+                              }
+                        };
+                        Exposed::Type(ExposedType {
                         name: self
                             .code
-                            .slice(&node.child(0).unwrap().byte_range()),
+                            .slice(&type_name_node.byte_range()),
                         exposing_constructors: node.child(1).is_some(),
                         buffer: self.code.buffer,
                         module_name: self.module_name,
-                    }),
+                    })},
                     DOUBLE_DOT => Exposed::All,
-                    _ => panic!("unexpected exposed kind"),
+                    _ => return Some(Err(log::mk_err!(
+                        "capture in query for exposing list has unexpected kind {:?}",
+                        node.kind()
+                    )))
                 };
-                return Some((node, exposed));
+                return Some(Ok((node, exposed)));
             }
         }
         None
@@ -1482,7 +1512,7 @@ pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
         } else {
             match maybe_root.parent() {
                 None => {
-                    return Err(Error::NoElmJsonFoundInAnyAncestorDirectory);
+                    return Err(log::mk_err!("Did not find elm.json file in any ancestor directory of module path"));
                 }
                 Some(parent) => {
                     maybe_root = parent;
@@ -1490,6 +1520,21 @@ pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
             }
         }
     }
+}
+
+fn parse_import_node<'a>(
+    engine: &'a RefactorEngine,
+    code: &'a SourceFileSnapshot,
+    node: Node<'a>,
+) -> Result<Import<'a>, Error> {
+    let mut cursor = QueryCursor::new();
+    engine
+        .query_for_imports
+        .run_in(&mut cursor, code, node)
+        .next()
+        .ok_or_else(|| {
+            log::mk_err!("query of import node did not result in any matches")
+        })
 }
 
 // Sort edits in reverse order of where they change the source file. This
@@ -1505,12 +1550,6 @@ fn sort_edits(mut edits: Vec<Edit>) -> Vec<Edit> {
 
 fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
     nodes.iter().map(|node| node.kind_id()).collect()
-}
-
-fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
-    query
-        .capture_index_for_name(name)
-        .ok_or(Error::TreeSitterQueryDoesNotHaveExpectedIndex)
 }
 
 // TODO: remove debug helper when it's no longer needed.

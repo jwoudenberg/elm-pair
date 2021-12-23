@@ -1,10 +1,10 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
 use crate::support::log;
+use crate::support::log::Error;
 use crate::support::source_code::{
     byte_to_point, Buffer, Edit, SourceFileSnapshot,
 };
-use crate::Error;
 use byteorder::ReadBytesExt;
 use messagepack::read_tuple;
 use ropey::{Rope, RopeBuilder};
@@ -27,7 +27,9 @@ impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
         socket: UnixStream,
         editor_id: u32,
     ) -> Result<Self, crate::Error> {
-        let write = socket.try_clone().map_err(Error::CloningSocketFailed)?;
+        let write = socket.try_clone().map_err(|err| {
+            log::mk_err!("failed cloning neovim socket: {:?}", err)
+        })?;
         let neovim = Neovim {
             editor_id,
             read: BufReader::new(socket),
@@ -104,12 +106,12 @@ where
             }
             _ => array_len_res?,
         };
-        let type_ = rmp::decode::read_int(&mut self.read)?;
+        let type_: i32 = rmp::decode::read_int(&mut self.read)?;
         if array_len == 3 && type_ == 2 {
             let new_self = self.parse_notification_msg()?;
             Ok(Some(new_self))
         } else {
-            Err(Error::NeovimUnknownMessageType(array_len, type_))
+            Err(log::mk_err!("received unknown msgpack-rpc message with length {:?} and type {:?}", array_len, type_))
         }
     }
 
@@ -117,13 +119,11 @@ where
         let mut buffer = [0u8; 30];
         let len = rmp::decode::read_str_len(&mut self.read)? as usize;
         if len > buffer.len() {
-            return Err(Error::NeovimDecodingBufferCannotHoldString(
-                len as u32,
-            ));
+            return Err(log::mk_err!("name of received msgpack-rpc message length {:?} exceeds max length {:?}", len, buffer.len()));
         }
-        self.read
-            .read_exact(&mut buffer[0..len])
-            .map_err(Error::NeovimDecodingReadingString)?;
+        self.read.read_exact(&mut buffer[0..len]).map_err(|err| {
+            log::mk_err!("failed reading msgpack-rpc message name: {:?}", err)
+        })?;
         match &buffer[0..len] {
             b"nvim_error_event" => self.parse_error_event()?,
             b"nvim_buf_lines_event" => return self.parse_buf_lines_event(),
@@ -133,8 +133,9 @@ where
             b"nvim_buf_detach_event" => self.parse_buf_detach_event()?,
             b"buffer_opened" => self.parse_buffer_opened()?,
             method => {
-                return Err(Error::NeovimUnknownEventMethod(
-                    to_utf8(method)?.to_owned(),
+                return Err(log::mk_err!(
+                    "received neovim message with unknown name: {:?}",
+                    from_utf8(method)
                 ))
             }
         };
@@ -148,13 +149,21 @@ where
             msg = {
                 let len = rmp::decode::read_str_len(&mut self.read)?;
                 let mut buffer = vec![0; len as usize];
-                self.read
-                    .read_exact(&mut buffer)
-                    .map_err(Error::NeovimDecodingReadingString)?;
-                to_utf8(&buffer)?.to_owned()
+                self.read.read_exact(&mut buffer).map_err(|err| {
+                    log::mk_err!(
+                        "failed reading error out of neovim message: {:?}",
+                        err
+                    )
+                })?;
+                from_utf8(&buffer)?.to_owned()
             }
         );
-        Err(Error::NeovimReceivedErrorEvent(type_, msg))
+        let type_: u64 = type_; // for type inference.
+        Err(log::mk_err!(
+            "received error from neovim: {:?} {}",
+            type_,
+            msg
+        ))
     }
 
     fn parse_buffer_opened(&mut self) -> Result<(), Error> {
@@ -167,10 +176,10 @@ where
             path = {
                 let len = rmp::decode::read_str_len(&mut self.read)?;
                 let mut buffer = vec![0; len as usize];
-                self.read
-                    .read_exact(&mut buffer)
-                    .map_err(Error::NeovimDecodingReadingString)?;
-                Path::new(to_utf8(&buffer)?).to_owned()
+                self.read.read_exact(&mut buffer).map_err(|err| {
+                    log::mk_err!("failed reading msgpack-rpc string: {:?}", err)
+                })?;
+                Path::new(from_utf8(&buffer)?).to_owned()
             }
         );
         self.paths_for_new_buffers.insert(buf, path);
@@ -234,12 +243,13 @@ where
         // nvim_buf_attach arguments
         rmp::encode::write_array_len(write, 3)?;
         rmp::encode::write_u32(write, buf.buffer_id)?; //buf
-        rmp::encode::write_bool(write, true)
-            .map_err(Error::NeovimEncodingFailedWhileWritingData)?; // send_buffer
+        rmp::encode::write_bool(write, true).map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?; // send_buffer
         rmp::encode::write_map_len(write, 0)?; // opts
-        write
-            .flush()
-            .map_err(Error::NeovimEncodingFailedWhileWritingData)?;
+        write.flush().map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?; // send_buff
         Ok(())
     }
 }
@@ -263,11 +273,15 @@ impl<R: Read> EditorEvent for NeovimEvent<R> {
             Ok(BufferChange::OpenedNewBuffer {
                 buffer: self.buffer,
                 bytes: rope,
-                path: self.paths_for_new_buffers.remove(&self.buffer).ok_or(
-                    Error::NeovimReceivedLinesEventForUnknownBuffer(
-                        self.buffer,
-                    ),
-                )?,
+                path: self
+                    .paths_for_new_buffers
+                    .remove(&self.buffer)
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "received neovim lines event for unkonwn buffer: {:?}",
+                            self.buffer,
+                        )
+                    })?,
             })
         } else if let Some(mut code) = opt_code {
             let edit = self.apply_change(
@@ -309,7 +323,12 @@ impl<R: Read> NeovimEvent<R> {
             read_chunks(
                 &mut self.read,
                 len as usize,
-                Error::NeovimDecodingReadingString,
+                |err| {
+                    log::mk_err!(
+                        "failed reading string from msgpack-rpc message: {:?}",
+                        err
+                    )
+                },
                 |chunk| {
                     code.insert(code.byte_to_char(new_end_byte), chunk);
                     new_end_byte += chunk.len();
@@ -338,7 +357,12 @@ impl<R: Read> NeovimEvent<R> {
             read_chunks(
                 &mut self.read,
                 len as usize,
-                Error::NeovimDecodingReadingString,
+                |err| {
+                    log::mk_err!(
+                        "failed reading string from msgpack-rpc message: {:?}",
+                        err
+                    )
+                },
                 |chunk| {
                     builder.append(chunk);
                     Ok(())
@@ -360,8 +384,12 @@ where
     while count > 0 {
         count -= 1;
         let marker = rmp::decode::read_marker(read)?;
-        count += skip_one_object(read, marker)
-            .map_err(Error::NeovimDecodingSkippingData)?;
+        count += skip_one_object(read, marker).map_err(|err| {
+            log::mk_err!(
+                "failed skipping data in msgpack-rpc stream: {:?}",
+                err
+            )
+        })?;
     }
     Ok(())
 }
@@ -466,9 +494,13 @@ where
     Ok(())
 }
 
-fn to_utf8(buffer: &[u8]) -> Result<&str, Error> {
-    let str = std::str::from_utf8(buffer)
-        .map_err(Error::NeovimDecodingInvalidUtf8)?;
+fn from_utf8(buffer: &[u8]) -> Result<&str, Error> {
+    let str = std::str::from_utf8(buffer).map_err(|err| {
+        log::mk_err!(
+            "failed decoding string from msgpack-rpc message as utf8: {:?}",
+            err
+        )
+    })?;
     Ok(str)
 }
 
@@ -579,9 +611,9 @@ where
             rmp::encode::write_array_len(write, 1)?; // array of lines
             write_str(write, &edit.new_bytes)?;
         }
-        write
-            .flush()
-            .map_err(Error::NeovimEncodingFailedWhileWritingData)?;
+        write.flush().map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?;
         Ok(())
     }
 }
@@ -594,7 +626,7 @@ where
     rmp::encode::write_str_len(write, bytes.len() as u32)?;
     write
         .write_all(bytes)
-        .map_err(Error::NeovimEncodingFailedWhileWritingString)?;
+        .map_err(|err| log::mk_err!("failed writing to neovim: {:?}", err))?;
     Ok(())
 }
 
@@ -630,10 +662,11 @@ mod messagepack {
             let expected_len = messagepack::count!($($x)*) as u32;
             if array_len  < expected_len {
                 return Err(
-                    Error::NeovimDecodingNotEnoughArrayElements {
-                        actual: array_len,
-                        expected: expected_len
-                    }.into()
+                    log::mk_err!(
+                        "messagepack array contains {:?} elements, while I expected at least {:?}",
+                        array_len,
+                        expected_len,
+                    )
                 )
             }
             $( let $name = $x; )*

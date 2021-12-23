@@ -1,4 +1,5 @@
-use crate::Error;
+use crate::support::log;
+use crate::support::log::Error;
 use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use tree_sitter::{InputEdit, Node, Tree};
@@ -68,13 +69,18 @@ fn parse_rope(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
-        .map_err(Error::TreeSitterSettingLanguageFailed)?;
+        .map_err(|err| {
+            log::mk_err!(
+                "failed setting tree-sitter parser language: {:?}",
+                err
+            )
+        })?;
     let mut callback = |offset, _| {
         let (chunk, chunk_byte_index, _, _) = code.chunk_at_byte(offset);
         &chunk[(offset - chunk_byte_index)..]
     };
     match parser.parse_with(&mut callback, prev_tree) {
-        None => Err(Error::TreeSitterParsingFailed),
+        None => Err(log::mk_err!("tree-sitter failed to parse code")),
         Some(tree) => Ok(tree),
     }
 }
@@ -84,9 +90,14 @@ pub(crate) fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
-        .map_err(Error::TreeSitterSettingLanguageFailed)?;
+        .map_err(|err| {
+            log::mk_err!(
+                "failed setting tree-sitter parser language: {:?}",
+                err
+            )
+        })?;
     match parser.parse(bytes, None) {
-        None => Err(Error::TreeSitterParsingFailed),
+        None => Err(log::mk_err!("tree-sitter failed to parse code")),
         Some(tree) => Ok(tree),
     }
 }
