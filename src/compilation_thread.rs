@@ -1,5 +1,5 @@
 use crate::analysis_thread;
-use crate::languages::elm::project_root_for_path;
+use crate::elm::project_root_for_path;
 use crate::sized_stack::SizedStack;
 use crate::support::log;
 use crate::support::source_code::{Buffer, SourceFileSnapshot};

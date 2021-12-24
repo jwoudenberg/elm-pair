@@ -1,4 +1,4 @@
-use crate::languages::elm::idat;
+use crate::elm::idat;
 use crate::support::log;
 use crate::support::log::Error;
 use serde::Deserialize;
@@ -475,7 +475,7 @@ fn elm_export_from_alias(
 
 #[cfg(test)]
 mod tests {
-    use crate::languages::elm::dependencies::{
+    use crate::elm::dependencies::{
         parse_module, ElmModule, ExportsQuery, Intersperse,
     };
     use crate::support::log::Error;

@@ -1,4 +1,4 @@
-use crate::languages::elm;
+use crate::elm;
 use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};

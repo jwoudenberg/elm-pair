@@ -1,5 +1,5 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
-use crate::languages::elm::dependencies::{
+use crate::elm::dependencies::{
     index_for_name, load_dependencies, ElmExport, ElmModule, ExportsQuery,
     ProjectInfo,
 };
@@ -1568,7 +1568,7 @@ fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
 #[cfg(test)]
 mod tests {
     use crate::analysis_thread::{diff_trees, SourceFileDiff};
-    use crate::languages::elm::RefactorEngine;
+    use crate::elm::RefactorEngine;
     use crate::support::source_code::Buffer;
     use crate::test_support::included_answer_test as ia_test;
     use crate::test_support::simulation::Simulation;

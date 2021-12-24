@@ -11,7 +11,7 @@ mod analysis_thread;
 mod compilation_thread;
 mod editor_listener_thread;
 mod editors;
-mod languages;
+mod elm;
 mod support;
 
 #[cfg(test)]
