@@ -242,7 +242,7 @@ impl RefactorEngine {
                 changes.old_parent,
                 changes.new_parent,
             )?,
-            ([MODULE_NAME_SEGMENT], [MODULE_NAME_SEGMENT]) => {
+            ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => {
                 on_changed_module_name(
                     self,
                     &mut refactor,
@@ -444,12 +444,19 @@ fn on_changed_module_qualifier(
                 "did not find import statement with the expected aliased name"
             )
         })?;
-    let as_clause_node = import.as_clause_node.unwrap();
-
-    refactor.add_change(
-        as_clause_node.byte_range(),
-        new_reference.qualifier.to_string(),
-    );
+    match import.as_clause_node {
+        Some(as_clause_node) => refactor.add_change(
+            as_clause_node.byte_range(),
+            new_reference.qualifier.to_string(),
+        ),
+        None => {
+            let insert_point = import.name_node.end_byte();
+            refactor.add_change(
+                insert_point..insert_point,
+                format!(" as {}", new_reference.qualifier),
+            );
+        }
+    }
 
     change_qualifier(
         engine,
@@ -1835,6 +1842,9 @@ mod tests {
     simulation_test!(change_module_qualifier_of_value);
     simulation_test!(change_module_qualifier_of_type);
     simulation_test!(change_module_qualifier_of_constructor);
+    simulation_test!(
+        change_module_qualifier_of_variable_from_unaliased_import_name
+    );
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
