@@ -445,10 +445,26 @@ fn on_changed_module_qualifier(
             )
         })?;
     match import.as_clause_node {
-        Some(as_clause_node) => refactor.add_change(
-            as_clause_node.byte_range(),
-            new_reference.qualifier.to_string(),
-        ),
+        Some(as_clause_name_node) => {
+            if import.name() == new_reference.qualifier {
+                let as_clause_node =
+                    as_clause_name_node.parent().ok_or_else(|| {
+                        log::mk_err!(
+                            "found unexpected root as clause name nood"
+                        )
+                    })?;
+                refactor.add_change(
+                    (as_clause_node.start_byte() - 1)
+                        ..as_clause_node.end_byte(),
+                    String::new(),
+                )
+            } else {
+                refactor.add_change(
+                    as_clause_name_node.byte_range(),
+                    new_reference.qualifier.to_string(),
+                )
+            }
+        }
         None => {
             let insert_point = import.name_node.end_byte();
             refactor.add_change(
@@ -1845,6 +1861,7 @@ mod tests {
     simulation_test!(
         change_module_qualifier_of_variable_from_unaliased_import_name
     );
+    simulation_test!(change_module_qualifier_to_match_unaliased_import_name);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
