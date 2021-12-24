@@ -70,7 +70,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                     .respond_to_change(&diff, tree_changes)
                     .and_then(|refactor| refactor.edits(&mut diff.new));
                 match result {
-                    Ok(edits) => {
+                    Ok(edits) if !diff.new.tree.root_node().has_error() => {
                         if !edits.is_empty() {
                             log::info!("applying refactor to editor");
                             if editor_driver.apply_edits(edits) {
@@ -97,6 +97,9 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                                     .insert(diff.new.buffer, diff.new);
                             }
                         }
+                    }
+                    Ok(_) => {
+                        log::error!("refactor produced invalid code")
                     }
                     Err(err) => {
                         log::error!("failed to create refactor: {:?}", err)

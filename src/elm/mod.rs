@@ -1802,7 +1802,9 @@ mod tests {
         let edits = refactor_engine
             .respond_to_change(&diff, tree_changes)?
             .edits(&mut diff.new)?;
-        if edits.is_empty() {
+        if diff.new.tree.root_node().has_error() {
+            Ok("Refactor produced invalid code.".to_owned())
+        } else if edits.is_empty() {
             Ok("No refactor for this change.".to_owned())
         } else {
             Ok(diff.new.bytes.to_string())
@@ -1862,6 +1864,7 @@ mod tests {
         change_module_qualifier_of_variable_from_unaliased_import_name
     );
     simulation_test!(change_module_qualifier_to_match_unaliased_import_name);
+    simulation_test!(change_module_qualifier_to_invalid_name);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
