@@ -18,19 +18,20 @@ pub mod idat;
 
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
+const AS_CLAUSE: u16 = 101;
 const COMMA: u16 = 6;
+const CONSTRUCTOR_IDENTIFIER: u16 = 8;
 const DOT: u16 = 55;
 const DOUBLE_DOT: u16 = 49;
-const EXPOSED_TYPE: u16 = 92;
-const EXPOSED_VALUE: u16 = 91;
 const EXPOSED_OPERATOR: u16 = 94;
+const EXPOSED_TYPE: u16 = 92;
 const EXPOSED_UNION_CONSTRUCTORS: u16 = 93;
+const EXPOSED_VALUE: u16 = 91;
 const EXPOSING_LIST: u16 = 90;
 const LOWER_CASE_IDENTIFIER: u16 = 1;
 const MODULE_NAME_SEGMENT: u16 = 201;
 const TYPE_IDENTIFIER: u16 = 33;
-const CONSTRUCTOR_IDENTIFIER: u16 = 8;
-const AS_CLAUSE: u16 = 101;
+const VALUE_QID: u16 = 98;
 
 #[cfg(test)]
 mod kind_constant_tests {
@@ -40,27 +41,28 @@ mod kind_constant_tests {
         let check = |constant, str, named| {
             assert_eq!(constant, language.id_for_node_kind(str, named))
         };
+        check(super::AS_CLAUSE, "as_clause", true);
         check(super::COMMA, ",", false);
-        check(super::DOT, "dot", true);
-        check(super::EXPOSED_OPERATOR, "exposed_operator", true);
-        check(super::EXPOSED_TYPE, "exposed_type", true);
-        check(super::EXPOSED_VALUE, "exposed_value", true);
-        check(
-            super::EXPOSED_UNION_CONSTRUCTORS,
-            "exposed_union_constructors",
-            true,
-        );
-        check(super::DOUBLE_DOT, "double_dot", true);
-        check(super::EXPOSING_LIST, "exposing_list", true);
-        check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
-        check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
-        check(super::TYPE_IDENTIFIER, "type_identifier", true);
         check(
             super::CONSTRUCTOR_IDENTIFIER,
             "constructor_identifier",
             true,
         );
-        check(super::AS_CLAUSE, "as_clause", true);
+        check(super::DOT, "dot", true);
+        check(super::DOUBLE_DOT, "double_dot", true);
+        check(super::EXPOSED_OPERATOR, "exposed_operator", true);
+        check(super::EXPOSED_TYPE, "exposed_type", true);
+        check(
+            super::EXPOSED_UNION_CONSTRUCTORS,
+            "exposed_union_constructors",
+            true,
+        );
+        check(super::EXPOSED_VALUE, "exposed_value", true);
+        check(super::EXPOSING_LIST, "exposing_list", true);
+        check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
+        check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
+        check(super::TYPE_IDENTIFIER, "type_identifier", true);
+        check(super::VALUE_QID, "value_qid", true);
     }
 }
 
@@ -374,23 +376,84 @@ fn on_changed_module_name(
     old_parent_node: Node,
     new_parent_node: Node,
 ) -> Result<(), Error> {
-    if let (AS_CLAUSE, AS_CLAUSE) =
-        (old_parent_node.kind_id(), new_parent_node.kind_id())
-    {
-        let old_import_node = old_parent_node.parent().ok_or_else(|| {
-            log::mk_err!("found an unexpected root as_clause node")
-        })?;
-        let new_import_node = new_parent_node.parent().ok_or_else(|| {
-            log::mk_err!("found an unexpected root as_clause node")
-        })?;
-        on_changed_as_clause(
-            engine,
-            refactor,
-            diff,
-            old_import_node,
-            new_import_node,
-        )?;
+    match (old_parent_node.kind_id(), new_parent_node.kind_id()) {
+        (AS_CLAUSE, AS_CLAUSE) => {
+            let old_import_node =
+                old_parent_node.parent().ok_or_else(|| {
+                    log::mk_err!("found an unexpected root as_clause node")
+                })?;
+            let new_import_node =
+                new_parent_node.parent().ok_or_else(|| {
+                    log::mk_err!("found an unexpected root as_clause node")
+                })?;
+            on_changed_as_clause(
+                engine,
+                refactor,
+                diff,
+                old_import_node,
+                new_import_node,
+            )?;
+        }
+        (VALUE_QID, VALUE_QID) => {
+            on_changed_module_qualifier(
+                engine,
+                refactor,
+                diff,
+                old_parent_node,
+                new_parent_node,
+            )?;
+        }
+        _ => {}
     };
+    Ok(())
+}
+
+fn on_changed_module_qualifier(
+    engine: &RefactorEngine,
+    refactor: &mut Refactor,
+    diff: &SourceFileDiff,
+    old_parent_node: Node,
+    new_parent_node: Node,
+) -> Result<(), Error> {
+    let mut cursor = QueryCursor::new();
+    let (_, old_reference) = engine
+        .query_for_qualified_values
+        .run_in(&mut cursor, &diff.old, old_parent_node)
+        .next()
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
+    let (_, new_reference) = engine
+        .query_for_qualified_values
+        .run_in(&mut cursor, &diff.new, new_parent_node)
+        .next()
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
+
+    let import = engine
+        .query_for_imports
+        .run(&mut cursor, &diff.new)
+        .find(|import| import.aliased_name() == old_reference.qualifier)
+        .ok_or_else(|| {
+            log::mk_err!(
+                "did not find import statement with the expected aliased name"
+            )
+        })?;
+    let as_clause_node = import.as_clause_node.unwrap();
+
+    refactor.add_change(
+        as_clause_node.byte_range(),
+        new_reference.qualifier.to_string(),
+    );
+
+    change_qualifier(
+        engine,
+        refactor,
+        diff,
+        old_reference.qualifier.slice(..),
+        new_reference.qualifier.slice(..),
+    )?;
     Ok(())
 }
 
@@ -405,6 +468,16 @@ fn on_changed_as_clause(
     let new_aliased_name = new_import.aliased_name();
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let old_aliased_name = old_import.aliased_name();
+    change_qualifier(engine, refactor, diff, old_aliased_name, new_aliased_name)
+}
+
+fn change_qualifier(
+    engine: &RefactorEngine,
+    refactor: &mut Refactor,
+    diff: &SourceFileDiff,
+    old_aliased_name: RopeSlice,
+    new_aliased_name: RopeSlice,
+) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
     for result in engine
         .query_for_qualified_values
@@ -1755,6 +1828,7 @@ mod tests {
     simulation_test!(add_as_clause_to_import);
     simulation_test!(change_as_clause_of_import);
     simulation_test!(remove_as_clause_from_import);
+    simulation_test!(change_module_qualifier_of_variable);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
