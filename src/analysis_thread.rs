@@ -2,6 +2,7 @@ use crate::elm;
 use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
+use std::collections::hash_map;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -127,8 +128,22 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 self.refactor_engine.init_buffer(buffer, path)?;
             }
             Msg::CompilationSucceeded(snapshot) => {
+                // Replace 'last compiling version' with a newer revision only.
+                // When we set the 'last compiling version' to the product of a
+                // refactor then it might take a bit of time for the compilation
+                // thread to catch up.
                 if self.editor_driver.contains_key(&snapshot.buffer.editor_id) {
-                    self.last_compiling_code.insert(snapshot.buffer, snapshot);
+                    match self.last_compiling_code.entry(snapshot.buffer) {
+                        hash_map::Entry::Vacant(vac) => {
+                            vac.insert(snapshot);
+                        }
+                        hash_map::Entry::Occupied(mut occ) => {
+                            let current = occ.get_mut();
+                            if snapshot.revision >= current.revision {
+                                *current = snapshot;
+                            }
+                        }
+                    };
                 }
             }
         }
