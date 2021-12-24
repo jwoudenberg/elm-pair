@@ -48,7 +48,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
-        if let Some(diff) = self.source_file_diff() {
+        if let Some(mut diff) = self.source_file_diff() {
             let AnalysisLoop {
                 editor_driver,
                 refactor_engine,
@@ -64,12 +64,16 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                     diff.old.buffer,
                 );
                 let tree_changes = diff_trees(&diff);
-                match refactor_engine.respond_to_change(&diff, tree_changes) {
-                    Ok(Some(refactor)) => {
-                        log::info!("applying refactor to editor");
-                        editor_driver.apply_edits(refactor);
+                let result = refactor_engine
+                    .respond_to_change(&diff, tree_changes)
+                    .and_then(|refactor| refactor.edits(&mut diff.new));
+                match result {
+                    Ok(edits) => {
+                        if !edits.is_empty() {
+                            log::info!("applying refactor to editor");
+                            editor_driver.apply_edits(edits);
+                        }
                     }
-                    Ok(None) => {}
                     Err(err) => {
                         log::error!("failed to create refactor: {:?}", err)
                     }

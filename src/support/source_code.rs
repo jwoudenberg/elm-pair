@@ -160,15 +160,6 @@ impl Edit {
             },
         }
     }
-
-    pub(crate) fn apply(&self, bytes: &mut Rope) {
-        apply_edit_helper(
-            bytes,
-            self.input_edit.start_byte,
-            self.input_edit.old_end_byte,
-            &self.new_bytes,
-        );
-    }
 }
 
 fn apply_edit_helper(

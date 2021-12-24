@@ -6,6 +6,7 @@ use crate::elm::dependencies::{
 use crate::support::log;
 use crate::support::log::Error;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
+use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -77,6 +78,45 @@ pub struct BufferInfo {
     pub path: PathBuf,
 }
 
+pub(crate) struct Refactor {
+    replacements: Vec<(Range<usize>, String)>,
+}
+
+impl Refactor {
+    fn new() -> Refactor {
+        Refactor {
+            replacements: Vec::new(),
+        }
+    }
+
+    fn add_change(&mut self, range: Range<usize>, new_bytes: String) {
+        self.replacements.push((range, new_bytes))
+    }
+
+    pub fn edits(
+        mut self,
+        code: &mut SourceFileSnapshot,
+    ) -> Result<Vec<Edit>, Error> {
+        // Sort edits in reverse order of where they change the source file. This
+        // ensures when we apply the edits in sorted order that earlier edits don't
+        // move the area of affect of later edits.
+        //
+        // We're assuming here that the areas of operation of different edits never
+        // overlap.
+        self.replacements
+            .sort_by(|(x, _), (y, _)| y.start.cmp(&x.end));
+
+        let mut edits = Vec::with_capacity(self.replacements.len());
+        for (range, new_bytes) in self.replacements {
+            let edit =
+                Edit::new(code.buffer, &mut code.bytes, &range, new_bytes);
+            code.apply_edit(edit.input_edit)?;
+            edits.push(edit);
+        }
+        Ok(edits)
+    }
+}
+
 impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
@@ -100,14 +140,15 @@ impl RefactorEngine {
         &self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
-    ) -> Result<Option<Vec<Edit>>, Error> {
+    ) -> Result<Refactor, Error> {
         // debug_print_tree_changes(diff, &changes);
         if changes.old_removed.is_empty() && changes.new_added.is_empty() {
-            return Ok(None);
+            return Ok(Refactor::new());
         }
         let before = attach_kinds(&changes.old_removed);
         let after = attach_kinds(&changes.new_added);
-        let edits = match (before.as_slice(), after.as_slice()) {
+        let mut refactor = Refactor::new();
+        match (before.as_slice(), after.as_slice()) {
             (
                 [EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
@@ -119,6 +160,7 @@ impl RefactorEngine {
                 | [],
             ) => on_changed_values_in_exposing_list(
                 self,
+                &mut refactor,
                 diff,
                 changes.old_parent,
                 changes.new_parent,
@@ -136,6 +178,7 @@ impl RefactorEngine {
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
             ) => on_added_module_qualifier_to_value(
                 self,
+                &mut refactor,
                 diff,
                 changes.old_parent,
                 changes.new_parent,
@@ -153,23 +196,27 @@ impl RefactorEngine {
                 [LOWER_CASE_IDENTIFIER],
             ) => on_removed_module_qualifier_from_value(
                 self,
+                &mut refactor,
                 diff,
                 changes.old_parent,
                 changes.new_parent,
             )?,
             ([], [EXPOSING_LIST]) => on_added_exposing_list_to_import(
                 self,
+                &mut refactor,
                 &diff.new,
                 changes.new_parent,
             )?,
             ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
                 self,
+                &mut refactor,
                 diff,
                 changes.old_parent,
             )?,
             ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
                 on_added_constructors_to_exposing_list(
                     self,
+                    &mut refactor,
                     diff,
                     changes.new_parent,
                 )?
@@ -177,12 +224,14 @@ impl RefactorEngine {
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
                 on_removed_constructors_from_exposing_list(
                     self,
+                    &mut refactor,
                     diff,
                     changes.old_parent,
                 )?
             }
             ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
                 self,
+                &mut refactor,
                 diff,
                 changes.old_parent,
                 changes.new_parent,
@@ -190,18 +239,15 @@ impl RefactorEngine {
             ([MODULE_NAME_SEGMENT], [MODULE_NAME_SEGMENT]) => {
                 on_changed_module_name(
                     self,
+                    &mut refactor,
                     diff,
                     changes.old_parent,
                     changes.new_parent,
                 )?
             }
-            _ => Vec::new(),
+            _ => {}
         };
-        if edits.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(sort_edits(edits)))
-        }
+        Ok(refactor)
     }
 
     pub(crate) fn constructors_for_type<'a, 'b>(
@@ -275,9 +321,10 @@ impl RefactorEngine {
 
 fn on_added_constructors_to_exposing_list(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let type_name_node = parent.child(0).ok_or_else(|| {
         log::mk_err!("did not find node with type name of exposed constructor")
     })?;
@@ -301,15 +348,14 @@ fn on_added_constructors_to_exposing_list(
             }
         }
     }
-    let mut edits = Vec::new();
     remove_qualifier_from_references(
         engine,
+        refactor,
         &diff.new,
-        &mut edits,
         &import.name(),
         references_to_unqualify,
     )?;
-    Ok(edits)
+    Ok(())
 }
 
 fn get_elm_module<'a>(
@@ -323,37 +369,42 @@ fn get_elm_module<'a>(
 
 fn on_changed_module_name(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent_node: Node,
     new_parent_node: Node,
-) -> Result<Vec<Edit>, Error> {
-    match (old_parent_node.kind_id(), new_parent_node.kind_id()) {
-        (AS_CLAUSE, AS_CLAUSE) => {
-            let old_import_node =
-                old_parent_node.parent().ok_or_else(|| {
-                    log::mk_err!("found an unexpected root as_clause node")
-                })?;
-            let new_import_node =
-                new_parent_node.parent().ok_or_else(|| {
-                    log::mk_err!("found an unexpected root as_clause node")
-                })?;
-            on_changed_as_clause(engine, diff, old_import_node, new_import_node)
-        }
-        _ => Ok(Vec::new()),
-    }
+) -> Result<(), Error> {
+    if let (AS_CLAUSE, AS_CLAUSE) =
+        (old_parent_node.kind_id(), new_parent_node.kind_id())
+    {
+        let old_import_node = old_parent_node.parent().ok_or_else(|| {
+            log::mk_err!("found an unexpected root as_clause node")
+        })?;
+        let new_import_node = new_parent_node.parent().ok_or_else(|| {
+            log::mk_err!("found an unexpected root as_clause node")
+        })?;
+        on_changed_as_clause(
+            engine,
+            refactor,
+            diff,
+            old_import_node,
+            new_import_node,
+        )?;
+    };
+    Ok(())
 }
 
 fn on_changed_as_clause(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_import_node: Node,
     new_import_node: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let new_import = parse_import_node(engine, &diff.new, new_import_node)?;
     let new_aliased_name = new_import.aliased_name();
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let old_aliased_name = old_import.aliased_name();
-    let mut edits = Vec::new();
     let mut cursor = QueryCursor::new();
     for result in engine
         .query_for_qualified_values
@@ -362,23 +413,21 @@ fn on_changed_as_clause(
         let (node, reference) = result?;
         let old_qualifier_len = 1 + old_aliased_name.len_bytes();
         if reference.qualifier == old_aliased_name {
-            let edit = Edit::new(
-                diff.new.buffer,
-                &mut diff.new.bytes.clone(),
-                &(node.start_byte()..(node.start_byte() + old_qualifier_len)),
+            refactor.add_change(
+                node.start_byte()..(node.start_byte() + old_qualifier_len),
                 format!("{}.", new_aliased_name),
             );
-            edits.push(edit);
         }
     }
-    Ok(edits)
+    Ok(())
 }
 
 fn on_removed_constructors_from_exposing_list(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let type_name_node = old_parent.child(0).ok_or_else(|| {
         log::mk_err!("could not find name node of exposed type node")
     })?;
@@ -407,24 +456,24 @@ fn on_removed_constructors_from_exposing_list(
             }
         }
     }
-    let mut edits = Vec::new();
     add_qualifier_to_references(
         engine,
-        &mut edits,
+        refactor,
         &mut QueryCursor::new(),
         &diff.new,
         &old_import,
         references_to_qualify,
     )?;
-    Ok(edits)
+    Ok(())
 }
 
 fn on_changed_values_in_exposing_list(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
     new_parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let old_import_node = old_parent.parent().ok_or_else(|| {
         log::mk_err!("could not find parent import node of exposing list")
     })?;
@@ -458,10 +507,9 @@ fn on_changed_values_in_exposing_list(
         .filter(|reference| !new_references.contains(reference))
         .collect();
 
-    let mut edits = Vec::new();
     add_qualifier_to_references(
         engine,
-        &mut edits,
+        refactor,
         &mut QueryCursor::new(),
         &diff.new,
         &new_import,
@@ -470,20 +518,22 @@ fn on_changed_values_in_exposing_list(
 
     remove_qualifier_from_references(
         engine,
+        refactor,
         &diff.new,
-        &mut edits,
         &new_import.name(),
         new_references,
     )?;
-    Ok(edits)
+
+    Ok(())
 }
 
 fn on_removed_module_qualifier_from_value(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
     new_parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
     let (_, new_reference) = engine
         .query_for_unqualified_values
@@ -506,9 +556,8 @@ fn on_removed_module_qualifier_from_value(
             log::mk_err!("parsing qualified value node using query failed")
         })??;
     if new_reference.name != reference.name {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let mut edits = Vec::new();
     let import =
         get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
@@ -530,8 +579,7 @@ fn on_removed_module_qualifier_from_value(
                             &import,
                             &reference,
                             Some(name),
-                            &diff.new,
-                            &mut edits,
+                            refactor,
                         )?;
                         references_to_unqualify.insert(reference);
                         break;
@@ -540,23 +588,23 @@ fn on_removed_module_qualifier_from_value(
             }
         }
     } else {
-        add_to_exposing_list(&import, &reference, None, &diff.new, &mut edits)?;
+        add_to_exposing_list(&import, &reference, None, refactor)?;
         references_to_unqualify.insert(reference);
     };
     remove_qualifier_from_references(
         engine,
+        refactor,
         &diff.new,
-        &mut edits,
         &qualifier.slice(..),
         references_to_unqualify,
     )?;
-    Ok(edits)
+    Ok(())
 }
 
 fn remove_qualifier_from_references(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     code: &SourceFileSnapshot,
-    edits: &mut Vec<Edit>,
     qualifier: &RopeSlice,
     references: HashSet<Reference>,
 ) -> Result<(), Error> {
@@ -569,15 +617,13 @@ fn remove_qualifier_from_references(
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
         if references.contains(&qualified.reference) {
-            edits.push(Edit::new(
-                code.buffer,
-                &mut code.bytes.clone(),
+            refactor.add_change(
                 // The +1 makes it include the trailing dot between qualifier
                 // and qualified value.
-                &(node.start_byte()
-                    ..(node.start_byte() + qualifier.len_bytes() + 1)),
+                node.start_byte()
+                    ..(node.start_byte() + qualifier.len_bytes() + 1),
                 String::new(),
-            ));
+            );
         }
     }
     Ok(())
@@ -588,8 +634,7 @@ fn add_to_exposing_list(
     import: &Import,
     reference: &Reference,
     ctor_type: Option<&String>,
-    code: &SourceFileSnapshot,
-    edits: &mut Vec<Edit>,
+    refactor: &mut Refactor,
 ) -> Result<(), Error> {
     let (target_exposed_name, insert_str) = match ctor_type {
         Some(type_name) => (type_name.to_owned(), format!("{}(..)", type_name)),
@@ -625,24 +670,20 @@ fn add_to_exposing_list(
                     // contructors: `(..)`.
                     if node.child(1).is_none() {
                         let insert_at = node.end_byte();
-                        edits.push(Edit::new(
-                            code.buffer,
-                            &mut code.bytes.clone(),
-                            &(insert_at..insert_at),
+                        refactor.add_change(
+                            insert_at..insert_at,
                             "(..)".to_string(),
-                        ));
+                        );
                     }
                 };
                 return Ok(());
             }
             std::cmp::Ordering::Less => {
                 let insert_at = node.start_byte();
-                edits.push(Edit::new(
-                    code.buffer,
-                    &mut code.bytes.clone(),
-                    &(insert_at..insert_at),
+                refactor.add_change(
+                    insert_at..insert_at,
                     format!("{}, ", insert_str),
-                ));
+                );
                 return Ok(());
             }
             std::cmp::Ordering::Greater => {}
@@ -654,21 +695,15 @@ fn add_to_exposing_list(
     // exposed elements, or there is no exposing list at all.
     match last_node {
         None => {
-            edits.push(Edit::new(
-                code.buffer,
-                &mut code.bytes.clone(),
-                &(import.root_node.end_byte()..import.root_node.end_byte()),
+            refactor.add_change(
+                import.root_node.end_byte()..import.root_node.end_byte(),
                 format!(" exposing ({})", insert_str),
-            ));
+            );
         }
         Some(node) => {
             let insert_at = node.end_byte();
-            edits.push(Edit::new(
-                code.buffer,
-                &mut code.bytes.clone(),
-                &(insert_at..insert_at),
-                format!(", {}", insert_str),
-            ));
+            refactor
+                .add_change(insert_at..insert_at, format!(", {}", insert_str));
         }
     }
     Ok(())
@@ -676,10 +711,11 @@ fn add_to_exposing_list(
 
 fn on_added_module_qualifier_to_value(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
     new_parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
     let (_, old_reference) = engine
         .query_for_unqualified_values
@@ -702,9 +738,8 @@ fn on_added_module_qualifier_to_value(
             log::mk_err!("parsing qualified value node using query failed")
         })??;
     if old_reference.name != reference.name {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let mut edits = Vec::new();
     let import =
         get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
 
@@ -727,9 +762,9 @@ fn on_added_module_qualifier_to_value(
                     && reference.kind == ReferenceKind::Type
                 {
                     if exposing_list_length == 1 {
-                        remove_exposing_list(&mut edits, &diff.new, &import);
+                        remove_exposing_list(refactor, &import);
                     } else {
-                        remove_from_exposing_list(&mut edits, diff, &node)?;
+                        remove_from_exposing_list(refactor, &node)?;
                     }
                     references_to_qualify.insert(Reference {
                         name: type_.name.into(),
@@ -746,12 +781,10 @@ fn on_added_module_qualifier_to_value(
                     let exposing_ctors_node = node.child(1).ok_or_else(||
                         log::mk_err!("could not find `(..)` node behind exposed type")
                     )?;
-                    edits.push(Edit::new(
-                        diff.new.buffer,
-                        &mut diff.new.bytes.clone(),
-                        &exposing_ctors_node.byte_range(),
+                    refactor.add_change(
+                        exposing_ctors_node.byte_range(),
                         String::new(),
-                    ));
+                    );
 
                     // We're qualifying a constructor. In Elm you can only
                     // expose either all constructors of a type or none of them,
@@ -771,9 +804,9 @@ fn on_added_module_qualifier_to_value(
                     && reference.kind == ReferenceKind::Value
                 {
                     if exposing_list_length == 1 {
-                        remove_exposing_list(&mut edits, &diff.new, &import);
+                        remove_exposing_list(refactor, &import);
                     } else {
-                        remove_from_exposing_list(&mut edits, diff, &node)?;
+                        remove_from_exposing_list(refactor, &node)?;
                     }
                     references_to_qualify.insert(Reference {
                         name: val.name.into(),
@@ -846,20 +879,21 @@ fn on_added_module_qualifier_to_value(
     }
     add_qualifier_to_references(
         engine,
-        &mut edits,
+        refactor,
         &mut QueryCursor::new(),
         &diff.new,
         &import,
         references_to_qualify,
     )?;
-    Ok(edits)
+    Ok(())
 }
 
 fn on_added_exposing_list_to_import(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     new_parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let import = parse_import_node(engine, code, new_parent)?;
     let project_info = engine.buffer_project(code.buffer)?;
     let module = get_elm_module(project_info, &import.name())?;
@@ -870,25 +904,24 @@ fn on_added_exposing_list_to_import(
             references_to_unqualify.insert(reference);
         })
     }
-    let mut edits = Vec::new();
     remove_qualifier_from_references(
         engine,
+        refactor,
         code,
-        &mut edits,
         &import.name(),
         references_to_unqualify,
     )?;
-    Ok(edits)
+    Ok(())
 }
 
 fn on_removed_exposing_list_from_import(
     engine: &RefactorEngine,
+    refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
-) -> Result<Vec<Edit>, Error> {
+) -> Result<(), Error> {
     let import = parse_import_node(engine, &diff.old, old_parent)?;
     let qualifier = import.aliased_name();
-    let mut edits = Vec::new();
     let mut val_cursor = QueryCursor::new();
     let project_info = engine.buffer_project(diff.new.buffer)?;
     let module = get_elm_module(project_info, &import.name())?;
@@ -903,29 +936,20 @@ fn on_removed_exposing_list_from_import(
     }
     add_qualifier_to_references(
         engine,
-        &mut edits,
+        refactor,
         &mut val_cursor,
         &diff.new,
         &import,
         references_to_qualify,
     )?;
-    Ok(edits)
+    Ok(())
 }
 
-fn remove_exposing_list(
-    edits: &mut Vec<Edit>,
-    code: &SourceFileSnapshot,
-    import: &Import,
-) {
+fn remove_exposing_list(refactor: &mut Refactor, import: &Import) {
     match import.exposing_list_node {
         None => {}
-        Some(node) => edits.push(Edit::new(
-            code.buffer,
-            &mut code.bytes.clone(),
-            &node.byte_range(),
-            String::new(),
-        )),
-    }
+        Some(node) => refactor.add_change(node.byte_range(), String::new()),
+    };
 }
 
 fn get_import_by_aliased_name<'a>(
@@ -946,8 +970,7 @@ fn get_import_by_aliased_name<'a>(
 }
 
 fn remove_from_exposing_list(
-    edits: &mut Vec<Edit>,
-    diff: &SourceFileDiff,
+    refactor: &mut Refactor,
     node: &Node,
 ) -> Result<(), Error> {
     // TODO: Automatically clean up extra or missing comma's.
@@ -974,18 +997,14 @@ fn remove_from_exposing_list(
         }
         exposed_node.byte_range()
     };
-    edits.push(Edit::new(
-        diff.new.buffer,
-        &mut diff.new.bytes.clone(),
-        &range_including_comma_and_whitespace(node),
-        String::new(),
-    ));
+    refactor
+        .add_change(range_including_comma_and_whitespace(node), String::new());
     Ok(())
 }
 
 fn add_qualifier_to_references(
     engine: &RefactorEngine,
-    edits: &mut Vec<Edit>,
+    refactor: &mut Refactor,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
     import: &Import,
@@ -995,12 +1014,10 @@ fn add_qualifier_to_references(
     for result in results {
         let (node, reference) = result?;
         if references.contains(&reference) {
-            edits.push(Edit::new(
-                code.buffer,
-                &mut code.bytes.clone(),
-                &(node.start_byte()..node.start_byte()),
+            refactor.add_change(
+                node.start_byte()..node.start_byte(),
                 format!("{}.", import.aliased_name()),
-            ))
+            );
         }
     }
     Ok(())
@@ -1615,17 +1632,6 @@ fn parse_import_node<'a>(
         })
 }
 
-// Sort edits in reverse order of where they change the source file. This
-// ensures when we apply the edits in sorted order that earlier edits don't
-// move the area of affect of later edits.
-//
-// We're assuming here that the areas of operation of different edits never
-// overlap.
-fn sort_edits(mut edits: Vec<Edit>) -> Vec<Edit> {
-    edits.sort_by(|x, y| y.input_edit.start_byte.cmp(&x.input_edit.start_byte));
-    edits
-}
-
 fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
     nodes.iter().map(|node| node.kind_id()).collect()
 }
@@ -1689,19 +1695,17 @@ mod tests {
         };
         let old = SourceFileSnapshot::new(buffer, simulation.start_bytes)?;
         let new = SourceFileSnapshot::new(buffer, simulation.end_bytes)?;
-        let diff = SourceFileDiff { old, new };
+        let mut diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
         let mut refactor_engine = RefactorEngine::new()?;
         refactor_engine.init_buffer(buffer, path.to_owned())?;
-        match refactor_engine.respond_to_change(&diff, tree_changes)? {
-            None => Ok("No refactor for this change.".to_owned()),
-            Some(refactor) => {
-                let mut post_refactor = diff.new.bytes;
-                for edit in refactor {
-                    edit.apply(&mut post_refactor)
-                }
-                Ok(post_refactor.to_string())
-            }
+        let edits = refactor_engine
+            .respond_to_change(&diff, tree_changes)?
+            .edits(&mut diff.new)?;
+        if edits.is_empty() {
+            Ok("No refactor for this change.".to_owned())
+        } else {
+            Ok(diff.new.bytes.to_string())
         }
     }
 
