@@ -29,6 +29,7 @@ const LOWER_CASE_IDENTIFIER: u16 = 1;
 const MODULE_NAME_SEGMENT: u16 = 201;
 const TYPE_IDENTIFIER: u16 = 33;
 const CONSTRUCTOR_IDENTIFIER: u16 = 8;
+const AS_CLAUSE: u16 = 101;
 
 #[cfg(test)]
 mod kind_constant_tests {
@@ -58,6 +59,7 @@ mod kind_constant_tests {
             "constructor_identifier",
             true,
         );
+        check(super::AS_CLAUSE, "as_clause", true);
     }
 }
 
@@ -100,6 +102,9 @@ impl RefactorEngine {
         changes: TreeChanges<'a>,
     ) -> Result<Option<Vec<Edit>>, Error> {
         // debug_print_tree_changes(diff, &changes);
+        if changes.old_removed.is_empty() && changes.new_added.is_empty() {
+            return Ok(None);
+        }
         let before = attach_kinds(&changes.old_removed);
         let after = attach_kinds(&changes.new_added);
         let edits = match (before.as_slice(), after.as_slice()) {
@@ -112,14 +117,12 @@ impl RefactorEngine {
                 | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
                 | [DOUBLE_DOT]
                 | [],
-            ) if !(before.is_empty() && after.is_empty()) => {
-                on_changed_values_in_exposing_list(
-                    self,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                )?
-            }
+            ) => on_changed_values_in_exposing_list(
+                self,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
             (
                 [TYPE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
@@ -176,6 +179,20 @@ impl RefactorEngine {
                     self,
                     diff,
                     changes.old_parent,
+                )?
+            }
+            ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
+                self,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
+            ([MODULE_NAME_SEGMENT], [MODULE_NAME_SEGMENT]) => {
+                on_changed_module_name(
+                    self,
+                    diff,
+                    changes.old_parent,
+                    changes.new_parent,
                 )?
             }
             _ => Vec::new(),
@@ -302,6 +319,59 @@ fn get_elm_module<'a>(
     project_info.modules.get(&name.to_string()).ok_or_else(|| {
         log::mk_err!("could not find module named {}", name.to_string())
     })
+}
+
+fn on_changed_module_name(
+    engine: &RefactorEngine,
+    diff: &SourceFileDiff,
+    old_parent_node: Node,
+    new_parent_node: Node,
+) -> Result<Vec<Edit>, Error> {
+    match (old_parent_node.kind_id(), new_parent_node.kind_id()) {
+        (AS_CLAUSE, AS_CLAUSE) => {
+            let old_import_node =
+                old_parent_node.parent().ok_or_else(|| {
+                    log::mk_err!("found an unexpected root as_clause node")
+                })?;
+            let new_import_node =
+                new_parent_node.parent().ok_or_else(|| {
+                    log::mk_err!("found an unexpected root as_clause node")
+                })?;
+            on_changed_as_clause(engine, diff, old_import_node, new_import_node)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn on_changed_as_clause(
+    engine: &RefactorEngine,
+    diff: &SourceFileDiff,
+    old_import_node: Node,
+    new_import_node: Node,
+) -> Result<Vec<Edit>, Error> {
+    let new_import = parse_import_node(engine, &diff.new, new_import_node)?;
+    let new_aliased_name = new_import.aliased_name();
+    let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
+    let old_aliased_name = old_import.aliased_name();
+    let mut edits = Vec::new();
+    let mut cursor = QueryCursor::new();
+    for result in engine
+        .query_for_qualified_values
+        .run(&mut cursor, &diff.new)
+    {
+        let (node, reference) = result?;
+        let old_qualifier_len = 1 + old_aliased_name.len_bytes();
+        if reference.qualifier == old_aliased_name {
+            let edit = Edit::new(
+                diff.new.buffer,
+                &mut diff.new.bytes.clone(),
+                &(node.start_byte()..(node.start_byte() + old_qualifier_len)),
+                format!("{}.", new_aliased_name),
+            );
+            edits.push(edit);
+        }
+    }
+    Ok(edits)
 }
 
 fn on_removed_constructors_from_exposing_list(
@@ -975,6 +1045,14 @@ impl QualifiedValuesQuery {
             query,
         };
         Ok(qualified_value_query)
+    }
+
+    fn run<'a, 'tree>(
+        &'a self,
+        cursor: &'a mut QueryCursor,
+        code: &'tree SourceFileSnapshot,
+    ) -> QualifiedReferences<'a, 'tree> {
+        self.run_in(cursor, code, code.tree.root_node())
     }
 
     fn run_in<'a, 'tree>(
@@ -1668,6 +1746,11 @@ mod tests {
     simulation_test!(add_and_remove_items_in_exposing_list);
     simulation_test!(replace_exposing_list_with_double_dot);
     simulation_test!(replace_double_dot_with_exposing_list);
+
+    // Changing as-clauses
+    simulation_test!(add_as_clause_to_import);
+    simulation_test!(change_as_clause_of_import);
+    simulation_test!(remove_as_clause_from_import);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
