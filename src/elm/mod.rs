@@ -31,6 +31,7 @@ const EXPOSING_LIST: u16 = 90;
 const LOWER_CASE_IDENTIFIER: u16 = 1;
 const MODULE_NAME_SEGMENT: u16 = 201;
 const TYPE_IDENTIFIER: u16 = 33;
+const TYPE_QID: u16 = 97;
 const VALUE_QID: u16 = 98;
 
 #[cfg(test)]
@@ -62,6 +63,7 @@ mod kind_constant_tests {
         check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
         check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
         check(super::TYPE_IDENTIFIER, "type_identifier", true);
+        check(super::TYPE_QID, "type_qid", true);
         check(super::VALUE_QID, "value_qid", true);
     }
 }
@@ -395,6 +397,15 @@ fn on_changed_module_name(
             )?;
         }
         (VALUE_QID, VALUE_QID) => {
+            on_changed_module_qualifier(
+                engine,
+                refactor,
+                diff,
+                old_parent_node,
+                new_parent_node,
+            )?;
+        }
+        (TYPE_QID, TYPE_QID) => {
             on_changed_module_qualifier(
                 engine,
                 refactor,
@@ -1828,7 +1839,8 @@ mod tests {
     simulation_test!(add_as_clause_to_import);
     simulation_test!(change_as_clause_of_import);
     simulation_test!(remove_as_clause_from_import);
-    simulation_test!(change_module_qualifier_of_variable);
+    simulation_test!(change_module_qualifier_of_value);
+    simulation_test!(change_module_qualifier_of_type);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
