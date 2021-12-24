@@ -21,6 +21,7 @@ pub mod idat;
 const AS_CLAUSE: u16 = 101;
 const COMMA: u16 = 6;
 const CONSTRUCTOR_IDENTIFIER: u16 = 8;
+const CONSTRUCTOR_QID: u16 = 96;
 const DOT: u16 = 55;
 const DOUBLE_DOT: u16 = 49;
 const EXPOSED_OPERATOR: u16 = 94;
@@ -49,6 +50,7 @@ mod kind_constant_tests {
             "constructor_identifier",
             true,
         );
+        check(super::CONSTRUCTOR_QID, "constructor_qid", true);
         check(super::DOT, "dot", true);
         check(super::DOUBLE_DOT, "double_dot", true);
         check(super::EXPOSED_OPERATOR, "exposed_operator", true);
@@ -378,8 +380,8 @@ fn on_changed_module_name(
     old_parent_node: Node,
     new_parent_node: Node,
 ) -> Result<(), Error> {
-    match (old_parent_node.kind_id(), new_parent_node.kind_id()) {
-        (AS_CLAUSE, AS_CLAUSE) => {
+    match old_parent_node.kind_id() {
+        AS_CLAUSE => {
             let old_import_node =
                 old_parent_node.parent().ok_or_else(|| {
                     log::mk_err!("found an unexpected root as_clause node")
@@ -396,16 +398,7 @@ fn on_changed_module_name(
                 new_import_node,
             )?;
         }
-        (VALUE_QID, VALUE_QID) => {
-            on_changed_module_qualifier(
-                engine,
-                refactor,
-                diff,
-                old_parent_node,
-                new_parent_node,
-            )?;
-        }
-        (TYPE_QID, TYPE_QID) => {
+        VALUE_QID | TYPE_QID | CONSTRUCTOR_QID => {
             on_changed_module_qualifier(
                 engine,
                 refactor,
@@ -1841,6 +1834,7 @@ mod tests {
     simulation_test!(remove_as_clause_from_import);
     simulation_test!(change_module_qualifier_of_value);
     simulation_test!(change_module_qualifier_of_type);
+    simulation_test!(change_module_qualifier_of_constructor);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
