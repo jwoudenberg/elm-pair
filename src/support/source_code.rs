@@ -50,7 +50,11 @@ impl SourceFileSnapshot {
     }
 
     pub(crate) fn apply_edit(&mut self, edit: InputEdit) -> Result<(), Error> {
-        self.revision += 1;
+        // Increment the revision by 2. Given a first revision of 0, this will
+        // ensure we only get even revision numbers by default. Refactor code
+        // will manually set odd revisions, to help keep revisions from the
+        // editor and elm-pair introduced ones apart.
+        self.revision += 2;
         self.tree.edit(&edit);
         let new_tree = parse_rope(Some(&self.tree), &self.bytes)?;
         self.tree = new_tree;

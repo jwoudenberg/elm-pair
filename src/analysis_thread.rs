@@ -73,11 +73,15 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                         if !edits.is_empty() {
                             log::info!("applying refactor to editor");
                             if editor_driver.apply_edits(edits) {
-                                // Undo revision changes introduced by refactor, or
-                                // subsequent changes made by the programmar won't
-                                // be acted upon, because they're behind the virtual
-                                // revision the refactor created.
-                                diff.new.revision = current_revision;
+                                // Increment the revision by one compared to the
+                                // unrefactored code. Code revisions coming from
+                                // the editor are all even numbers, so the
+                                // revisions created by refactors will be odd.
+                                // This is intended to help debugging.
+                                // The next revision coming from the editor,
+                                // being the next even number, will take
+                                // precendence over this one.
+                                diff.new.revision = 1 + current_revision;
 
                                 // Set the refactored code as the 'last
                                 // compiling version'. We're assuming here that
