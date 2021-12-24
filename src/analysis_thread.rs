@@ -64,6 +64,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                     diff.old.buffer,
                 );
                 let tree_changes = diff_trees(&diff);
+                let current_revision = diff.new.revision;
                 let result = refactor_engine
                     .respond_to_change(&diff, tree_changes)
                     .and_then(|refactor| refactor.edits(&mut diff.new));
@@ -71,7 +72,25 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                     Ok(edits) => {
                         if !edits.is_empty() {
                             log::info!("applying refactor to editor");
-                            editor_driver.apply_edits(edits);
+                            if editor_driver.apply_edits(edits) {
+                                // Undo revision changes introduced by refactor, or
+                                // subsequent changes made by the programmar won't
+                                // be acted upon, because they're behind the virtual
+                                // revision the refactor created.
+                                diff.new.revision = current_revision;
+
+                                // Set the refactored code as the 'last
+                                // compiling version'. We're assuming here that
+                                // the refactor got applied in the editor
+                                // successfully. If we don't do this elm-pair
+                                // keeps comparing new changes to the old last
+                                // compiling version, until the editor
+                                // communicates the changes made by the refactor
+                                // back to us _and_ the compilation thread
+                                // compiles that version (which may be never).
+                                self.last_compiling_code
+                                    .insert(diff.new.buffer, diff.new);
+                            }
                         }
                     }
                     Err(err) => {
