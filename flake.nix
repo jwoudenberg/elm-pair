@@ -1,16 +1,34 @@
 {
   description = "elm-pair";
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    utils.url = "github:numtide/flake-utils";
+    naersk.url = "github:nix-community/naersk";
+    naersk.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { self, nixpkgs, utils, naersk }:
+    utils.lib.eachDefaultSystem (system:
       let pkgs = nixpkgs.legacyPackages.${system};
-      in {
+      in rec {
+        # Packages
         packages.neovim-plugin = pkgs.vimUtils.buildVimPlugin {
           name = "elm-pair";
           src = ./neovim-plugin;
         };
+        packages.elm-pair = naersk.lib."${system}".buildPackage {
+          pname = "elm-pair";
+          root = ./.;
+          doCheck = true;
+        };
+        defaultPackage = packages.elm-pair;
+
+        # Apps
+        apps.elm-pair = utils.lib.mkApp { drv = packages.elm-pair; };
+        defaultApp = apps.elm-pair;
+
+        # Development
         devShell = pkgs.mkShell {
           buildInputs = [
             pkgs.libiconv
