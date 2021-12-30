@@ -23,24 +23,69 @@ pub fn main() {
     std::process::exit(match run() {
         Ok(()) => 0,
         Err(err) => {
-            log::error!("application exits because of: {:?}", err);
+            log::error!("exiting because of: {:?}", err);
             1
         }
     });
 }
 
 fn run() -> Result<(), Error> {
-    // Ensure only a single elm-pair is running at a time.
-    let lock_file_path = elm_pair_dir()?.join("lockfile");
-    std::fs::File::create(&lock_file_path)
-        .and_then(|file| fs2::FileExt::try_lock_exclusive(&file))
+    let elm_pair_dir = elm_pair_dir()?;
+    let socket_path = crate::elm_pair_dir()?.join("socket");
+    let log_file_path = elm_pair_dir.join("log");
+    let stdout = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&log_file_path)
         .map_err(|err| {
             log::mk_err!(
-                "failed obtaining lock on {:?}: {:?}",
-                lock_file_path,
+                "failed creating log file {:?}: {:?}",
+                log_file_path,
                 err
             )
         })?;
+    let stderr = stdout.try_clone().map_err(|err| {
+        log::mk_err!(
+            "failed cloning log file handle {:?}: {:?}",
+            log_file_path,
+            err
+        )
+    })?;
+    let socket_path_string = socket_path
+        .to_str()
+        .ok_or_else(|| {
+            log::mk_err!(
+                "socket path {:?} contains non-utf8 characters",
+                socket_path,
+            )
+        })?
+        .to_owned();
+    let socket_path_string_clone = socket_path_string.clone();
+    let daemonize_result = daemonize::Daemonize::new()
+        .pid_file(elm_pair_dir.join("pid"))
+        .stdout(stdout)
+        .stderr(stderr)
+        .exit_action(move || {
+            // TODO: wait until socket is created before printing this path and
+            // returning. Otherwise an editor might attempt to connect early and
+            // fail.
+            print!("{}", socket_path_string_clone)
+        })
+        .start();
+    match daemonize_result {
+        Ok(()) => {
+            // We're continuing as an elm-pair daemon.
+        }
+        Err(daemonize::DaemonizeError::LockPidfile(..)) => {
+            // Daemon is already running! Let the calling program now how to
+            // reach it, then exit.
+            print!("{}", socket_path_string);
+            return Ok(());
+        }
+        Err(err) => {
+            // An unexpected error happened.
+            return Err(log::mk_err!("failed starting daemon: {:?}", err));
+        }
+    }
 
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
@@ -56,6 +101,7 @@ fn run() -> Result<(), Error> {
     let analysis_sender_for_editor_listener = analysis_sender.clone();
     spawn_thread(analysis_sender.clone(), || {
         editor_listener_thread::run(
+            socket_path,
             latest_code_for_editor_listener,
             compilation_sender,
             analysis_sender_for_editor_listener,
@@ -66,6 +112,8 @@ fn run() -> Result<(), Error> {
     spawn_thread(analysis_sender.clone(), || {
         compilation_thread::run(compilation_receiver, analysis_sender)
     });
+
+    log::info!("elm-pair has started");
 
     // Main thread continues as analysis thread.
     analysis_thread::run(&latest_code, analysis_receiver)

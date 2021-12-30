@@ -20,11 +20,11 @@ struct EditorListenerLoop {
 }
 
 pub(crate) fn run(
+    socket_path: PathBuf,
     active_buffer: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
-    let socket_path = crate::elm_pair_dir()?.join("socket");
     // Delete the socket file in case a previous run left it behind.
     std::fs::remove_file(&socket_path).unwrap_or(());
     let listener = UnixListener::bind(&socket_path).map_err(|err| {

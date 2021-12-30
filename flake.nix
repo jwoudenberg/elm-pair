@@ -16,6 +16,10 @@
         packages.neovim-plugin = pkgs.vimUtils.buildVimPlugin {
           name = "elm-pair";
           src = ./neovim-plugin;
+          preFixup = ''
+            substituteInPlace "$out/lua/elm-pair.lua" \
+              --replace '"elm-pair"' '"${packages.elm-pair}/bin/elm-pair"'
+          '';
         };
         packages.elm-pair = naersk.lib."${system}".buildPackage {
           pname = "elm-pair";
