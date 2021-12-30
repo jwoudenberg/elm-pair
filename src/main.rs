@@ -31,9 +31,10 @@ pub fn main() {
 
 fn run() -> Result<(), Error> {
     let elm_pair_dir = elm_pair_dir()?;
-    let socket_path = crate::elm_pair_dir()?.join("socket");
+    let socket_path = elm_pair_dir.join("socket");
     let log_file_path = elm_pair_dir.join("log");
     let stdout = std::fs::OpenOptions::new()
+        .create(true)
         .append(true)
         .open(&log_file_path)
         .map_err(|err| {
@@ -120,8 +121,8 @@ fn run() -> Result<(), Error> {
 }
 
 fn elm_pair_dir() -> Result<PathBuf, Error> {
-    // TODO: place this in the users' data directory.
-    let dir = PathBuf::from("/tmp/elm-pair");
+    let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let dir = cache_dir.join("elm-pair");
     std::fs::create_dir_all(&dir).map_err(|err| {
         log::mk_err!("error while creating directory {:?}: {:?}", dir, err)
     })?;
