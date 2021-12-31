@@ -1,5 +1,6 @@
 use mvar::MVar;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixListener;
@@ -35,9 +36,23 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
+    let elm_pair_dir = elm_pair_dir()?;
+    let socket_path = elm_pair_dir.join("socket");
+    // Print the socket we're listening on so the editor can connect to it.
+    // Immediately flush stdout or we might write to stdout only after
+    // daemonization, meaning the socket path would end up in the log instead of
+    // being read by the calling editor process.
+    std::io::stdout()
+        .write_all(socket_path.as_os_str().as_bytes())
+        .map_err(|err| {
+            log::mk_err!("failed writing socket path to stdout: {:?}", err)
+        })?;
+    std::io::stdout().flush().map_err(|err| {
+        log::mk_err!("failed flushing socket path to stdout: {:?}", err)
+    })?;
+
     // Get an exclusive lock to ensure only one elm-pair is running at a time.
     // Otherwise, every time we start an editor we'll spawn a new elm-pair.
-    let elm_pair_dir = elm_pair_dir()?;
     let did_obtain_lock =
         unsafe { try_obtain_lock(elm_pair_dir.join("lock"))? };
     if !did_obtain_lock {
@@ -49,27 +64,9 @@ fn run() -> Result<(), Error> {
     // running process). We must start listening _before_ we daemonize and exit
     // the main process, because the editor must be able to connect immediately
     // after the main process returns.
-    let socket_path = elm_pair_dir.join("socket");
     std::fs::remove_file(&socket_path).unwrap_or(());
     let listener = UnixListener::bind(&socket_path).map_err(|err| {
         log::mk_err!("error while creating socket {:?}: {:?}", socket_path, err)
-    })?;
-
-    // Print the socket path we're listening on so the editor can connect to it.
-    // Flush stdout immediately after, because daemonization we do next might
-    // exit the master process suddenly.
-    let socket_path_string = socket_path.to_str().ok_or_else(|| {
-        log::mk_err!(
-            "socket path {:?} contains non-utf8 characters",
-            socket_path,
-        )
-    })?;
-    print!("{}", socket_path_string);
-    std::io::stdout().flush().map_err(|err| {
-        log::mk_err!(
-            "failed to flush stdout after writing socket path to stdout: {:?}",
-            err
-        )
     })?;
 
     // Fork a daemon process. The main process will exit returning the path to
