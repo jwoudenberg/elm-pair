@@ -8,7 +8,6 @@ edition = "2018"
 
 [dependencies]
 byteorder = "^1.4.3"
-daemonize = "^0.4.1"
 dirs = "^4.0.0"
 libc = "^0.2.112"
 rmp = "^0.8.10"

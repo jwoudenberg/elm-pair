@@ -1,5 +1,7 @@
 use mvar::MVar;
+use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
@@ -32,26 +34,13 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    let elm_pair_dir = elm_pair_dir()?;
-    let socket_path = elm_pair_dir.join("socket");
-    let socket_path_string = socket_path
-        .to_str()
-        .ok_or_else(|| {
-            log::mk_err!(
-                "socket path {:?} contains non-utf8 characters",
-                socket_path,
-            )
-        })?
-        .to_owned();
-    let print_socket_path = move || print!("{}", socket_path_string);
-
     // Get an exclusive lock to ensure only one elm-pair is running at a time.
     // Otherwise, every time we start an editor we'll spawn a new elm-pair.
     // TODO: figure out a strategy for dealing with multiple elm-pair versions.
+    let elm_pair_dir = elm_pair_dir()?;
     let did_obtain_lock =
         unsafe { try_obtain_lock(elm_pair_dir.join("lock"))? };
     if !did_obtain_lock {
-        print_socket_path();
         return Ok(());
     }
 
@@ -60,46 +49,33 @@ fn run() -> Result<(), Error> {
     // running process). We must start listening _before_ we daemonize and exit
     // the main process, because the editor must be able to connect immediately
     // after the main process returns.
+    let socket_path = elm_pair_dir.join("socket");
     std::fs::remove_file(&socket_path).unwrap_or(());
     let listener = UnixListener::bind(&socket_path).map_err(|err| {
         log::mk_err!("error while creating socket {:?}: {:?}", socket_path, err)
     })?;
 
-    // Fork a daemon process. The main process will exit returning the path to
-    // the socket that can be used to communicate with the daemon.
-    let log_file_path = elm_pair_dir.join("log");
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file_path)
-        .map_err(|err| {
-            log::mk_err!(
-                "failed creating log file {:?}: {:?}",
-                log_file_path,
-                err
-            )
-        })?;
-    let stderr = stdout.try_clone().map_err(|err| {
+    // Print the socket path we're listening on so the editor can connect to it.
+    // Flush stdout immediately after, because daemonization we do next might
+    // exit the master process suddenly.
+    let socket_path_string = socket_path.to_str().ok_or_else(|| {
         log::mk_err!(
-            "failed cloning log file handle {:?}: {:?}",
-            log_file_path,
+            "socket path {:?} contains non-utf8 characters",
+            socket_path,
+        )
+    })?;
+    print!("{}", socket_path_string);
+    std::io::stdout().flush().map_err(|err| {
+        log::mk_err!(
+            "failed to flush stdout after writing socket path to stdout: {:?}",
             err
         )
     })?;
-    let daemonize_result = daemonize::Daemonize::new()
-        .stdout(stdout)
-        .stderr(stderr)
-        .exit_action(print_socket_path)
-        .start();
-    match daemonize_result {
-        Ok(()) => {
-            // We're continuing as an elm-pair daemon.
-        }
-        Err(err) => {
-            // An unexpected error happened.
-            return Err(log::mk_err!("failed starting daemon: {:?}", err));
-        }
-    }
+
+    // Fork a daemon process. The main process will exit returning the path to
+    // the socket that can be used to communicate with the daemon.
+    let log_file_path = elm_pair_dir.join("log");
+    daemonize(log_file_path)?;
 
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
@@ -127,10 +103,88 @@ fn run() -> Result<(), Error> {
         compilation_thread::run(compilation_receiver, analysis_sender)
     });
 
-    log::info!("elm-pair has started");
-
     // Main thread continues as analysis thread.
+    log::info!("elm-pair has started");
     analysis_thread::run(&latest_code, analysis_receiver)
+}
+
+// Continue running the rest of this program as a daemon. This function follows
+// the steps for daemonizing a process outlined in "The Linux Programming
+// Interface" (they generalize to other Unix OSes too).
+fn daemonize(log_file_path: PathBuf) -> Result<(), Error> {
+    // 1: fork()
+    match unsafe { libc::fork() } {
+        -1 => {
+            return Err(log::mk_err!(
+                "elm-pair daemonization failed at first fork()"
+            ));
+        }
+        0 => {}
+        _child_pid => std::process::exit(0),
+    }
+
+    // 2: setsid()
+    if unsafe { libc::setsid() } == -1 {
+        return Err(log::mk_err!(
+            "elm-pair daemonization failed calling setsid()"
+        ));
+    }
+
+    // 3: fork() again
+    match unsafe { libc::fork() } {
+        -1 => {
+            return Err(log::mk_err!(
+                "elm-pair daemonization failed at second fork()"
+            ));
+        }
+        0 => {}
+        _child_pid => std::process::exit(0),
+    }
+
+    // 4: clear umask
+    unsafe { libc::umask(0o077) };
+
+    // 5: set cwd
+    std::env::set_current_dir("/").map_err(|err| {
+        log::mk_err!("elm-pair daemonization failed setting cwd: {:?}", err)
+    })?;
+
+    // 6 and 7: redirect file descriptors
+    let stdin = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .map_err(|err| {
+            log::mk_err!("failed opening /dev/null for writing: {:?}", err)
+        })?;
+    if unsafe { libc::dup2(stdin.as_raw_fd(), libc::STDIN_FILENO) } == -1 {
+        return Err(log::mk_err!(
+            "elm-pair daemonization failed redirecting stdin"
+        ));
+    }
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)
+        .map_err(|err| {
+            log::mk_err!(
+                "failed creating log file {:?}: {:?}",
+                log_file_path,
+                err
+            )
+        })?;
+    if unsafe { libc::dup2(log_file.as_raw_fd(), libc::STDOUT_FILENO) } == -1 {
+        return Err(log::mk_err!(
+            "elm-pair daemonization failed redirecting stdout"
+        ));
+    }
+    if unsafe { libc::dup2(log_file.as_raw_fd(), libc::STDERR_FILENO) } == -1 {
+        return Err(log::mk_err!(
+            "elm-pair daemonization failed redirecting stderr"
+        ));
+    }
+
+    Ok(())
 }
 
 // Obtain a file lock on a Unix system. No safe API exists for this in the
