@@ -20,16 +20,11 @@ struct EditorListenerLoop {
 }
 
 pub(crate) fn run(
-    socket_path: PathBuf,
+    listener: UnixListener,
     active_buffer: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
-    // Delete the socket file in case a previous run left it behind.
-    std::fs::remove_file(&socket_path).unwrap_or(());
-    let listener = UnixListener::bind(&socket_path).map_err(|err| {
-        log::mk_err!("error while creating socket {:?}: {:?}", socket_path, err)
-    })?;
     for (editor_id, socket) in listener.incoming().into_iter().enumerate() {
         match socket {
             Err(err) => {

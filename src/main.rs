@@ -1,4 +1,6 @@
 use mvar::MVar;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -32,6 +34,39 @@ pub fn main() {
 fn run() -> Result<(), Error> {
     let elm_pair_dir = elm_pair_dir()?;
     let socket_path = elm_pair_dir.join("socket");
+    let socket_path_string = socket_path
+        .to_str()
+        .ok_or_else(|| {
+            log::mk_err!(
+                "socket path {:?} contains non-utf8 characters",
+                socket_path,
+            )
+        })?
+        .to_owned();
+    let print_socket_path = move || print!("{}", socket_path_string);
+
+    // Get an exclusive lock to ensure only one elm-pair is running at a time.
+    // Otherwise, every time we start an editor we'll spawn a new elm-pair.
+    // TODO: figure out a strategy for dealing with multiple elm-pair versions.
+    let did_obtain_lock =
+        unsafe { try_obtain_lock(elm_pair_dir.join("lock"))? };
+    if !did_obtain_lock {
+        print_socket_path();
+        return Ok(());
+    }
+
+    // Start listening on the socket path. Remove an existing socket file if one
+    // was left behind by a previous run (we're past the lock so we're the only
+    // running process). We must start listening _before_ we daemonize and exit
+    // the main process, because the editor must be able to connect immediately
+    // after the main process returns.
+    std::fs::remove_file(&socket_path).unwrap_or(());
+    let listener = UnixListener::bind(&socket_path).map_err(|err| {
+        log::mk_err!("error while creating socket {:?}: {:?}", socket_path, err)
+    })?;
+
+    // Fork a daemon process. The main process will exit returning the path to
+    // the socket that can be used to communicate with the daemon.
     let log_file_path = elm_pair_dir.join("log");
     let stdout = std::fs::OpenOptions::new()
         .create(true)
@@ -51,36 +86,14 @@ fn run() -> Result<(), Error> {
             err
         )
     })?;
-    let socket_path_string = socket_path
-        .to_str()
-        .ok_or_else(|| {
-            log::mk_err!(
-                "socket path {:?} contains non-utf8 characters",
-                socket_path,
-            )
-        })?
-        .to_owned();
-    let socket_path_string_clone = socket_path_string.clone();
     let daemonize_result = daemonize::Daemonize::new()
-        .pid_file(elm_pair_dir.join("pid"))
         .stdout(stdout)
         .stderr(stderr)
-        .exit_action(move || {
-            // TODO: wait until socket is created before printing this path and
-            // returning. Otherwise an editor might attempt to connect early and
-            // fail.
-            print!("{}", socket_path_string_clone)
-        })
+        .exit_action(print_socket_path)
         .start();
     match daemonize_result {
         Ok(()) => {
             // We're continuing as an elm-pair daemon.
-        }
-        Err(daemonize::DaemonizeError::LockPidfile(..)) => {
-            // Daemon is already running! Let the calling program now how to
-            // reach it, then exit.
-            print!("{}", socket_path_string);
-            return Ok(());
         }
         Err(err) => {
             // An unexpected error happened.
@@ -102,7 +115,7 @@ fn run() -> Result<(), Error> {
     let analysis_sender_for_editor_listener = analysis_sender.clone();
     spawn_thread(analysis_sender.clone(), || {
         editor_listener_thread::run(
-            socket_path,
+            listener,
             latest_code_for_editor_listener,
             compilation_sender,
             analysis_sender_for_editor_listener,
@@ -118,6 +131,20 @@ fn run() -> Result<(), Error> {
 
     // Main thread continues as analysis thread.
     analysis_thread::run(&latest_code, analysis_receiver)
+}
+
+// Obtain a file lock on a Unix system. No safe API exists for this in the
+// standard library.
+unsafe fn try_obtain_lock(path: PathBuf) -> Result<bool, Error> {
+    let path_c = std::ffi::CString::new(path.into_os_string().into_vec())
+        .map_err(|_| log::mk_err!("Path contained nul byte"))?;
+
+    let fd = libc::open(path_c.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o666);
+    if fd == -1 {
+        return Err(log::mk_err!("Could not open lockfile"));
+    }
+    let res = libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
+    Ok(res != -1)
 }
 
 fn elm_pair_dir() -> Result<PathBuf, Error> {

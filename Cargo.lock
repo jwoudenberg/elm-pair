@@ -84,6 +84,7 @@ dependencies = [
  "byteorder",
  "daemonize",
  "dirs",
+ "libc",
  "rmp",
  "ropey",
  "serde",
