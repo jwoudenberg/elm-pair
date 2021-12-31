@@ -30,16 +30,17 @@ local function connect_to_socket(socket_path)
 end
 
 local function start()
+    local stdout
     local stderr
     local job_id = vim.fn.jobstart({"elm-pair"}, {
         stdout_buffered = true,
-        on_stdout = function(_, data, _)
-            connect_to_socket(vim.fn.join(data))
-        end,
+        on_stdout = function(_, data, _) stdout = vim.fn.join(data) end,
         stderr_buffered = true,
         on_stderr = function(_, data, _) stderr = vim.fn.join(data) end,
         on_exit = function(_, exit_code, _)
-            if exit_code > 0 then
+            if exit_code == 0 then
+                connect_to_socket(stdout)
+            else
                 error(
                     "`elm-pair` failed with exit code " .. exit_code .. ": " ..
                         stderr)
