@@ -21,6 +21,7 @@ mod support;
 #[cfg(test)]
 mod test_support;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_COMPILATION_CANDIDATES: usize = 10;
 
 pub fn main() {
@@ -36,7 +37,6 @@ pub fn main() {
 fn run() -> Result<(), Error> {
     // Get an exclusive lock to ensure only one elm-pair is running at a time.
     // Otherwise, every time we start an editor we'll spawn a new elm-pair.
-    // TODO: figure out a strategy for dealing with multiple elm-pair versions.
     let elm_pair_dir = elm_pair_dir()?;
     let did_obtain_lock =
         unsafe { try_obtain_lock(elm_pair_dir.join("lock"))? };
@@ -201,9 +201,17 @@ unsafe fn try_obtain_lock(path: PathBuf) -> Result<bool, Error> {
     Ok(res != -1)
 }
 
+// The directory elm-pair uses to store application files. It includes the
+// elm-pair version as a cheap means of avoiding versioning trouble, for example
+// when upgrading elm-pair or when multiple installed editor plugins use
+// different versions of elm-pair concurrently. It's not so nice to run multiple
+// elm-pair versions because they will probably waste a bunch of resources on
+// calculating/storing the same information, but this seems an unlikely enough
+// situation to not invest more work in it for the moment.
 fn elm_pair_dir() -> Result<PathBuf, Error> {
-    let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let dir = cache_dir.join("elm-pair");
+    let mut dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    dir.push("elm-pair");
+    dir.push(VERSION);
     std::fs::create_dir_all(&dir).map_err(|err| {
         log::mk_err!("error while creating directory {:?}: {:?}", dir, err)
     })?;
