@@ -11,7 +11,10 @@ use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
 #[derive(Debug)]
 pub struct ProjectInfo {
+    pub source_directories: Vec<PathBuf>,
     pub modules: HashMap<String, ElmModule>,
+    pub elm_json_path: PathBuf,
+    pub idat_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -42,26 +45,40 @@ pub(crate) fn load_dependencies(
     project_root: &Path,
 ) -> Result<ProjectInfo, Error> {
     // TODO: Remove harcoded Elm version.
-    let mut modules = from_idat(project_root.join("elm-stuff/0.19.1/i.dat"))?;
-    modules.extend(find_project_modules(query_for_exports, project_root)?);
-    let project_info = ProjectInfo { modules };
+    let idat_path = project_root.join("elm-stuff/0.19.1/i.dat");
+    let mut modules = from_idat(&idat_path)?;
+    let elm_json_path = project_root.join("elm.json");
+    let elm_json = load_elm_json(&elm_json_path)?;
+    modules.extend(find_project_modules(
+        query_for_exports,
+        project_root,
+        &elm_json,
+    )?);
+    let project_info = ProjectInfo {
+        elm_json_path,
+        idat_path,
+        modules,
+        source_directories: elm_json.source_directories,
+    };
     Ok(project_info)
+}
+
+fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
+    let file = std::fs::File::open(path).map_err(|err| {
+        log::mk_err!("error while reading elm.json: {:?}", err)
+    })?;
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader)
+        .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
 }
 
 fn find_project_modules(
     query_for_exports: &ExportsQuery,
     project_root: &Path,
+    elm_json: &ElmJson,
 ) -> Result<HashMap<String, ElmModule>, Error> {
-    let file =
-        std::fs::File::open(project_root.join("elm.json")).map_err(|err| {
-            log::mk_err!("error while reading elm.json: {:?}", err)
-        })?;
-    let reader = BufReader::new(file);
-    let elm_json: ElmJson = serde_json::from_reader(reader).map_err(|err| {
-        log::mk_err!("error while parsing elm.json: {:?}", err)
-    })?;
     let mut modules_found = HashMap::new();
-    for dir in elm_json.source_directories {
+    for dir in elm_json.source_directories.iter() {
         match project_root.join(&dir).canonicalize() {
             Ok(source_dir) => find_project_modules_in_dir(
                 query_for_exports,
@@ -404,7 +421,7 @@ where
     }
 }
 
-fn from_idat(path: PathBuf) -> Result<HashMap<String, ElmModule>, Error> {
+fn from_idat(path: &Path) -> Result<HashMap<String, ElmModule>, Error> {
     let file = std::fs::File::open(path).map_err(|err| {
         log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
     })?;

@@ -309,24 +309,41 @@ impl RefactorEngine {
         Ok(project_info)
     }
 
-    pub(crate) fn init_buffer(
+    pub(crate) fn init_buffer<W>(
         &mut self,
         buffer: Buffer,
         path: PathBuf,
-    ) -> Result<(), Error> {
+        watch_path: W,
+    ) -> Result<(), Error>
+    where
+        W: FnMut(&Path) -> Result<(), Error>,
+    {
         let project_root = project_root_for_path(&path)?.to_owned();
-        self.init_project(&project_root)?;
+        self.init_project(&project_root, watch_path)?;
         let buffer_info = BufferInfo { path, project_root };
         self.buffers.insert(buffer, buffer_info);
         Ok(())
     }
 
-    fn init_project(&mut self, project_root: &Path) -> Result<(), Error> {
+    fn init_project<W>(
+        &mut self,
+        project_root: &Path,
+        mut watch_path: W,
+    ) -> Result<(), Error>
+    where
+        W: FnMut(&Path) -> Result<(), Error>,
+    {
         if self.projects.contains_key(project_root) {
             return Ok(());
         }
         let project_info =
             load_dependencies(&self.query_for_exports, project_root)?;
+        // TODO: deal with possibility of elm-stuff/i.dat being out of date
+        watch_path(&project_info.elm_json_path)?;
+        watch_path(&project_info.idat_path)?;
+        for dir in project_info.source_directories.iter() {
+            watch_path(dir)?;
+        }
         self.projects.insert(project_root.to_owned(), project_info);
         Ok(())
     }
@@ -1848,7 +1865,7 @@ mod tests {
         let mut diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
         let mut refactor_engine = RefactorEngine::new()?;
-        refactor_engine.init_buffer(buffer, path.to_owned())?;
+        refactor_engine.init_buffer(buffer, path.to_owned(), |_| Ok(()))?;
         let edits = refactor_engine
             .respond_to_change(&diff, tree_changes)?
             .edits(&mut diff.new)?;

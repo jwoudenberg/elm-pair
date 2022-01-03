@@ -5,7 +5,7 @@ use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use tree_sitter::{Node, TreeCursor};
 
 pub(crate) enum Msg {
@@ -15,6 +15,7 @@ pub(crate) enum Msg {
     EditorDisconnected(u32),
     OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
     CompilationSucceeded(SourceFileSnapshot),
+    FileWatcherEventReceived(notify::Result<notify::Event>),
 }
 
 impl From<Error> for Msg {
@@ -25,27 +26,39 @@ impl From<Error> for Msg {
 
 pub(crate) fn run(
     latest_code: &MVar<SourceFileSnapshot>,
+    analysis_sender: Sender<Msg>,
     analysis_receiver: Receiver<Msg>,
-) -> Result<(), Error>
-where
-{
+) -> Result<(), Error> {
+    let file_watcher = notify::recommended_watcher(move |event| {
+        // If sending fails there's nothing more we can do to report this error,
+        // hence the unwrap().
+        analysis_sender
+            .send(Msg::FileWatcherEventReceived(event))
+            .unwrap();
+    })
+    .map_err(|err| log::mk_err!("failed creating file watcher: {:?}", err))?;
     AnalysisLoop {
         latest_code,
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new()?,
+        file_watcher,
     }
     .start(analysis_receiver)
 }
 
-struct AnalysisLoop<'a> {
+struct AnalysisLoop<'a, W> {
     latest_code: &'a MVar<SourceFileSnapshot>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
+    file_watcher: W,
 }
 
-impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
+impl<'a, W> MsgLoop<Error> for AnalysisLoop<'a, W>
+where
+    W: notify::Watcher,
+{
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
@@ -126,9 +139,20 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 }
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
+                let AnalysisLoop {
+                    file_watcher,
+                    refactor_engine,
+                    ..
+                } = self;
                 // TODO: We error here if elm-stuff/i.dat is missing. Figure out
                 // something that won't bring the application down in this case.
-                self.refactor_engine.init_buffer(buffer, path)?;
+                refactor_engine.init_buffer(buffer, path, |path| {
+                    file_watcher
+                        .watch(path, notify::RecursiveMode::Recursive)
+                        .map_err(|err|
+                            log::mk_err!("failed while adding path to watch for changes: {:?}", err)
+                        )
+                })?;
             }
             Msg::CompilationSucceeded(snapshot) => {
                 // Replace 'last compiling version' with a newer revision only.
@@ -149,12 +173,15 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                     };
                 }
             }
+            Msg::FileWatcherEventReceived(_opt_event) => {
+                panic!()
+            }
         }
         Ok(true)
     }
 }
 
-impl<'a> AnalysisLoop<'a> {
+impl<'a, W> AnalysisLoop<'a, W> {
     fn source_file_diff(&self) -> Option<SourceFileDiff> {
         let new = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();

@@ -96,13 +96,17 @@ fn run() -> Result<(), Error> {
     });
 
     // Start compilation thread.
+    let analysis_sender_for_compilation = analysis_sender.clone();
     spawn_thread(analysis_sender.clone(), || {
-        compilation_thread::run(compilation_receiver, analysis_sender)
+        compilation_thread::run(
+            compilation_receiver,
+            analysis_sender_for_compilation,
+        )
     });
 
     // Main thread continues as analysis thread.
     log::info!("elm-pair has started");
-    analysis_thread::run(&latest_code, analysis_receiver)
+    analysis_thread::run(&latest_code, analysis_sender, analysis_receiver)
 }
 
 // Continue running the rest of this program as a daemon. This function follows
