@@ -4,7 +4,7 @@ use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use tree_sitter::{Node, TreeCursor};
 
@@ -146,13 +146,11 @@ where
                 } = self;
                 // TODO: We error here if elm-stuff/i.dat is missing. Figure out
                 // something that won't bring the application down in this case.
-                refactor_engine.init_buffer(buffer, path, |path| {
-                    file_watcher
-                        .watch(path, notify::RecursiveMode::Recursive)
-                        .map_err(|err|
-                            log::mk_err!("failed while adding path to watch for changes: {:?}", err)
-                        )
-                })?;
+                refactor_engine.init_buffer(
+                    buffer,
+                    path,
+                    &mut |changed_path| watch_path(file_watcher, changed_path),
+                )?;
             }
             Msg::CompilationSucceeded(snapshot) => {
                 // Replace 'last compiling version' with a newer revision only.
@@ -173,9 +171,34 @@ where
                     };
                 }
             }
-            Msg::FileWatcherEventReceived(_opt_event) => {
-                panic!()
-            }
+            Msg::FileWatcherEventReceived(opt_event) => match opt_event {
+                Err(err) => {
+                    log::error!(
+                        "Failed while processing file watcher event: {:?}",
+                        err
+                    );
+                }
+                Ok(event) => match event.kind {
+                    notify::event::EventKind::Create(_)
+                    | notify::event::EventKind::Modify(_)
+                    | notify::event::EventKind::Remove(_) => {
+                        let AnalysisLoop {
+                            file_watcher,
+                            refactor_engine,
+                            ..
+                        } = self;
+                        refactor_engine.on_files_changed(
+                            event.paths,
+                            &mut |changed_path| {
+                                watch_path(file_watcher, changed_path)
+                            },
+                        )?;
+                    }
+                    notify::event::EventKind::Any
+                    | notify::event::EventKind::Other
+                    | notify::event::EventKind::Access(_) => {}
+                },
+            },
         }
         Ok(true)
     }
@@ -191,6 +214,20 @@ impl<'a, W> AnalysisLoop<'a, W> {
         let diff = SourceFileDiff { old, new };
         Some(diff)
     }
+}
+
+fn watch_path<W: notify::Watcher>(
+    watcher: &mut W,
+    path: &Path,
+) -> Result<(), Error> {
+    watcher
+        .watch(path, notify::RecursiveMode::Recursive)
+        .map_err(|err| {
+            log::mk_err!(
+                "failed while adding path to watch for changes: {:?}",
+                err
+            )
+        })
 }
 
 // An API for sending commands to an editor. This is defined as a trait to

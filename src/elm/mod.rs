@@ -313,40 +313,78 @@ impl RefactorEngine {
         &mut self,
         buffer: Buffer,
         path: PathBuf,
-        watch_path: W,
+        watch_path: &mut W,
     ) -> Result<(), Error>
     where
         W: FnMut(&Path) -> Result<(), Error>,
     {
         let project_root = project_root_for_path(&path)?.to_owned();
-        self.init_project(&project_root, watch_path)?;
+        if !self.projects.contains_key(&project_root) {
+            let project_info = get_project_info(
+                &self.query_for_exports,
+                &project_root,
+                watch_path,
+            )?;
+            self.projects.insert(project_root.to_owned(), project_info);
+        }
         let buffer_info = BufferInfo { path, project_root };
         self.buffers.insert(buffer, buffer_info);
         Ok(())
     }
 
-    fn init_project<W>(
+    pub(crate) fn on_files_changed<W>(
         &mut self,
-        project_root: &Path,
-        mut watch_path: W,
+        changed_paths: Vec<PathBuf>,
+        watch_path: &mut W,
     ) -> Result<(), Error>
     where
         W: FnMut(&Path) -> Result<(), Error>,
     {
-        if self.projects.contains_key(project_root) {
-            return Ok(());
-        }
-        let project_info =
-            load_dependencies(&self.query_for_exports, project_root)?;
-        // TODO: deal with possibility of elm-stuff/i.dat being out of date
-        watch_path(&project_info.elm_json_path)?;
-        watch_path(&project_info.idat_path)?;
-        for dir in project_info.source_directories.iter() {
-            watch_path(dir)?;
-        }
-        self.projects.insert(project_root.to_owned(), project_info);
-        Ok(())
+        let RefactorEngine {
+            projects,
+            query_for_exports,
+            ..
+        } = self;
+        projects
+            .iter_mut()
+            .try_for_each(|(project_root, project_info)| {
+                let project_changed = changed_paths.iter().any(|path| {
+                    path == &project_info.elm_json_path
+                        || path == &project_info.idat_path
+                        || project_info
+                            .source_directories
+                            .iter()
+                            .any(|dir| path.starts_with(dir))
+                });
+                // TODO: Don't reparse entire project when single file changes.
+                if project_changed {
+                    *project_info = get_project_info(
+                        query_for_exports,
+                        project_root,
+                        watch_path,
+                    )?;
+                }
+                Ok(())
+            })
     }
+}
+
+fn get_project_info<W>(
+    query_for_exports: &ExportsQuery,
+    project_root: &Path,
+    watch_path: &mut W,
+) -> Result<ProjectInfo, Error>
+where
+    W: FnMut(&Path) -> Result<(), Error>,
+{
+    let project_info = load_dependencies(query_for_exports, project_root)?;
+    // TODO: deal with possibility of elm-stuff/i.dat being out of date
+    watch_path(&project_info.elm_json_path)?;
+    watch_path(&project_info.idat_path)?;
+    for dir in project_info.source_directories.iter() {
+        watch_path(dir)?;
+    }
+    Ok(project_info)
 }
 
 #[allow(clippy::needless_collect)]
@@ -1865,7 +1903,11 @@ mod tests {
         let mut diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
         let mut refactor_engine = RefactorEngine::new()?;
-        refactor_engine.init_buffer(buffer, path.to_owned(), |_| Ok(()))?;
+        refactor_engine.init_buffer(
+            buffer,
+            path.to_owned(),
+            &mut |_| Ok(()),
+        )?;
         let edits = refactor_engine
             .respond_to_change(&diff, tree_changes)?
             .edits(&mut diff.new)?;
