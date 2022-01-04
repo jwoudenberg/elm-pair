@@ -357,6 +357,10 @@ impl RefactorEngine {
                             .any(|dir| path.starts_with(dir))
                 });
                 // TODO: Don't reparse entire project when single file changes.
+                log::info!(
+                    "changed files cause reparsing of project {:?}",
+                    project_root
+                );
                 if project_changed {
                     *project_info = get_project_info(
                         query_for_exports,
@@ -364,6 +368,7 @@ impl RefactorEngine {
                         watch_path,
                     )?;
                 }
+                log::info!("finished reparsing project {:?}", project_root);
                 Ok(())
             })
     }
