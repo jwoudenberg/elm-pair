@@ -608,8 +608,13 @@ where
             rmp::encode::write_u64(write, end.row as u64)?;
             rmp::encode::write_u64(write, end.column as u64)?;
 
-            rmp::encode::write_array_len(write, 1)?; // array of lines
-            write_str(write, &edit.new_bytes)?;
+            // Not using the `lines()` function here, because it will drop
+            // a trailing newline resulting in newlines disappearing in Neovim.
+            let lines = edit.new_bytes.split('\n');
+            rmp::encode::write_array_len(write, lines.clone().count() as u32)?; // array of lines
+            for line in lines {
+                write_str(write, line)?;
+            }
         }
         write.flush().map_err(|err| {
             log::mk_err!("failed writing to neovim: {:?}", err)
