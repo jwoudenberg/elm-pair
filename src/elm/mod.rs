@@ -19,6 +19,7 @@ pub mod idat;
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
 const AS_CLAUSE: u16 = 101;
+const BLOCK_COMMENT: u16 = 86;
 const COMMA: u16 = 6;
 const CONSTRUCTOR_IDENTIFIER: u16 = 8;
 const CONSTRUCTOR_QID: u16 = 96;
@@ -45,6 +46,7 @@ mod kind_constant_tests {
             assert_eq!(constant, language.id_for_node_kind(str, named))
         };
         check(super::AS_CLAUSE, "as_clause", true);
+        check(super::BLOCK_COMMENT, "block_comment", true);
         check(super::COMMA, ",", false);
         check(
             super::CONSTRUCTOR_IDENTIFIER,
@@ -434,7 +436,8 @@ fn on_unrecognized_change(
         let project_info = engine.buffer_project(code.buffer)?;
         let mut tree_cursor = code.tree.root_node().walk();
         tree_cursor.goto_first_child();
-        while tree_cursor.node().kind_id() == MODULE_DECLARATION
+        while (tree_cursor.node().kind_id() == MODULE_DECLARATION
+            || tree_cursor.node().kind_id() == BLOCK_COMMENT)
             && tree_cursor.goto_next_sibling()
         {}
         let insert_at_byte = tree_cursor.node().start_byte();

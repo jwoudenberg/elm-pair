@@ -1,5 +1,8 @@
 module Main exposing (..)
 
+{-| Module documentation here!
+-}
+
 import Task exposing (Task)
 
 
@@ -10,12 +13,15 @@ nowMillis =
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 8 Task
+-- MOVE CURSOR TO LINE 11 Task
 -- DELETE Task.succeed (Debug.todo "")
 -- INSERT Task.map Time.posixToMillis Time.now
 -- END SIMULATION
 -- === expected output below ===
 -- module Main exposing (..)
+--
+-- {-| Module documentation here!
+-- -}
 --
 -- import Time
 -- import Task exposing (Task)
