@@ -106,7 +106,9 @@ fn run() -> Result<(), Error> {
 
     // Main thread continues as analysis thread.
     log::info!("elm-pair has started");
-    analysis_thread::run(&latest_code, analysis_sender, analysis_receiver)
+    analysis_thread::run(&latest_code, analysis_sender, analysis_receiver)?;
+    log::info!("elm-pair exiting");
+    Ok(())
 }
 
 // Continue running the rest of this program as a daemon. This function follows
