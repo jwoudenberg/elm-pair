@@ -216,18 +216,14 @@ impl<'a, W> AnalysisLoop<'a, W> {
     }
 }
 
-fn watch_path<W: notify::Watcher>(
-    watcher: &mut W,
-    path: &Path,
-) -> Result<(), Error> {
-    watcher
-        .watch(path, notify::RecursiveMode::Recursive)
-        .map_err(|err| {
-            log::mk_err!(
-                "failed while adding path to watch for changes: {:?}",
-                err
-            )
-        })
+fn watch_path<W: notify::Watcher>(watcher: &mut W, path: &Path) {
+    if let Err(err) = watcher.watch(path, notify::RecursiveMode::Recursive) {
+        log::error!(
+            "failed while adding path {:?} to watch for changes: {:?}",
+            path,
+            err
+        )
+    }
 }
 
 // An API for sending commands to an editor. This is defined as a trait to
