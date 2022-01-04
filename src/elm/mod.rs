@@ -414,7 +414,9 @@ fn on_unrecognized_change(
             .run_in(&mut cursor, code, parent)
     {
         let (_, reference) = result?;
-        if !existing_imports.contains(&reference.qualifier) {
+        if reference.reference.name.len_bytes() > 0
+            && !existing_imports.contains(&reference.qualifier)
+        {
             new_import_names.insert(reference.qualifier.to_string());
         }
     }
@@ -1915,10 +1917,10 @@ mod tests {
         let edits = refactor_engine
             .respond_to_change(&diff, tree_changes)?
             .edits(&mut diff.new)?;
-        if diff.new.tree.root_node().has_error() {
-            Ok("Refactor produced invalid code.".to_owned())
-        } else if edits.is_empty() {
+        if edits.is_empty() || diff.old.bytes == diff.new.bytes {
             Ok("No refactor for this change.".to_owned())
+        } else if diff.new.tree.root_node().has_error() {
+            Ok("Refactor produced invalid code.".to_owned())
         } else {
             Ok(diff.new.bytes.to_string())
         }
@@ -1982,6 +1984,7 @@ mod tests {
     // Adding import statements
     simulation_test!(use_qualifier_of_unimported_module_in_new_code);
     simulation_test!(use_qualifier_of_non_existing_module_in_new_code);
+    simulation_test!(use_qualifier_of_unimported_module_while_in_the_middle_of_writing_identifier);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
