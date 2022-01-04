@@ -419,6 +419,7 @@ fn on_unrecognized_change(
         }
     }
     if !new_import_names.is_empty() {
+        let project_info = engine.buffer_project(code.buffer)?;
         let mut tree_cursor = code.tree.root_node().walk();
         tree_cursor.goto_first_child();
         while tree_cursor.node().kind_id() == MODULE_DECLARATION
@@ -426,10 +427,12 @@ fn on_unrecognized_change(
         {}
         let insert_at_byte = tree_cursor.node().start_byte();
         for new_import_name in new_import_names {
-            refactor.add_change(
-                insert_at_byte..insert_at_byte,
-                format!("import {}\n", new_import_name),
-            );
+            if project_info.modules.contains_key(&new_import_name) {
+                refactor.add_change(
+                    insert_at_byte..insert_at_byte,
+                    format!("import {}\n", new_import_name),
+                );
+            }
         }
     }
     Ok(())
@@ -1975,7 +1978,10 @@ mod tests {
     );
     simulation_test!(change_module_qualifier_to_match_unaliased_import_name);
     simulation_test!(change_module_qualifier_to_invalid_name);
+
+    // Adding import statements
     simulation_test!(use_qualifier_of_unimported_module_in_new_code);
+    simulation_test!(use_qualifier_of_non_existing_module_in_new_code);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
 
