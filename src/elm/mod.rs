@@ -334,7 +334,7 @@ impl RefactorEngine {
 
     pub(crate) fn on_files_changed<W>(
         &mut self,
-        changed_paths: Vec<PathBuf>,
+        paths: &HashSet<PathBuf>,
         watch_path: &mut W,
     ) -> Result<(), Error>
     where
@@ -348,30 +348,40 @@ impl RefactorEngine {
         projects
             .iter_mut()
             .try_for_each(|(project_root, project_info)| {
-                let project_changed = changed_paths.iter().any(|path| {
-                    path == &project_info.elm_json_path
-                        || path == &project_info.idat_path
-                        || project_info
-                            .source_directories
-                            .iter()
-                            .any(|dir| path.starts_with(dir))
-                });
+                let project_changed = paths
+                    .contains(&project_info.elm_json_path)
+                    || paths.contains(&project_info.idat_path)
+                    || paths
+                        .iter()
+                        .any(|path| is_project_source_file(project_info, path));
                 // TODO: Don't reparse entire project when single file changes.
-                log::info!(
-                    "changed files cause reparsing of project {:?}",
-                    project_root
-                );
                 if project_changed {
+                    log::info!(
+                        "changed files cause reparsing of project {:?}",
+                        project_root
+                    );
                     *project_info = get_project_info(
                         query_for_exports,
                         project_root,
                         watch_path,
                     )?;
+                    log::info!("finished reparsing project {:?}", project_root);
                 }
-                log::info!("finished reparsing project {:?}", project_root);
                 Ok(())
             })
     }
+}
+
+fn is_elm_file(path: &Path) -> bool {
+    path.extension() == Some(std::ffi::OsStr::new("elm"))
+}
+
+fn is_project_source_file(project_info: &ProjectInfo, path: &Path) -> bool {
+    is_elm_file(path)
+        && project_info
+            .source_directories
+            .iter()
+            .any(|dir| path.starts_with(dir))
 }
 
 fn get_project_info<W>(

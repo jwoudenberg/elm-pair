@@ -3,7 +3,7 @@ use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use tree_sitter::{Node, TreeCursor};
@@ -42,6 +42,7 @@ pub(crate) fn run(
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new()?,
+        changed_files: HashSet::new(),
         file_watcher,
     }
     .start(analysis_receiver)
@@ -52,6 +53,7 @@ struct AnalysisLoop<'a, W> {
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
+    changed_files: HashSet<PathBuf>,
     file_watcher: W,
 }
 
@@ -62,6 +64,21 @@ where
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
+        let AnalysisLoop {
+            refactor_engine,
+            changed_files,
+            file_watcher,
+            ..
+        } = self;
+
+        if !changed_files.is_empty() {
+            refactor_engine
+                .on_files_changed(changed_files, &mut |changed_path| {
+                    watch_path(file_watcher, changed_path)
+                })?;
+            self.changed_files.drain();
+        }
+
         if let Some(mut diff) = self.source_file_diff() {
             let AnalysisLoop {
                 editor_driver,
@@ -178,26 +195,11 @@ where
                         err
                     );
                 }
-                Ok(event) => match event.kind {
-                    notify::event::EventKind::Create(_)
-                    | notify::event::EventKind::Modify(_)
-                    | notify::event::EventKind::Remove(_) => {
-                        let AnalysisLoop {
-                            file_watcher,
-                            refactor_engine,
-                            ..
-                        } = self;
-                        refactor_engine.on_files_changed(
-                            event.paths,
-                            &mut |changed_path| {
-                                watch_path(file_watcher, changed_path)
-                            },
-                        )?;
+                Ok(event) => {
+                    if let Some(path) = event.paths.into_iter().next() {
+                        self.changed_files.insert(path);
                     }
-                    notify::event::EventKind::Any
-                    | notify::event::EventKind::Other
-                    | notify::event::EventKind::Access(_) => {}
-                },
+                }
             },
         }
         Ok(true)
