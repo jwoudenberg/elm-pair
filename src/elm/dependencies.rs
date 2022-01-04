@@ -58,7 +58,11 @@ pub(crate) fn load_dependencies(
         elm_json_path,
         idat_path,
         modules,
-        source_directories: elm_json.source_directories,
+        source_directories: elm_json
+            .source_directories
+            .into_iter()
+            .map(|dir| project_root.join(dir))
+            .collect(),
     };
     Ok(project_info)
 }
