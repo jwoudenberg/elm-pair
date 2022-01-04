@@ -163,17 +163,9 @@ fn daemonize(log_file_path: PathBuf) -> Result<(), Error> {
         ));
     }
 
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file_path)
-        .map_err(|err| {
-            log::mk_err!(
-                "failed creating log file {:?}: {:?}",
-                log_file_path,
-                err
-            )
-        })?;
+    let log_file = std::fs::File::create(&log_file_path).map_err(|err| {
+        log::mk_err!("failed creating log file {:?}: {:?}", log_file_path, err)
+    })?;
     if unsafe { libc::dup2(log_file.as_raw_fd(), libc::STDOUT_FILENO) } == -1 {
         return Err(log::mk_err!(
             "elm-pair daemonization failed redirecting stdout"
