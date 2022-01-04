@@ -74,6 +74,11 @@ mod kind_constant_tests {
     }
 }
 
+const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
+    "Basics", "Char", "Cmd", "List", "Maybe", "Platform", "Result", "String",
+    "Sub", "Tuple",
+];
+
 pub(crate) struct RefactorEngine {
     buffers: HashMap<Buffer, BufferInfo>,
     projects: HashMap<PathBuf, ProjectInfo>,
@@ -442,7 +447,9 @@ fn on_unrecognized_change(
         {}
         let insert_at_byte = tree_cursor.node().start_byte();
         for new_import_name in new_import_names {
-            if project_info.modules.contains_key(&new_import_name) {
+            if project_info.modules.contains_key(&new_import_name)
+                && !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
+            {
                 refactor.add_change(
                     insert_at_byte..insert_at_byte,
                     format!("import {}\n", new_import_name),
@@ -1997,6 +2004,7 @@ mod tests {
     // Adding import statements
     simulation_test!(use_qualifier_of_unimported_module_in_new_code);
     simulation_test!(use_qualifier_of_non_existing_module_in_new_code);
+    simulation_test!(use_qualifier_of_implicitly_imported_module_in_new_code);
     simulation_test!(use_qualifier_of_unimported_module_while_in_the_middle_of_writing_identifier);
 
     // --- TESTS DEMONSTRATING CURRENT BUGS ---
