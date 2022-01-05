@@ -46,7 +46,7 @@ pub(crate) fn load_dependencies(
 ) -> Result<ProjectInfo, Error> {
     // TODO: Remove harcoded Elm version.
     let idat_path = project_root.join("elm-stuff/0.19.1/i.dat");
-    let mut modules = from_idat(&idat_path)?;
+    let mut modules = from_idat(project_root, &idat_path)?;
     let elm_json_path = project_root.join("elm.json");
     let elm_json = load_elm_json(&elm_json_path)?;
     modules.extend(find_project_modules(
@@ -425,9 +425,22 @@ where
     }
 }
 
-fn from_idat(path: &Path) -> Result<HashMap<String, ElmModule>, Error> {
-    let file = std::fs::File::open(path).map_err(|err| {
-        log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
+fn from_idat(
+    project_root: &Path,
+    path: &Path,
+) -> Result<HashMap<String, ElmModule>, Error> {
+    let file = std::fs::File::open(path).or_else(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            create_elm_stuff(project_root)?;
+            std::fs::File::open(path).map_err(|err| {
+                log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
+            })
+        } else {
+            Err(log::mk_err!(
+                "error opening elm-stuff/i.dat file: {:?}",
+                err
+            ))
+        }
     })?;
     let reader = BufReader::new(file);
     let iter =
@@ -439,6 +452,33 @@ fn from_idat(path: &Path) -> Result<HashMap<String, ElmModule>, Error> {
                 Some((name, module))
             });
     Ok(HashMap::from_iter(iter))
+}
+
+fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
+    log::info!(
+        "Running `elm make` to generate elm-stuff in project: {:?}",
+        project_root
+    );
+    // Running `elm make` will create elm-stuff. We'll pass it a valid module
+    // to compile or `elm make` will return an error. `elm make` would create
+    // `elm-stuff` before returning an error, but it'd be difficult to
+    // distinguish that expected error from other potential unexpected ones.
+    let temp_module = ropey::Rope::from_str(
+        "\
+        module Main exposing (..)\n\
+        val : Int\n\
+        val = 4\n\
+        ",
+    );
+    let output = crate::elm::compiler::make(project_root, &temp_module)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(log::mk_err!(
+            "failed running elm-make to generate elm-stuff:\n{:?}",
+            std::string::String::from_utf8(output.stderr)
+        ))
+    }
 }
 
 fn elm_module_from_interface(

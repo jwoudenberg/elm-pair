@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
 
+pub mod compiler;
 pub mod dependencies;
 pub mod idat;
 

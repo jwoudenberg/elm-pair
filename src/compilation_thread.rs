@@ -66,7 +66,10 @@ impl MsgLoop<Error> for CompilationLoop {
                 snapshot.revision,
                 snapshot.buffer
             );
-            if does_snapshot_compile(buffer_info, &snapshot)? {
+            if crate::elm::compiler::make(&buffer_info.root, &snapshot.bytes)?
+                .status
+                .success()
+            {
                 self.analysis_sender.send(
                     analysis_thread::Msg::CompilationSucceeded(snapshot),
                 )?;
@@ -90,41 +93,10 @@ fn is_new_revision(
     is_new
 }
 
-fn does_snapshot_compile(
-    buffer_info: &BufferInfo,
-    snapshot: &SourceFileSnapshot,
-) -> Result<bool, Error> {
-    // Write lates code to temporary file. We don't compile the original source
-    // file, because the version stored on disk is likely ahead or behind the
-    // version in the editor.
-    let temp_path = crate::elm_pair_dir()?.join("Temp.elm");
-    std::fs::write(&temp_path, &snapshot.bytes.bytes().collect::<Vec<u8>>())
-        .map_err(|err| {
-            log::mk_err!(
-                "error while writing to file {:?}: {:?}",
-                temp_path,
-                err
-            )
-        })?;
-
-    // Run Elm compiler against temporary file.
-    let output = std::process::Command::new(&buffer_info.elm_bin)
-        .arg("make")
-        .arg("--report=json")
-        .arg(temp_path)
-        .current_dir(&buffer_info.root)
-        .output()
-        .map_err(|err| log::mk_err!("error running `elm make`: {:?}", err))?;
-
-    Ok(output.status.success())
-}
-
 struct BufferInfo {
     last_checked_revision: Option<usize>,
     // Root of the Elm project containing this source file.
     root: PathBuf,
-    // Absolute path to the `elm` compiler.
-    elm_bin: PathBuf,
 }
 
 impl BufferInfo {
@@ -132,9 +104,6 @@ impl BufferInfo {
         let info = BufferInfo {
             last_checked_revision: None,
             root: project_root_for_path(path)?.to_owned(),
-            elm_bin: PathBuf::from(
-                option_env!("ELM_BINARY_PATH").unwrap_or("elm"),
-            ),
         };
         Ok(info)
     }
