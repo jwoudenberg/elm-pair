@@ -2,7 +2,7 @@
 
 An artificial pair-programmer that helps you writing Elm code.
 
-[Check out this 2 minute demo of current functionality!][demo].
+[Check out this 2 minute demo of current functionality!][demo]
 
 The current version of this code is licensed under GPL. The plan is for a change of license at some point in the future, after which you will need a payed license to be able to use elm-pair commercially.
 
