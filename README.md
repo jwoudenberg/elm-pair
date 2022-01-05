@@ -2,6 +2,8 @@
 
 An artificial pair-programmer that helps you writing Elm code.
 
+[Check out this 2 minute demo of current functionality!][demo].
+
 The current version of this code is licensed under GPL. The plan is for a change of license at some point in the future, after which you will need a payed license to be able to use elm-pair commercially.
 
 ## Installation
@@ -98,6 +100,7 @@ Include elm-pair your project's `shell.nix`. Note: when set up this way the neov
 
 Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
 
+[demo]: https://vimeo.com/manage/videos/662666351
 [home-manager]: https://github.com/nix-community/home-manager
 [neovim]: https://neovim.io/
 [nix-darwin]: https://github.com/LnL7/nix-darwin
