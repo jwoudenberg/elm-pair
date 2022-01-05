@@ -25,6 +25,7 @@
           pname = "elm-pair";
           root = ./.;
           doCheck = true;
+          ELM_BINARY_PATH = "${pkgs.elmPackages.elm}/bin/elm";
         };
         defaultPackage = packages.elm-pair;
 

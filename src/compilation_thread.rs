@@ -132,28 +132,10 @@ impl BufferInfo {
         let info = BufferInfo {
             last_checked_revision: None,
             root: project_root_for_path(path)?.to_owned(),
-            elm_bin: find_executable("elm")?,
+            elm_bin: PathBuf::from(
+                option_env!("ELM_BINARY_PATH").unwrap_or("elm"),
+            ),
         };
         Ok(info)
     }
-}
-
-fn find_executable(name: &str) -> Result<PathBuf, Error> {
-    let cwd = std::env::current_dir().map_err(|err| {
-        log::mk_err!("error reading current working directory: {:?}", err)
-    })?;
-    let path = std::env::var_os("PATH").ok_or_else(|| {
-        log::mk_err!("could not read $PATH environment variable")
-    })?;
-    let dirs = std::env::split_paths(&path);
-    for dir in dirs {
-        let mut bin_path = cwd.join(dir);
-        bin_path.push(name);
-        if bin_path.is_file() {
-            return Ok(bin_path);
-        };
-    }
-    Err(log::mk_err!(
-        "could not find elm binary anywhere on the $PATH"
-    ))
 }
