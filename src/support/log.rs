@@ -1,7 +1,5 @@
 use std::sync::mpsc::SendError;
 
-// TODO: Add timestamps to logs
-
 #[macro_export]
 macro_rules! mk_err {
     ( $($args:tt)* ) => {{

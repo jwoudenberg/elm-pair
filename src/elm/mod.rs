@@ -373,7 +373,6 @@ impl RefactorEngine {
                         project_root,
                         watch_path,
                     )?;
-                    log::info!("finished reparsing project {:?}", project_root);
                 }
                 Ok(())
             })
@@ -400,6 +399,7 @@ fn get_project_info<W>(
 where
     W: FnMut(&Path),
 {
+    let now = std::time::Instant::now();
     let project_info = load_dependencies(query_for_exports, project_root)?;
     // TODO: deal with possibility of elm-stuff/i.dat being out of date
     watch_path(&project_info.elm_json_path);
@@ -407,6 +407,12 @@ where
     for dir in project_info.source_directories.iter() {
         watch_path(dir);
     }
+    let elapsed_time = now.elapsed();
+    log::info!(
+        "parsed project {:?} in {}ms",
+        project_root,
+        elapsed_time.as_millis()
+    );
     Ok(project_info)
 }
 
