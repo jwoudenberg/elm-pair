@@ -39,7 +39,7 @@ Building your environment for the first time will fail with a hash mismatch erro
 
 Follow the instructions of your plugin manager to add the plugin located in the `./neovim-plugin` directory of this repository. When installed this way the plugin will not include the elm-pair binary, and you will need to make sure it is available on your `$PATH`.
 
-#### Install as a user package using [home-manage][]
+#### Install as a user package using [home-manager][]
 
 Include elm-pair in your `home-manager.nix`:
 
