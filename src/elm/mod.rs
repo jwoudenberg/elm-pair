@@ -483,7 +483,7 @@ fn on_added_constructors_to_exposing_list(
         })?;
     let import = parse_import_node(engine, &diff.new, import_node)?;
     let project_info = engine.buffer_project(diff.new.buffer)?;
-    let module = get_elm_module(project_info, &import.name())?;
+    let module = get_elm_module(project_info, &import.unaliased_name())?;
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
@@ -500,7 +500,7 @@ fn on_added_constructors_to_exposing_list(
         engine,
         refactor,
         &diff.new,
-        &import.name(),
+        &import.aliased_name(),
         references_to_unqualify,
     )?;
     Ok(())
@@ -588,7 +588,7 @@ fn on_changed_module_qualifier(
         })?;
     match import.as_clause_node {
         Some(as_clause_name_node) => {
-            if import.name() == new_reference.qualifier {
+            if import.unaliased_name() == new_reference.qualifier {
                 let as_clause_node =
                     as_clause_name_node.parent().ok_or_else(|| {
                         log::mk_err!(
@@ -721,7 +721,7 @@ fn on_changed_values_in_exposing_list(
     })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let project_info = engine.buffer_project(diff.new.buffer)?;
-    let module = get_elm_module(project_info, &old_import.name())?;
+    let module = get_elm_module(project_info, &old_import.unaliased_name())?;
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
@@ -762,7 +762,7 @@ fn on_changed_values_in_exposing_list(
         engine,
         refactor,
         &diff.new,
-        &new_import.name(),
+        &new_import.aliased_name(),
         new_references,
     )?;
 
@@ -805,7 +805,7 @@ fn on_removed_module_qualifier_from_value(
     let mut references_to_unqualify = HashSet::new();
     if reference.kind == ReferenceKind::Constructor {
         let project_info = engine.buffer_project(diff.new.buffer)?;
-        let module = get_elm_module(project_info, &import.name())?;
+        let module = get_elm_module(project_info, &import.unaliased_name())?;
         for export in module.exports.iter() {
             match export {
                 ElmExport::Value { .. } => {}
@@ -1077,17 +1077,18 @@ fn on_added_module_qualifier_to_value(
                     }
                     ReferenceKind::Constructor => {
                         // We know a constructor got qualified, but not which
-                        // type it belogns too. To find it, we iterate over all
+                        // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let exports = match engine
-                            .module_exports(diff.new.buffer, import.name())
-                        {
+                        let exports = match engine.module_exports(
+                            diff.new.buffer,
+                            import.unaliased_name(),
+                        ) {
                             Ok(exports_) => exports_,
                             Err(err) => {
                                 log::error!(
                                     "failed to read exports of {}: {:?}",
-                                    import.name().to_string(),
+                                    import.unaliased_name().to_string(),
                                     err
                                 );
                                 break;
@@ -1138,7 +1139,7 @@ fn on_added_exposing_list_to_import(
 ) -> Result<(), Error> {
     let import = parse_import_node(engine, code, new_parent)?;
     let project_info = engine.buffer_project(code.buffer)?;
-    let module = get_elm_module(project_info, &import.name())?;
+    let module = get_elm_module(project_info, &import.unaliased_name())?;
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
@@ -1150,7 +1151,7 @@ fn on_added_exposing_list_to_import(
         engine,
         refactor,
         code,
-        &import.name(),
+        &import.aliased_name(),
         references_to_unqualify,
     )?;
     Ok(())
@@ -1166,7 +1167,7 @@ fn on_removed_exposing_list_from_import(
     let qualifier = import.aliased_name();
     let mut val_cursor = QueryCursor::new();
     let project_info = engine.buffer_project(diff.new.buffer)?;
-    let module = get_elm_module(project_info, &import.name())?;
+    let module = get_elm_module(project_info, &import.unaliased_name())?;
     let mut references_to_qualify = HashSet::new();
     let import =
         get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
@@ -1625,7 +1626,7 @@ struct Import<'a> {
 }
 
 impl Import<'_> {
-    fn name(&self) -> RopeSlice {
+    fn unaliased_name(&self) -> RopeSlice {
         self.code.slice(&self.name_node.byte_range())
     }
 
