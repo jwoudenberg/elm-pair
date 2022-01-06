@@ -850,7 +850,14 @@ fn remove_qualifier_from_references(
     qualifier: &RopeSlice,
     references: HashSet<Reference>,
 ) -> Result<(), Error> {
+    // Find existing unqualified references, so we can check whether removing
+    // a qualifier from a qualified reference will introduce a naming conflict.
     let mut cursor = QueryCursor::new();
+    let mut unqualified_references: HashSet<Reference> = engine
+        .query_for_unqualified_values
+        .run_in(&mut cursor, code, code.tree.root_node())
+        .map(|r| r.map(|(_, reference)| reference))
+        .collect::<Result<HashSet<Reference>, Error>>()?;
     let qualified_references = engine.query_for_qualified_values.run_in(
         &mut cursor,
         code,
@@ -858,6 +865,13 @@ fn remove_qualifier_from_references(
     );
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
+        if unqualified_references.contains(&qualified.reference) {
+            let new_name = names_with_digit(&qualified.reference)
+                .find(|name| !unqualified_references.contains(name))
+                .unwrap();
+            rename(engine, refactor, code, &qualified.reference, &new_name)?;
+            unqualified_references.remove(&qualified.reference);
+        }
         if references.contains(&qualified.reference) {
             refactor.add_change(
                 // The +1 makes it include the trailing dot between qualifier
@@ -868,6 +882,79 @@ fn remove_qualifier_from_references(
             );
         }
     }
+    Ok(())
+}
+
+struct NamesWithDigit<'a> {
+    base_reference: &'a Reference,
+    next_digit: usize,
+}
+
+impl<'a> Iterator for NamesWithDigit<'a> {
+    type Item = Reference;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut new_name = self.base_reference.name.clone();
+        new_name.append(Rope::from_str(self.next_digit.to_string().as_str()));
+        let next_ref = Reference {
+            name: new_name,
+            kind: self.base_reference.kind,
+        };
+        self.next_digit += 1;
+        Some(next_ref)
+    }
+}
+
+fn names_with_digit(reference: &Reference) -> NamesWithDigit {
+    NamesWithDigit {
+        base_reference: reference,
+        next_digit: 2,
+    }
+}
+
+#[cfg(test)]
+mod names_with_digit_tests {
+    use super::*;
+
+    #[test]
+    fn iterator_returns_values_with_increasing_trailing_digit() {
+        let base_reference = Reference {
+            name: Rope::from_str("hi"),
+            kind: ReferenceKind::Value,
+        };
+        let first_tree: Vec<Rope> = names_with_digit(&base_reference)
+            .map(|reference| reference.name)
+            .take(3)
+            .collect();
+        assert_eq!(first_tree, vec!["hi2", "hi3", "hi4"]);
+    }
+}
+
+fn rename(
+    engine: &RefactorEngine,
+    refactor: &mut Refactor,
+    code: &SourceFileSnapshot,
+    from: &Reference,
+    to: &Reference,
+) -> Result<(), Error> {
+    let mut cursor = QueryCursor::new();
+    engine
+        .query_for_unqualified_values
+        .run_in(&mut cursor, code, code.tree.root_node())
+        .filter_map(|r| {
+            r.ok().and_then(
+                |(node, reference)| {
+                    if &reference == from {
+                        Some(node)
+                    } else {
+                        None
+                    }
+                },
+            )
+        })
+        .for_each(|node| {
+            refactor.add_change(node.byte_range(), to.name.to_string())
+        });
     Ok(())
 }
 
@@ -1413,7 +1500,7 @@ struct QualifiedReference {
     reference: Reference,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Reference {
     name: Rope,
     kind: ReferenceKind,
@@ -1434,7 +1521,7 @@ impl std::hash::Hash for Reference {
 
 impl Eq for Reference {}
 
-#[derive(PartialEq, Clone, Copy, Hash)]
+#[derive(PartialEq, Clone, Copy, Debug, Hash)]
 enum ReferenceKind {
     Value,
     Type,
@@ -1456,6 +1543,9 @@ impl UnqualifiedValuesQuery {
         let query_str = r#"
             [ (value_qid
                 .
+                (lower_case_identifier) @value
+              )
+              (function_declaration_left
                 (lower_case_identifier) @value
               )
               (type_qid
