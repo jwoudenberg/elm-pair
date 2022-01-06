@@ -2,6 +2,6 @@
 layout: root.html
 ---
 
-## {{title}}
+## {{news.data.date | date: "%Y-%m-%d" }}: {{title}}
 
 {{content}}

@@ -14,7 +14,7 @@ Elm-pair is in early development. The short video below demonstrates current fun
 <h2 id="news">News</h2>
 
 {% for news in collections.news %}
-### {{news.data.title}}
+### {{news.data.date | date: "%Y-%m-%d" }}: {{news.data.title}}
 
 {{news.templateContent }}
 {% endfor %}
