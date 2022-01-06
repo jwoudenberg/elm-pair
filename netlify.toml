@@ -1,0 +1,4 @@
+[build]
+base = "elm-pair.jasperwoudenberg.com"
+command = "eleventy"
+publish = "_site"

@@ -36,6 +36,7 @@
         # Development
         devShell = pkgs.mkShell {
           buildInputs = [
+            pkgs.nodejs
             pkgs.libiconv
             pkgs.luaformatter
             pkgs.lua53Packages.luacheck
