@@ -1,5 +1,6 @@
 ---
 title: Release version 0.1.0
+layout: news.md
 tags:
   - news
 ---

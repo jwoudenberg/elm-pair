@@ -2,6 +2,7 @@
   "name": "elm-pair-site",
   "version": "1.0.0",
   "devDependencies": {
-    "@11ty/eleventy": "^0.12.1"
+    "@11ty/eleventy": "^0.12.1",
+    "@11ty/eleventy-plugin-rss": "^1.1.2"
   }
 }
