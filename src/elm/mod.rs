@@ -1545,6 +1545,9 @@ impl UnqualifiedValuesQuery {
                 .
                 (lower_case_identifier) @value
               )
+              (type_annotation
+                (lower_case_identifier) @value
+              )
               (function_declaration_left
                 (lower_case_identifier) @value
               )
@@ -2119,6 +2122,9 @@ mod tests {
     // conflict with an existing unqualified value with the same name.
     simulation_test!(
         add_value_to_exposing_list_with_same_name_as_local_variable
+    );
+    simulation_test!(
+        add_value_to_exposing_list_with_same_name_as_top_level_function
     );
     simulation_test!(
         remove_module_qualifier_from_variable_with_same_name_as_local_variable
