@@ -2025,6 +2025,20 @@ mod tests {
     simulation_test!(
         remove_exposing_all_clause_containing_operator_from_import
     );
+    // When removing a module qualifier it's possible to introduce a naming
+    // conflict with an existing unqualified value with the same name.
+    simulation_test!(
+        add_value_to_exposing_list_with_same_name_as_local_variable
+    );
+    simulation_test!(
+        remove_module_qualifier_from_variable_with_same_name_as_local_variable
+    );
+    simulation_test!(
+        expose_value_with_same_name_as_exposed_value_from_other_module
+    );
+    simulation_test!(
+        remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
+    );
 
     #[derive(Debug)]
     enum Error {
