@@ -5,7 +5,7 @@
     )+
     [
         (lower_case_identifier)  @value
-        (type_identifier)        @type
+        (type_identifier)        @type_
         (constructor_identifier) @constructor
     ]
 ) @root

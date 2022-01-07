@@ -16,10 +16,10 @@
         )
     )
     (type_alias_declaration
-        name: (type_identifier) @type
+        name: (type_identifier) @type_
     )
     (type_declaration
-        name: (type_identifier) @type
+        name: (type_identifier) @type_
         (union_variant
             name: (constructor_identifier) @constructor
         )

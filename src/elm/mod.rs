@@ -16,6 +16,7 @@ use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
 pub mod compiler;
 pub mod dependencies;
 pub mod idat;
+pub mod query;
 
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
@@ -1396,35 +1397,17 @@ fn add_qualifier_to_references(
     Ok(())
 }
 
-struct QueryForQualifiedValues {
-    query: Query,
-    root_index: u32,
-    qualifier_index: u32,
-    value_index: u32,
-    type_index: u32,
-    constructor_index: u32,
-}
+query::query!(
+    QueryForQualifiedValues,
+    "./queries/qualified_values",
+    root,
+    qualifier,
+    value,
+    type_,
+    constructor,
+);
 
 impl QueryForQualifiedValues {
-    fn init(lang: Language) -> Result<QueryForQualifiedValues, Error> {
-        let query_str = include_str!("./queries/qualified_values");
-        let query = Query::new(lang, query_str).map_err(|err| {
-            log::mk_err!(
-                "failed to parse tree-sitter QueryForQualifiedValues: {:?}",
-                err
-            )
-        })?;
-        let qualified_value_query = QueryForQualifiedValues {
-            root_index: index_for_name(&query, "root")?,
-            qualifier_index: index_for_name(&query, "qualifier")?,
-            value_index: index_for_name(&query, "value")?,
-            type_index: index_for_name(&query, "type")?,
-            constructor_index: index_for_name(&query, "constructor")?,
-            query,
-        };
-        Ok(qualified_value_query)
-    }
-
     fn run<'a, 'tree>(
         &'a self,
         cursor: &'a mut QueryCursor,
@@ -1471,10 +1454,10 @@ impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
         let mut root_node = None;
         let mut opt_name_capture = None;
         match_.captures.iter().for_each(|capture| {
-            if capture.index == self.query.root_index {
+            if capture.index == self.query.root {
                 root_node = Some(capture.node);
             }
-            if capture.index == self.query.qualifier_index {
+            if capture.index == self.query.qualifier {
                 match &qualifier_range {
                     None => qualifier_range = Some(capture.node.byte_range()),
                     Some(existing_range) => {
@@ -1496,9 +1479,9 @@ impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
         })?;
         let qualifier = self.code.slice(&qualifier_range);
         let kind = match name_capture.index {
-            index if index == self.query.value_index => ReferenceKind::Value,
-            index if index == self.query.type_index => ReferenceKind::Type,
-            index if index == self.query.constructor_index => {
+            index if index == self.query.value => ReferenceKind::Value,
+            index if index == self.query.type_ => ReferenceKind::Type,
+            index if index == self.query.constructor => {
                 ReferenceKind::Constructor
             }
             index => return Err(log::mk_err!(
@@ -1562,31 +1545,15 @@ enum ReferenceKind {
 
 impl Eq for ReferenceKind {}
 
-struct QueryForUnqualifiedValues {
-    query: Query,
-    value_index: u32,
-    type_index: u32,
-    constructor_index: u32,
-}
+query::query!(
+    QueryForUnqualifiedValues,
+    "./queries/unqualified_values",
+    value,
+    type_,
+    constructor,
+);
 
 impl QueryForUnqualifiedValues {
-    fn init(lang: Language) -> Result<QueryForUnqualifiedValues, Error> {
-        let query_str = include_str!("./queries/unqualified_values");
-        let query = Query::new(lang, query_str).map_err(|err| {
-            log::mk_err!(
-                "failed to parse tree-sitter QueryForUnqualifiedValues: {:?}",
-                err
-            )
-        })?;
-        let unqualified_values_query = QueryForUnqualifiedValues {
-            value_index: index_for_name(&query, "value")?,
-            type_index: index_for_name(&query, "type")?,
-            constructor_index: index_for_name(&query, "constructor")?,
-            query,
-        };
-        Ok(unqualified_values_query)
-    }
-
     fn run<'a, 'tree>(
         &'a self,
         cursor: &'a mut QueryCursor,
@@ -1623,9 +1590,9 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
         let match_ = self.matches.next()?;
         let capture = match_.captures.first()?;
         let kind = match capture.index {
-            index if index == self.query.value_index => ReferenceKind::Value,
-            index if index == self.query.type_index => ReferenceKind::Type,
-            index if index == self.query.constructor_index => {
+            index if index == self.query.value => ReferenceKind::Value,
+            index if index == self.query.type_ => ReferenceKind::Type,
+            index if index == self.query.constructor => {
                 ReferenceKind::Constructor
             }
             index => return Some(Err(log::mk_err!(
@@ -1642,33 +1609,16 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
     }
 }
 
-struct QueryForImports {
-    query: Query,
-    root_index: u32,
-    name_index: u32,
-    as_clause_index: u32,
-    exposing_list_index: u32,
-}
+query::query!(
+    QueryForImports,
+    "./queries/imports",
+    root,
+    name,
+    as_clause,
+    exposing_list
+);
 
 impl QueryForImports {
-    fn init(lang: Language) -> Result<QueryForImports, Error> {
-        let query_str = include_str!("./queries/imports");
-        let query = Query::new(lang, query_str).map_err(|err| {
-            log::mk_err!(
-                "failed to parse tree-sitter QueryForImports: {:?}",
-                err
-            )
-        })?;
-        let imports_query = QueryForImports {
-            root_index: index_for_name(&query, "root")?,
-            name_index: index_for_name(&query, "name")?,
-            as_clause_index: index_for_name(&query, "as_clause")?,
-            exposing_list_index: index_for_name(&query, "exposing_list")?,
-            query,
-        };
-        Ok(imports_query)
-    }
-
     fn run<'a, 'tree>(
         &'a self,
         cursor: &'a mut QueryCursor,
@@ -1708,10 +1658,10 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
         });
         Some(Import {
             code: self.code,
-            root_node: nodes[self.query.root_index as usize]?,
-            name_node: nodes[self.query.name_index as usize]?,
-            as_clause_node: nodes[self.query.as_clause_index as usize],
-            exposing_list_node: nodes[self.query.exposing_list_index as usize],
+            root_node: nodes[self.query.root as usize]?,
+            name_node: nodes[self.query.name as usize]?,
+            as_clause_node: nodes[self.query.as_clause as usize],
+            exposing_list_node: nodes[self.query.exposing_list as usize],
         })
     }
 }

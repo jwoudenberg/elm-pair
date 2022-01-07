@@ -201,35 +201,17 @@ fn parse_module(
     Ok(elm_module)
 }
 
-pub struct QueryForExports {
-    query: Query,
-    exposed_all_index: u32,
-    exposed_value_index: u32,
-    exposed_type_index: u32,
-    value_index: u32,
-    type_index: u32,
-}
+crate::elm::query::query!(
+    QueryForExports,
+    "./queries/exports",
+    exposed_all,
+    exposed_value,
+    exposed_type,
+    value,
+    type_,
+);
 
 impl QueryForExports {
-    pub(crate) fn init(lang: Language) -> Result<QueryForExports, Error> {
-        let query_str = include_str!("./queries/exports");
-        let query = Query::new(lang, query_str).map_err(|err| {
-            log::mk_err!(
-                "Failed to parse tree-sitter QueryForExports: {:?}",
-                err
-            )
-        })?;
-        let exports_query = QueryForExports {
-            exposed_all_index: index_for_name(&query, "exposed_all")?,
-            exposed_value_index: index_for_name(&query, "exposed_value")?,
-            exposed_type_index: index_for_name(&query, "exposed_type")?,
-            value_index: index_for_name(&query, "value")?,
-            type_index: index_for_name(&query, "type")?,
-            query,
-        };
-        Ok(exports_query)
-    }
-
     fn run(&self, tree: &Tree, code: &[u8]) -> Result<Vec<ElmExport>, Error> {
         let mut cursor = QueryCursor::new();
         let matches = cursor
@@ -244,12 +226,12 @@ impl QueryForExports {
         let mut exposed = ExposedList::Some(HashSet::new());
         let mut exports = Vec::new();
         for (capture, rest) in matches {
-            if self.exposed_all_index == capture.index {
+            if self.exposed_all == capture.index {
                 exposed = ExposedList::All;
-            } else if self.exposed_value_index == capture.index {
+            } else if self.exposed_value == capture.index {
                 let val = Exposed::Value(code_slice(code, &capture.node)?);
                 exposed = exposed.add(val);
-            } else if self.exposed_type_index == capture.index {
+            } else if self.exposed_type == capture.index {
                 let name_node = capture.node.child(0).ok_or_else(|| {
                     log::mk_err!(
                         "could not find name node of type in exposing list"
@@ -262,7 +244,7 @@ impl QueryForExports {
                     Exposed::Type(name)
                 };
                 exposed = exposed.add(val);
-            } else if self.value_index == capture.index {
+            } else if self.value == capture.index {
                 let name = code_slice(code, &capture.node)?;
                 if exposed.has(&Exposed::Value(name)) {
                     let export = ElmExport::Value {
@@ -270,7 +252,7 @@ impl QueryForExports {
                     };
                     exports.push(export);
                 }
-            } else if self.type_index == capture.index {
+            } else if self.type_ == capture.index {
                 let name = code_slice(code, &capture.node)?;
                 if exposed.has(&Exposed::TypeWithConstructors(name)) {
                     let constructors = rest

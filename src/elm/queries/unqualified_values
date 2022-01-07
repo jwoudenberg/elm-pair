@@ -11,7 +11,7 @@
     )
     (type_qid
         .
-        (type_identifier) @type
+        (type_identifier) @type_
     )
     (constructor_qid
         .
