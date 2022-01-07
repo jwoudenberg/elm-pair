@@ -782,15 +782,36 @@ fn remove_qualifier_from_references(
         .run_in(&mut cursor, code, code.tree.root_node())
         .filter_map(|r| {
             r.map(|(node, reference)| {
-                if Some(node.id()) == node_stripped_of_qualifier.map(|n| n.id()) {
-                    Some(reference)
+                if let Some(node_id) = node_stripped_of_qualifier.map(|n| n.id()) {
+                    if node.id() == node_id {
+                        None
+                    } else {
+                        Some(reference)
+                    }
                 } else {
-                    None
+                    Some(reference)
                 }
             })
             .transpose()
         })
         .collect::<Result<HashSet<Reference>, Error>>()?;
+
+    let mut names_exposed: HashSet<Reference> = HashSet::new();
+    let imports = engine.query_for_imports.run(&mut cursor, code);
+    let project_info = engine.buffer_project(code.buffer)?;
+    for import in imports {
+        if &import.aliased_name() == qualifier {
+            continue;
+        } else {
+            for res in import.exposing_list() {
+                let (_, exposed) = res?;
+                let module = get_elm_module(project_info, &import.unaliased_name())?;
+                exposed.for_each_reference(module, |reference| {
+                    names_exposed.insert(reference);
+                });
+            }
+        }
+    }
 
     let qualified_references =
         engine
@@ -798,6 +819,17 @@ fn remove_qualifier_from_references(
             .run_in(&mut cursor, code, code.tree.root_node());
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
+
+        // if another module is exposing a variable by this name, un-expose it
+        if names_exposed.contains(&qualified.reference) {
+            qualify_value(
+                engine,
+                refactor,
+                code,
+                &qualified.qualifier,
+                &qualified.reference,
+            )?;
+        }
 
         // If an unqualified variable with this name already exists, rename it
         if names_in_use.contains(&qualified.reference) {
@@ -989,10 +1021,21 @@ fn on_added_module_qualifier_to_value(
         .run_in(&mut cursor, &diff.new, new_parent)
         .next()
         .ok_or_else(|| log::mk_err!("parsing qualified value node using query failed"))??;
-    if old_reference.name != reference.name {
-        return Ok(());
+    if old_reference.name == reference.name {
+        qualify_value(engine, refactor, &diff.new, &qualifier, &reference)
+    } else {
+        Ok(())
     }
-    let import = get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
+}
+
+fn qualify_value(
+    engine: &RefactorEngine,
+    refactor: &mut Refactor,
+    code: &SourceFileSnapshot,
+    qualifier: &Rope,
+    reference: &Reference,
+) -> Result<(), Error> {
+    let import = get_import_by_aliased_name(engine, code, &qualifier.slice(..))?;
 
     let exposing_list_length = import.exposing_list().count();
     let mut references_to_qualify = HashSet::new();
@@ -1080,7 +1123,7 @@ fn on_added_module_qualifier_to_value(
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
                         let exports =
-                            match engine.module_exports(diff.new.buffer, import.unaliased_name()) {
+                            match engine.module_exports(code.buffer, import.unaliased_name()) {
                                 Ok(exports_) => exports_,
                                 Err(err) => {
                                     log::error!(
@@ -1116,7 +1159,7 @@ fn on_added_module_qualifier_to_value(
         engine,
         refactor,
         &mut QueryCursor::new(),
-        &diff.new,
+        code,
         &import,
         references_to_qualify,
     )?;
@@ -1892,6 +1935,13 @@ mod simulations {
     simulation_test!(add_and_remove_items_in_exposing_list);
     simulation_test!(replace_exposing_list_with_double_dot);
     simulation_test!(replace_double_dot_with_exposing_list);
+    simulation_test!(add_value_to_exposing_list_with_same_name_as_local_variable);
+    simulation_test!(add_value_to_exposing_list_with_same_name_as_top_level_function);
+    simulation_test!(remove_module_qualifier_from_variable_with_same_name_as_local_variable);
+    simulation_test!(expose_value_with_same_name_as_exposed_value_from_other_module);
+    simulation_test!(
+        remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
+    );
 
     // Changing as-clauses
     simulation_test!(add_as_clause_to_import);
@@ -1918,19 +1968,6 @@ mod simulations {
     // Potential fix: Add the exposing list back containing just the operator.
     simulation_test!(remove_exposing_clause_containing_operator_from_import);
     simulation_test!(remove_exposing_all_clause_containing_operator_from_import);
-    // When removing a module qualifier it's possible to introduce a naming
-    // conflict with an existing unqualified value with the same name.
-    simulation_test!(add_value_to_exposing_list_with_same_name_as_local_variable);
-    simulation_test!(add_value_to_exposing_list_with_same_name_as_top_level_function);
-    // simulation_test!(
-    //     remove_module_qualifier_from_variable_with_same_name_as_local_variable
-    // );
-    // simulation_test!(
-    //     expose_value_with_same_name_as_exposed_value_from_other_module
-    // );
-    // simulation_test!(
-    //     remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
-    // );
 
     #[derive(Debug)]
     enum Error {
