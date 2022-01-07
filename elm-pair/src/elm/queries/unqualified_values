@@ -9,6 +9,9 @@
     (function_declaration_left
         (lower_case_identifier) @value
     )
+    (lower_pattern
+        (lower_case_identifier) @value
+    )
     (type_alias_declaration
         (type_identifier) @type_
     )
@@ -46,6 +49,14 @@ type BeverageKind
     | Water
 
 
+enjoyment : Beverage -> Float
+enjoyment =
+    \beverage ->
+        case beverage.kind of
+            HotChocolate -> liters * 1000
+            Water -> 100
+
+
 decoder : BeverageKind -> Decoder Beverage
 decoder kind =
     let
@@ -54,6 +65,7 @@ decoder kind =
     Json.Decode.map2 Beverage
         (Json.Decode.field "kind" kindDecoder)
         (Json.Decode.field "liters" float)
+
 -- === expected output below ===
 -- type_: [7:11] Beverage
 --
@@ -67,25 +79,45 @@ decoder kind =
 --
 -- constructor: [15:6] Water
 --
--- value: [18:0] decoder
+-- value: [18:0] enjoyment
 --
--- type_: [18:10] BeverageKind
+-- type_: [18:12] Beverage
 --
--- type_: [18:26] Decoder
+-- type_: [18:24] Float
 --
--- type_: [18:34] Beverage
+-- value: [19:0] enjoyment
 --
--- value: [19:0] decoder
+-- value: [20:5] beverage
 --
--- value: [21:8] kindDecoder
+-- value: [21:13] beverage
 --
--- value: [21:22] succeed
+-- constructor: [22:12] HotChocolate
 --
--- value: [21:30] kind
+-- value: [22:28] liters
 --
--- constructor: [23:21] Beverage
+-- constructor: [23:12] Water
 --
--- value: [24:34] kindDecoder
+-- value: [26:0] decoder
 --
--- value: [25:36] float
+-- type_: [26:10] BeverageKind
+--
+-- type_: [26:26] Decoder
+--
+-- type_: [26:34] Beverage
+--
+-- value: [27:0] decoder
+--
+-- value: [27:8] kind
+--
+-- value: [29:8] kindDecoder
+--
+-- value: [29:22] succeed
+--
+-- value: [29:30] kind
+--
+-- constructor: [31:21] Beverage
+--
+-- value: [32:34] kindDecoder
+--
+-- value: [33:36] float
 --
