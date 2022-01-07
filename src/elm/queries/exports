@@ -31,3 +31,22 @@
         )*
     )
 ]
+
+=== test input below ===
+
+module Main exposing (..)
+
+import Json.Decode exposing (Decoder, int)
+
+
+sumDecoder : Decoder Int
+sumDecoder =
+    Json.Decode.map2 (+)
+        (Json.Decode.field "x" int)
+        (Json.Decode.field "y" int)
+
+-- === expected output below ===
+-- exposed_all: {Node double_dot (2, 22) - (2, 24)}
+-- 
+-- value: {Node lower_case_identifier (8, 0) - (8, 10)}
+-- 

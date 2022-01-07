@@ -40,7 +40,7 @@ const TYPE_QID: u16 = 97;
 const VALUE_QID: u16 = 98;
 
 #[cfg(test)]
-mod kind_constant_tests {
+mod kind_constants {
     #[test]
     fn check_kind_constants() {
         let language = tree_sitter_elm::language();
@@ -954,7 +954,7 @@ fn names_with_digit(reference: &Reference) -> NamesWithDigit {
 }
 
 #[cfg(test)]
-mod names_with_digit_tests {
+mod names_with_digit {
     use super::*;
 
     #[test]
@@ -1399,6 +1399,7 @@ fn add_qualifier_to_references(
 
 query::query!(
     QueryForQualifiedValues,
+    query_for_qualified_values,
     "./queries/qualified_values",
     root,
     qualifier,
@@ -1547,6 +1548,7 @@ impl Eq for ReferenceKind {}
 
 query::query!(
     QueryForUnqualifiedValues,
+    query_for_unqualified_values,
     "./queries/unqualified_values",
     value,
     type_,
@@ -1611,6 +1613,7 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
 
 query::query!(
     QueryForImports,
+    query_for_imports,
     "./queries/imports",
     root,
     name,
@@ -1942,7 +1945,7 @@ fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
 }
 
 #[cfg(test)]
-mod tests {
+mod simulations {
     use crate::analysis_thread::{diff_trees, SourceFileDiff};
     use crate::elm::RefactorEngine;
     use crate::support::source_code::Buffer;

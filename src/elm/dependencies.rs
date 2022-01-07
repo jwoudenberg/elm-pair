@@ -203,6 +203,7 @@ fn parse_module(
 
 crate::elm::query::query!(
     QueryForExports,
+    query_for_exports,
     "./queries/exports",
     exposed_all,
     exposed_value,
