@@ -40,10 +40,10 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
             if actual_output.trim_end() != expected_output.trim_end() {
                 eprintln!("Actual output does not match expected");
                 eprintln!();
-                eprintln!("--- actual ----");
+                eprintln!("[actual]");
                 eprintln!("{}", actual_output);
                 eprintln!();
-                eprintln!("--- expected ----");
+                eprintln!("[expected]");
                 eprintln!("{}", expected_output);
                 eprintln!();
                 panic!()

@@ -31,6 +31,9 @@ pub enum ElmExport {
         name: String,
         constructors: Vec<String>,
     },
+    TypeAlias {
+        name: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -68,9 +71,8 @@ pub(crate) fn load_dependencies(
 }
 
 fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
-    let file = std::fs::File::open(path).map_err(|err| {
-        log::mk_err!("error while reading elm.json: {:?}", err)
-    })?;
+    let file = std::fs::File::open(path)
+        .map_err(|err| log::mk_err!("error while reading elm.json: {:?}", err))?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
         .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
@@ -136,24 +138,25 @@ fn find_project_modules_in_dir(
     });
     for path in valid_paths {
         if path.is_dir() {
-            find_project_modules_in_dir(
-                query_for_exports,
-                &path,
-                source_dir,
-                modules,
-            );
+            find_project_modules_in_dir(query_for_exports, &path, source_dir, modules);
         } else if path.extension() == Some(std::ffi::OsStr::new("elm")) {
             let module_name = match module_name_from_path(source_dir, &path) {
                 Ok(name) => name,
                 Err(err) => {
-                    log::error!("I've skipped scanning a source path because I encountered an error: {:?}", err);
+                    log::error!(
+                        "I've skipped scanning a source path because I encountered an error: {:?}",
+                        err
+                    );
                     continue;
                 }
             };
             let elm_module = match parse_module(query_for_exports, &path) {
                 Ok(module) => module,
                 Err(err) => {
-                    log::error!("I've skipped scanning a source path because I encountered an error: {:?}", err);
+                    log::error!(
+                        "I've skipped scanning a source path because I encountered an error: {:?}",
+                        err
+                    );
                     continue;
                 }
             };
@@ -162,15 +165,17 @@ fn find_project_modules_in_dir(
     }
 }
 
-fn module_name_from_path(
-    source_dir: &Path,
-    path: &Path,
-) -> Result<String, Error> {
+fn module_name_from_path(source_dir: &Path, path: &Path) -> Result<String, Error> {
     path.with_extension("")
         .strip_prefix(source_dir)
-        .map_err(|err|
-            log::mk_err!("error stripping source directory {:?} from elm module path {:?}: {:?}", path, source_dir, err)
-        )?
+        .map_err(|err| {
+            log::mk_err!(
+                "error stripping source directory {:?} from elm module path {:?}: {:?}",
+                path,
+                source_dir,
+                err
+            )
+        })?
         .components()
         .filter_map(|component| {
             if let std::path::Component::Normal(os_str) = component {
@@ -181,15 +186,15 @@ fn module_name_from_path(
         })
         .my_intersperse(Ok("."))
         .collect::<Result<String, &std::ffi::OsStr>>()
-        .map_err(|os_str|
-            log::mk_err!("directory segment of Elm module used in module name is not valid UTF8: {:?}", os_str)
-        )
+        .map_err(|os_str| {
+            log::mk_err!(
+                "directory segment of Elm module used in module name is not valid UTF8: {:?}",
+                os_str
+            )
+        })
 }
 
-fn parse_module(
-    query_for_exports: &QueryForExports,
-    path: &Path,
-) -> Result<ElmModule, Error> {
+fn parse_module(query_for_exports: &QueryForExports, path: &Path) -> Result<ElmModule, Error> {
     let mut file = std::fs::File::open(path)
         .map_err(|err| log::mk_err!("failed to open module file: {:?}", err))?;
     let mut bytes = Vec::new();
@@ -210,6 +215,7 @@ crate::elm::query::query!(
     exposed_type,
     value,
     type_,
+    type_alias,
 );
 
 impl QueryForExports {
@@ -234,9 +240,7 @@ impl QueryForExports {
                 exposed = exposed.add(val);
             } else if self.exposed_type == capture.index {
                 let name_node = capture.node.child(0).ok_or_else(|| {
-                    log::mk_err!(
-                        "could not find name node of type in exposing list"
-                    )
+                    log::mk_err!("could not find name node of type in exposing list")
                 })?;
                 let name = code_slice(code, &name_node)?;
                 let val = if capture.node.child(1).is_some() {
@@ -253,14 +257,21 @@ impl QueryForExports {
                     };
                     exports.push(export);
                 }
+            } else if self.type_alias == capture.index {
+                let name = code_slice(code, &capture.node)?;
+                if exposed.has(&Exposed::Type(name)) {
+                    let export = ElmExport::TypeAlias {
+                        name: name.to_owned(),
+                    };
+                    exports.push(export);
+                }
             } else if self.type_ == capture.index {
                 let name = code_slice(code, &capture.node)?;
                 if exposed.has(&Exposed::TypeWithConstructors(name)) {
                     let constructors = rest
                         .iter()
                         .map(|ctor_capture| {
-                            code_slice(code, &ctor_capture.node)
-                                .map(std::borrow::ToOwned::to_owned)
+                            code_slice(code, &ctor_capture.node).map(std::borrow::ToOwned::to_owned)
                         })
                         .collect::<Result<Vec<String>, Error>>()?;
                     let export = ElmExport::Type {
@@ -378,16 +389,12 @@ where
     }
 }
 
-fn from_idat(
-    project_root: &Path,
-    path: &Path,
-) -> Result<HashMap<String, ElmModule>, Error> {
+fn from_idat(project_root: &Path, path: &Path) -> Result<HashMap<String, ElmModule>, Error> {
     let file = std::fs::File::open(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             create_elm_stuff(project_root)?;
-            std::fs::File::open(path).map_err(|err| {
-                log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
-            })
+            std::fs::File::open(path)
+                .map_err(|err| log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err))
         } else {
             Err(log::mk_err!(
                 "error opening elm-stuff/i.dat file: {:?}",
@@ -396,14 +403,13 @@ fn from_idat(
         }
     })?;
     let reader = BufReader::new(file);
-    let iter =
-        idat::parse(reader)?
-            .into_iter()
-            .filter_map(|(canonical_name, i)| {
-                let idat::Name(name) = canonical_name.module;
-                let module = elm_module_from_interface(i)?;
-                Some((name, module))
-            });
+    let iter = idat::parse(reader)?
+        .into_iter()
+        .filter_map(|(canonical_name, i)| {
+            let idat::Name(name) = canonical_name.module;
+            let module = elm_module_from_interface(i)?;
+            Some((name, module))
+        });
     Ok(HashMap::from_iter(iter))
 }
 
@@ -434,9 +440,7 @@ fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
     }
 }
 
-fn elm_module_from_interface(
-    dep_i: idat::DependencyInterface,
-) -> Option<ElmModule> {
+fn elm_module_from_interface(dep_i: idat::DependencyInterface) -> Option<ElmModule> {
     if let idat::DependencyInterface::Public(interface) = dep_i {
         // TODO: add binops
         let values = interface.values.into_iter().map(elm_export_from_value);
@@ -455,9 +459,7 @@ fn elm_export_from_value(
     ElmExport::Value { name }
 }
 
-fn elm_export_from_union(
-    (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ElmExport {
+fn elm_export_from_union((idat::Name(name), union): (idat::Name, idat::Union)) -> ElmExport {
     let constructor_names = |canonical_union: idat::CanonicalUnion| {
         let iter = canonical_union
             .alts
@@ -466,9 +468,7 @@ fn elm_export_from_union(
         Vec::from_iter(iter)
     };
     let constructors = match union {
-        idat::Union::Open(canonical_union) => {
-            constructor_names(canonical_union)
-        }
+        idat::Union::Open(canonical_union) => constructor_names(canonical_union),
         // We're reading this information for use by other modules.
         // These external modules can't see private constructors,
         // so we don't need to return them here.
@@ -478,9 +478,7 @@ fn elm_export_from_union(
     ElmExport::Type { name, constructors }
 }
 
-fn elm_export_from_alias(
-    (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ElmExport {
+fn elm_export_from_alias((idat::Name(name), _): (idat::Name, idat::Alias)) -> ElmExport {
     ElmExport::Type {
         name,
         constructors: Vec::new(),
@@ -489,9 +487,7 @@ fn elm_export_from_alias(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::dependencies::{
-        parse_module, ElmModule, Intersperse, QueryForExports,
-    };
+    use crate::elm::dependencies::{parse_module, ElmModule, Intersperse, QueryForExports};
     use crate::support::log::Error;
     use crate::test_support::included_answer_test as ia_test;
     use std::path::Path;

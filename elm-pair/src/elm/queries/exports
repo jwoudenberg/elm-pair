@@ -16,7 +16,7 @@
         )
     )
     (type_alias_declaration
-        name: (type_identifier) @type_
+        name: (type_identifier) @type_alias
     )
     (type_declaration
         name: (type_identifier) @type_
@@ -36,17 +36,23 @@
 
 module Main exposing (..)
 
-import Json.Decode exposing (Decoder, int)
+import Json.Decode exposing (Temperature(..), number)
 
+type Temperature = Room | Body
 
-sumDecoder : Decoder Int
-sumDecoder =
-    Json.Decode.map2 (+)
-        (Json.Decode.field "x" int)
-        (Json.Decode.field "y" int)
+type alias Id = Int
+
+number : Int
+number = 4
 
 -- === expected output below ===
 -- exposed_all: [2:22] ..
 --
--- value: [8:0] sumDecoder
+-- type_: [6:5] Temperature
+-- constructor: [6:19] Room
+-- constructor: [6:26] Body
+--
+-- type_alias: [8:11] Id
+--
+-- value: [11:0] number
 --

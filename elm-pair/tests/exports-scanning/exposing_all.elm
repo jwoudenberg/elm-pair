@@ -19,5 +19,5 @@ hindsight =
 
 -- === expected output below ===
 -- Type { name: "Clock", constructors: ["Watch", "Alarm", "Grandfather"] }
--- Type { name: "WholeNumber", constructors: [] }
+-- TypeAlias { name: "WholeNumber" }
 -- Value { name: "hindsight" }

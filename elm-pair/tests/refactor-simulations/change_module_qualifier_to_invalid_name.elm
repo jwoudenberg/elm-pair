@@ -17,4 +17,14 @@ sumDecoder =
 -- INSERT Invalid.Alias
 -- END SIMULATION
 -- === expected output below ===
--- Refactor produced invalid code.
+-- Refactor produced invalid code:
+-- module Main exposing (..)
+--
+-- import Json.Decode as Invalid.Alias exposing (int)
+--
+--
+-- sumDecoder : Invalid.Alias.Decoder Int
+-- sumDecoder =
+--     Invalid.Alias.map2 (+)
+--         (Invalid.Alias.field "x" int)
+--         (Invalid.Alias.field "y" int)

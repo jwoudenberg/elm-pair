@@ -274,27 +274,6 @@ impl RefactorEngine {
         Ok(refactor)
     }
 
-    pub(crate) fn constructors_for_type<'a, 'b>(
-        &'a self,
-        buffer: Buffer,
-        module_name: RopeSlice<'b>,
-        type_name: RopeSlice<'b>,
-    ) -> Result<&'a Vec<String>, Error> {
-        self.module_exports(buffer, module_name)?
-            .iter()
-            .find_map(|export| match export {
-                ElmExport::Value { .. } => None,
-                ElmExport::Type { name, constructors } => {
-                    if type_name.eq(name) {
-                        Some(constructors)
-                    } else {
-                        None
-                    }
-                }
-            })
-            .ok_or_else(|| log::mk_err!("did not find type in module"))
-    }
-
     pub(crate) fn module_exports(
         &self,
         buffer: Buffer,
@@ -694,11 +673,21 @@ fn on_removed_constructors_from_exposing_list(
         let (_, exposed) = result?;
         if let Exposed::Type(type_) = exposed {
             if type_.name == type_name {
-                for ctor in type_.constructors(engine)? {
-                    references_to_qualify.insert(Reference {
-                        name: Rope::from_str(ctor),
-                        kind: ReferenceKind::Constructor,
-                    });
+                match type_.constructors(engine)? {
+                    ExposedConstructors::FromTypeAlias(ctor) => {
+                        references_to_qualify.insert(Reference {
+                            name: Rope::from_str(ctor),
+                            kind: ReferenceKind::Constructor,
+                        });
+                    }
+                    ExposedConstructors::FromCustomType(ctors) => {
+                        for ctor in ctors {
+                            references_to_qualify.insert(Reference {
+                                name: Rope::from_str(ctor),
+                                kind: ReferenceKind::Constructor,
+                            });
+                        }
+                    }
                 }
                 break;
             }
@@ -825,6 +814,32 @@ fn on_removed_module_qualifier_from_value(
         for export in module.exports.iter() {
             match export {
                 ElmExport::Value { .. } => {}
+                ElmExport::TypeAlias { name } => {
+                    // We're dealing here with a type alias being used as a
+                    // constructor. For example, given a type alias like:
+                    //
+                    //     type alias Point = { x : Int, y : Int }
+                    //
+                    // constructor usage would be doing this:
+                    //
+                    //     point = Point 7 2
+                    if name == &reference.name.to_string() {
+                        references_to_unqualify.insert(Reference {
+                            kind: ReferenceKind::Constructor,
+                            name: Rope::from_str(name),
+                        });
+                        add_to_exposing_list(
+                            &import,
+                            &Reference {
+                                kind: ReferenceKind::Type,
+                                name: reference.name,
+                            },
+                            None,
+                            refactor,
+                        )?;
+                        break;
+                    }
+                }
                 ElmExport::Type { name, constructors } => {
                     if constructors.contains(&reference.name.to_string()) {
                         for ctor in constructors.iter() {
@@ -1177,33 +1192,55 @@ fn qualify_value(
                         name: type_.name.into(),
                         kind: ReferenceKind::Type,
                     });
-                    break;
                 }
 
-                let constructors = type_.constructors(engine)?;
-                if constructors.clone().any(|ctor| *ctor == reference.name)
-                    && reference.kind == ReferenceKind::Constructor
-                {
-                    // Remove `(..)` behind type from constructor this.
-                    let exposing_ctors_node = node.child(1).ok_or_else(|| {
+                match type_.constructors(engine)? {
+                    ExposedConstructors::FromTypeAlias(ctor) => {
+                        if ctor == &reference.name {
+                            // Ensure we don't remove the item from the exposing
+                            // list twice (see code above).
+                            // TODO: Clean this up.
+                            if reference.kind != ReferenceKind::Type {
+                                if exposing_list_length == 1 {
+                                    remove_exposing_list(refactor, &import);
+                                } else {
+                                    remove_from_exposing_list(refactor, &node)?;
+                                }
+                            }
+                            references_to_qualify.insert(Reference {
+                                name: Rope::from_str(ctor),
+                                kind: ReferenceKind::Type,
+                            });
+                            references_to_qualify.insert(Reference {
+                                name: Rope::from_str(ctor),
+                                kind: ReferenceKind::Constructor,
+                            });
+                        }
+                    }
+                    ExposedConstructors::FromCustomType(ctors) => {
+                        if ctors.iter().any(|ctor| *ctor == reference.name) {
+                            // Remove `(..)` behind type from constructor this.
+                            let exposing_ctors_node = node.child(1).ok_or_else(|| {
                         log::mk_err!("could not find `(..)` node behind exposed type")
                     })?;
-                    refactor.add_change(
-                        exposing_ctors_node.byte_range(),
-                        String::new(),
-                    );
+                            refactor.add_change(
+                                exposing_ctors_node.byte_range(),
+                                String::new(),
+                            );
 
-                    // We're qualifying a constructor. In Elm you can only
-                    // expose either all constructors of a type or none of them,
-                    // so if the programmer qualifies one constructor assume
-                    // intend to do them all.
-                    let constructor_references =
-                        constructors.map(|ctor| Reference {
-                            name: Rope::from_str(ctor),
-                            kind: ReferenceKind::Constructor,
-                        });
-                    references_to_qualify.extend(constructor_references);
-                    break;
+                            // We're qualifying a constructor. In Elm you can only
+                            // expose either all constructors of a type or none of them,
+                            // so if the programmer qualifies one constructor assume
+                            // intend to do them all.
+                            let constructor_references =
+                                ctors.iter().map(|ctor| Reference {
+                                    name: Rope::from_str(ctor),
+                                    kind: ReferenceKind::Constructor,
+                                });
+                            references_to_qualify
+                                .extend(constructor_references);
+                        }
+                    }
                 }
             }
             Exposed::Value(val) => {
@@ -1262,6 +1299,7 @@ fn qualify_value(
                         for export in exports {
                             match export {
                                 ElmExport::Value { .. } => {}
+                                ElmExport::TypeAlias { .. } => {}
                                 ElmExport::Type { constructors, .. } => {
                                     if constructors
                                         .iter()
@@ -1840,21 +1878,27 @@ impl<'a> Exposed<'a> {
                     kind: ReferenceKind::Type,
                     name: type_.name.into(),
                 });
-                if type_.exposing_constructors {
-                    import.exports.iter().for_each(|export| match export {
-                        ElmExport::Value { .. } => {}
-                        ElmExport::Type { name, constructors } => {
-                            if name == &type_.name {
-                                for ctor in constructors.iter() {
-                                    f(Reference {
-                                        kind: ReferenceKind::Constructor,
-                                        name: Rope::from_str(ctor),
-                                    })
-                                }
+                import.exports.iter().for_each(|export| match export {
+                    ElmExport::Value { .. } => {}
+                    ElmExport::TypeAlias { name } => {
+                        if name == &type_.name {
+                            f(Reference {
+                                kind: ReferenceKind::Constructor,
+                                name: Rope::from_str(name),
+                            });
+                        }
+                    }
+                    ElmExport::Type { name, constructors } => {
+                        if type_.exposing_constructors && name == &type_.name {
+                            for ctor in constructors.iter() {
+                                f(Reference {
+                                    kind: ReferenceKind::Constructor,
+                                    name: Rope::from_str(ctor),
+                                })
                             }
                         }
-                    });
-                }
+                    }
+                });
             }
             Exposed::All => {
                 import.exports.iter().for_each(|export| match export {
@@ -1862,6 +1906,16 @@ impl<'a> Exposed<'a> {
                         kind: ReferenceKind::Value,
                         name: Rope::from_str(name),
                     }),
+                    ElmExport::TypeAlias { name } => {
+                        f(Reference {
+                            kind: ReferenceKind::Value,
+                            name: Rope::from_str(name),
+                        });
+                        f(Reference {
+                            kind: ReferenceKind::Type,
+                            name: Rope::from_str(name),
+                        });
+                    }
                     ElmExport::Type { name, constructors } => {
                         f(Reference {
                             kind: ReferenceKind::Type,
@@ -1906,40 +1960,30 @@ impl ExposedType<'_> {
     fn constructors<'a>(
         &'a self,
         engine: &'a RefactorEngine,
-    ) -> Result<ExposedTypeConstructors, Error> {
-        if !self.exposing_constructors {
-            return Ok(ExposedTypeConstructors::None);
+    ) -> Result<ExposedConstructors, Error> {
+        for export in engine.module_exports(self.buffer, self.module_name)? {
+            match export {
+                ElmExport::Value { .. } => {}
+                ElmExport::TypeAlias { name } => {
+                    return Ok(ExposedConstructors::FromTypeAlias(name));
+                }
+                ElmExport::Type { name, constructors } => {
+                    if self.name.eq(name) {
+                        return Ok(ExposedConstructors::FromCustomType(
+                            constructors,
+                        ));
+                    }
+                }
+            }
         }
-        let names = engine.constructors_for_type(
-            self.buffer,
-            self.module_name,
-            self.name,
-        )?;
-        Ok(ExposedTypeConstructors::All { names })
+        Err(log::mk_err!("did not find type in module"))
     }
 }
 
 #[derive(Clone)]
-enum ExposedTypeConstructors<'a> {
-    None,
-    All { names: &'a [String] },
-}
-
-impl<'a> Iterator for ExposedTypeConstructors<'a> {
-    type Item = &'a String;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            ExposedTypeConstructors::None => None,
-            ExposedTypeConstructors::All { names } => match names {
-                [] => None,
-                [head, tail @ ..] => {
-                    *names = tail;
-                    Some(head)
-                }
-            },
-        }
-    }
+enum ExposedConstructors<'a> {
+    FromTypeAlias(&'a String),
+    FromCustomType(&'a Vec<String>),
 }
 
 pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
@@ -2050,7 +2094,10 @@ mod simulations {
         if edits.is_empty() || diff.old.bytes == diff.new.bytes {
             Ok("No refactor for this change.".to_owned())
         } else if diff.new.tree.root_node().has_error() {
-            Ok("Refactor produced invalid code.".to_owned())
+            Ok(format!(
+                "Refactor produced invalid code:\n{}",
+                diff.new.bytes.to_string()
+            ))
         } else {
             Ok(diff.new.bytes.to_string())
         }
@@ -2066,6 +2113,8 @@ mod simulations {
     simulation_test!(add_module_qualifier_to_type_with_same_name);
     simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
     simulation_test!(add_module_qualifier_to_variable);
+    simulation_test!(add_module_qualifier_to_type_alias_in_type_declaration);
+    simulation_test!(add_module_qualifier_to_type_alias_used_as_constructor);
     simulation_test!(remove_constructor_from_exposing_list_of_import);
     simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_all_clause_from_local_import);
@@ -2076,6 +2125,8 @@ mod simulations {
     simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
     simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
     simulation_test!(remove_variable_from_exposing_list_of_import);
+    simulation_test!(remove_type_alias_from_exposing_list_of_import);
+    simulation_test!(add_type_alias_to_exposing_list_of_import);
 
     // Removing module qualifiers from values
     simulation_test!(remove_module_qualifier_from_variable);
@@ -2088,6 +2139,9 @@ mod simulations {
     simulation_test!(remove_module_qualifier_from_constructor);
     simulation_test!(remove_module_qualifier_from_exposed_constructor);
     simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
+    simulation_test!(
+        remove_module_qualifier_from_record_type_alias_used_as_function
+    );
     simulation_test!(add_value_to_exposing_list);
     simulation_test!(add_type_to_exposing_list);
     simulation_test!(add_constructors_for_type_to_exposing_list);
@@ -2109,7 +2163,8 @@ mod simulations {
     simulation_test!(
         expose_value_with_same_name_as_exposed_value_from_other_module
     );
-    simulation_test!(remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
+    simulation_test!(
+        remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
     );
     simulation_test!(
         remove_module_qualifier_from_type_with_same_name_as_local_type_alias
@@ -2117,9 +2172,7 @@ mod simulations {
     simulation_test!(
         remove_module_qualifier_from_type_with_same_name_as_local_type
     );
-    simulation_test!(
-        remove_module_qualifier_from_constructor_with_same_name_as_local_constructor
-    );
+    simulation_test!(remove_module_qualifier_from_constructor_with_same_name_as_local_constructor);
 
     // Changing as-clauses
     simulation_test!(add_as_clause_to_import);
