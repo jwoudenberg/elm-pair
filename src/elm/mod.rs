@@ -1,7 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::dependencies::{
-    index_for_name, load_dependencies, ElmExport, ElmModule, ExportsQuery,
-    ProjectInfo,
+    index_for_name, load_dependencies, ElmExport, ElmModule, ProjectInfo,
+    QueryForExports,
 };
 use crate::support::log;
 use crate::support::log::Error;
@@ -83,10 +83,10 @@ const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
 pub(crate) struct RefactorEngine {
     buffers: HashMap<Buffer, BufferInfo>,
     projects: HashMap<PathBuf, ProjectInfo>,
-    query_for_imports: ImportsQuery,
-    query_for_unqualified_values: UnqualifiedValuesQuery,
-    query_for_qualified_values: QualifiedValuesQuery,
-    query_for_exports: ExportsQuery,
+    query_for_imports: QueryForImports,
+    query_for_unqualified_values: QueryForUnqualifiedValues,
+    query_for_qualified_values: QueryForQualifiedValues,
+    query_for_exports: QueryForExports,
 }
 
 pub struct BufferInfo {
@@ -139,12 +139,14 @@ impl RefactorEngine {
         let engine = RefactorEngine {
             buffers: HashMap::new(),
             projects: HashMap::new(),
-            query_for_imports: ImportsQuery::init(language)?,
-            query_for_unqualified_values: UnqualifiedValuesQuery::init(
+            query_for_imports: QueryForImports::init(language)?,
+            query_for_unqualified_values: QueryForUnqualifiedValues::init(
                 language,
             )?,
-            query_for_qualified_values: QualifiedValuesQuery::init(language)?,
-            query_for_exports: ExportsQuery::init(language)?,
+            query_for_qualified_values: QueryForQualifiedValues::init(
+                language,
+            )?,
+            query_for_exports: QueryForExports::init(language)?,
         };
 
         Ok(engine)
@@ -392,7 +394,7 @@ fn is_project_source_file(project_info: &ProjectInfo, path: &Path) -> bool {
 }
 
 fn get_project_info<W>(
-    query_for_exports: &ExportsQuery,
+    query_for_exports: &QueryForExports,
     project_root: &Path,
     watch_path: &mut W,
 ) -> Result<ProjectInfo, Error>
@@ -1394,7 +1396,7 @@ fn add_qualifier_to_references(
     Ok(())
 }
 
-struct QualifiedValuesQuery {
+struct QueryForQualifiedValues {
     query: Query,
     root_index: u32,
     qualifier_index: u32,
@@ -1403,8 +1405,8 @@ struct QualifiedValuesQuery {
     constructor_index: u32,
 }
 
-impl QualifiedValuesQuery {
-    fn init(lang: Language) -> Result<QualifiedValuesQuery, Error> {
+impl QueryForQualifiedValues {
+    fn init(lang: Language) -> Result<QueryForQualifiedValues, Error> {
         let query_str = r#"
             (_
               (
@@ -1420,11 +1422,11 @@ impl QualifiedValuesQuery {
             "#;
         let query = Query::new(lang, query_str).map_err(|err| {
             log::mk_err!(
-                "failed to parse tree-sitter QualifiedValuesQuery: {:?}",
+                "failed to parse tree-sitter QueryForQualifiedValues: {:?}",
                 err
             )
         })?;
-        let qualified_value_query = QualifiedValuesQuery {
+        let qualified_value_query = QueryForQualifiedValues {
             root_index: index_for_name(&query, "root")?,
             qualifier_index: index_for_name(&query, "qualifier")?,
             value_index: index_for_name(&query, "value")?,
@@ -1458,7 +1460,7 @@ impl QualifiedValuesQuery {
 }
 
 struct QualifiedReferences<'a, 'tree> {
-    query: &'a QualifiedValuesQuery,
+    query: &'a QueryForQualifiedValues,
     code: &'tree SourceFileSnapshot,
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
 }
@@ -1572,15 +1574,15 @@ enum ReferenceKind {
 
 impl Eq for ReferenceKind {}
 
-struct UnqualifiedValuesQuery {
+struct QueryForUnqualifiedValues {
     query: Query,
     value_index: u32,
     type_index: u32,
     constructor_index: u32,
 }
 
-impl UnqualifiedValuesQuery {
-    fn init(lang: Language) -> Result<UnqualifiedValuesQuery, Error> {
+impl QueryForUnqualifiedValues {
+    fn init(lang: Language) -> Result<QueryForUnqualifiedValues, Error> {
         let query_str = r#"
             [ (value_qid
                 .
@@ -1603,11 +1605,11 @@ impl UnqualifiedValuesQuery {
             ]"#;
         let query = Query::new(lang, query_str).map_err(|err| {
             log::mk_err!(
-                "failed to parse tree-sitter UnqualifiedValuesQuery: {:?}",
+                "failed to parse tree-sitter QueryForUnqualifiedValues: {:?}",
                 err
             )
         })?;
-        let unqualified_values_query = UnqualifiedValuesQuery {
+        let unqualified_values_query = QueryForUnqualifiedValues {
             value_index: index_for_name(&query, "value")?,
             type_index: index_for_name(&query, "type")?,
             constructor_index: index_for_name(&query, "constructor")?,
@@ -1642,7 +1644,7 @@ impl UnqualifiedValuesQuery {
 struct UnqualifiedValues<'a, 'tree> {
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
     code: &'a SourceFileSnapshot,
-    query: &'a UnqualifiedValuesQuery,
+    query: &'a QueryForUnqualifiedValues,
 }
 
 impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
@@ -1671,7 +1673,7 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
     }
 }
 
-struct ImportsQuery {
+struct QueryForImports {
     query: Query,
     root_index: u32,
     name_index: u32,
@@ -1679,8 +1681,8 @@ struct ImportsQuery {
     exposing_list_index: u32,
 }
 
-impl ImportsQuery {
-    fn init(lang: Language) -> Result<ImportsQuery, Error> {
+impl QueryForImports {
+    fn init(lang: Language) -> Result<QueryForImports, Error> {
         let query_str = r#"
             (import_clause
                 moduleName: (module_identifier) @name
@@ -1692,9 +1694,12 @@ impl ImportsQuery {
             ) @root
             "#;
         let query = Query::new(lang, query_str).map_err(|err| {
-            log::mk_err!("failed to parse tree-sitter ImportsQuery: {:?}", err)
+            log::mk_err!(
+                "failed to parse tree-sitter QueryForImports: {:?}",
+                err
+            )
         })?;
-        let imports_query = ImportsQuery {
+        let imports_query = QueryForImports {
             root_index: index_for_name(&query, "root")?,
             name_index: index_for_name(&query, "name")?,
             as_clause_index: index_for_name(&query, "as_clause")?,
@@ -1730,7 +1735,7 @@ impl ImportsQuery {
 struct Imports<'a, 'tree> {
     code: &'tree SourceFileSnapshot,
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
-    query: &'a ImportsQuery,
+    query: &'a QueryForImports,
 }
 
 impl<'a, 'tree> Iterator for Imports<'a, 'tree> {

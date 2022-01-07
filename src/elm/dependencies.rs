@@ -41,7 +41,7 @@ struct ElmJson {
 }
 
 pub(crate) fn load_dependencies(
-    query_for_exports: &ExportsQuery,
+    query_for_exports: &QueryForExports,
     project_root: &Path,
 ) -> Result<ProjectInfo, Error> {
     // TODO: Remove harcoded Elm version.
@@ -77,7 +77,7 @@ fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
 }
 
 fn find_project_modules(
-    query_for_exports: &ExportsQuery,
+    query_for_exports: &QueryForExports,
     project_root: &Path,
     elm_json: &ElmJson,
 ) -> Result<HashMap<String, ElmModule>, Error> {
@@ -108,7 +108,7 @@ fn find_project_modules(
 // This function finds as many modules as it can and so logs rather than fails
 // when it encounters an error.
 fn find_project_modules_in_dir(
-    query_for_exports: &ExportsQuery,
+    query_for_exports: &QueryForExports,
     dir_path: &Path,
     source_dir: &Path,
     modules: &mut HashMap<String, ElmModule>,
@@ -187,7 +187,7 @@ fn module_name_from_path(
 }
 
 fn parse_module(
-    query_for_exports: &ExportsQuery,
+    query_for_exports: &QueryForExports,
     path: &Path,
 ) -> Result<ElmModule, Error> {
     let mut file = std::fs::File::open(path)
@@ -201,7 +201,7 @@ fn parse_module(
     Ok(elm_module)
 }
 
-pub struct ExportsQuery {
+pub struct QueryForExports {
     query: Query,
     exposed_all_index: u32,
     exposed_value_index: u32,
@@ -210,8 +210,8 @@ pub struct ExportsQuery {
     type_index: u32,
 }
 
-impl ExportsQuery {
-    pub(crate) fn init(lang: Language) -> Result<ExportsQuery, Error> {
+impl QueryForExports {
+    pub(crate) fn init(lang: Language) -> Result<QueryForExports, Error> {
         let query_str = r#"
             [
               (module_declaration
@@ -247,9 +247,12 @@ impl ExportsQuery {
               )
             ]"#;
         let query = Query::new(lang, query_str).map_err(|err| {
-            log::mk_err!("Failed to parse tree-sitter ExportsQuery: {:?}", err)
+            log::mk_err!(
+                "Failed to parse tree-sitter QueryForExports: {:?}",
+                err
+            )
         })?;
-        let exports_query = ExportsQuery {
+        let exports_query = QueryForExports {
             exposed_all_index: index_for_name(&query, "exposed_all")?,
             exposed_value_index: index_for_name(&query, "exposed_value")?,
             exposed_type_index: index_for_name(&query, "exposed_type")?,
@@ -537,7 +540,7 @@ fn elm_export_from_alias(
 #[cfg(test)]
 mod tests {
     use crate::elm::dependencies::{
-        parse_module, ElmModule, ExportsQuery, Intersperse,
+        parse_module, ElmModule, Intersperse, QueryForExports,
     };
     use crate::support::log::Error;
     use crate::test_support::included_answer_test as ia_test;
@@ -569,7 +572,7 @@ mod tests {
 
     fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
-        let query_for_exports = ExportsQuery::init(language)?;
+        let query_for_exports = QueryForExports::init(language)?;
         let ElmModule { exports } = parse_module(&query_for_exports, path)?;
         let output = exports
             .into_iter()
