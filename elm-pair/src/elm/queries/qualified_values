@@ -24,18 +24,18 @@ sumDecoder =
         (Json.Decode.field "y" int)
 
 -- === expected output below ===
--- root: {Node value_qid (9, 4) - (9, 20)}
--- qualifier: {Node module_name_segment (9, 4) - (9, 8)}
--- qualifier: {Node module_name_segment (9, 9) - (9, 15)}
--- value: {Node lower_case_identifier (9, 16) - (9, 20)}
+-- root: [9:4] Json.Decode.map2
+-- qualifier: [9:4] Json
+-- qualifier: [9:9] Decode
+-- value: [9:16] map2
 --
--- root: {Node value_qid (10, 9) - (10, 26)}
--- qualifier: {Node module_name_segment (10, 9) - (10, 13)}
--- qualifier: {Node module_name_segment (10, 14) - (10, 20)}
--- value: {Node lower_case_identifier (10, 21) - (10, 26)}
+-- root: [10:9] Json.Decode.field
+-- qualifier: [10:9] Json
+-- qualifier: [10:14] Decode
+-- value: [10:21] field
 --
--- root: {Node value_qid (11, 9) - (11, 26)}
--- qualifier: {Node module_name_segment (11, 9) - (11, 13)}
--- qualifier: {Node module_name_segment (11, 14) - (11, 20)}
--- value: {Node lower_case_identifier (11, 21) - (11, 26)}
+-- root: [11:9] Json.Decode.field
+-- qualifier: [11:9] Json
+-- qualifier: [11:14] Decode
+-- value: [11:21] field
 --

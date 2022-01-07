@@ -21,7 +21,7 @@ sumDecoder =
         (Json.Decode.field "y" int)
 
 -- === expected output below ===
--- root: {Node import_clause (4, 0) - (4, 42)}
--- name: {Node module_identifier (4, 7) - (4, 18)}
--- exposing_list: {Node exposing_list (4, 19) - (4, 42)}
--- 
+-- root: [4:0] import Json.Decode exposing (Decoder, int)
+-- name: [4:7] Json.Decode
+-- exposing_list: [4:19] exposing (Decoder, int)
+--

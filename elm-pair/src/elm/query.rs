@@ -46,14 +46,24 @@ macro_rules! query {
                       };
                 let mut cursor = tree_sitter::QueryCursor::new();
                 let tree = $crate::support::source_code::parse_bytes(test_str).unwrap();
+                let root_node = tree.root_node();
+                if root_node.has_error() {
+                    panic!("Parsing resulted in invalid syntax tree.");
+                }
                 let capture_names = query.query.capture_names();
                 let output: String =
                     cursor
-                      .matches(&query.query, tree.root_node(), test_str.as_bytes())
+                      .matches(&query.query, root_node, test_str.as_bytes())
                       .map(|m| {
                           let captures_str: String =
                                 m.captures.into_iter().map(|c| {
-                                    format!("{}: {:?}\n", capture_names[c.index as usize], c.node)
+                                    let position = c.node.start_position();
+                                    format!("{}: [{}:{}] {}\n",
+                                        capture_names[c.index as usize],
+                                        position.row,
+                                        position.column,
+                                        test_str.get(c.node.byte_range()).unwrap(),
+                                    )
                                 }).collect();
                           format!("{}\n", captures_str)
                       })

@@ -46,7 +46,7 @@ sumDecoder =
         (Json.Decode.field "y" int)
 
 -- === expected output below ===
--- exposed_all: {Node double_dot (2, 22) - (2, 24)}
--- 
--- value: {Node lower_case_identifier (8, 0) - (8, 10)}
--- 
+-- exposed_all: [2:22] ..
+--
+-- value: [8:0] sumDecoder
+--

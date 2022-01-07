@@ -23,25 +23,53 @@
 
 module Main exposing (..)
 
-import Json.Decode exposing (Decoder, int)
+import Json.Decode exposing (Decoder, float, succeed)
 
 
-sumDecoder : Decoder Int
-sumDecoder =
-    Json.Decode.map2 (+)
-        (Json.Decode.field "x" int)
-        (Json.Decode.field "y" int)
+type alias Beverage =
+    { kind: BeverageKind
+    , liters: Float
+    }
+
+
+type BeverageKind
+    = HotChocolate
+    | Water
+
+
+decoder : BeverageKind -> Decoder Beverage
+decoder kind =
+    let
+        kindDecoder = succeed kind
+    in
+    Json.Decode.map2 Beverage
+        (Json.Decode.field "kind" kindDecoder)
+        (Json.Decode.field "liters" float)
 
 -- === expected output below ===
--- value: {Node lower_case_identifier (7, 0) - (7, 10)}
--- 
--- type_: {Node type_identifier (7, 13) - (7, 20)}
--- 
--- type_: {Node type_identifier (7, 21) - (7, 24)}
--- 
--- value: {Node lower_case_identifier (8, 0) - (8, 10)}
--- 
--- value: {Node lower_case_identifier (10, 31) - (10, 34)}
--- 
--- value: {Node lower_case_identifier (11, 31) - (11, 34)}
--- 
+-- type_: [8:12] BeverageKind
+--
+-- type_: [9:14] Float
+--
+-- value: [18:0] decoder
+--
+-- type_: [18:10] BeverageKind
+--
+-- type_: [18:26] Decoder
+--
+-- type_: [18:34] Beverage
+--
+-- value: [19:0] decoder
+--
+-- value: [21:8] kindDecoder
+--
+-- value: [21:22] succeed
+--
+-- value: [21:30] kind
+--
+-- constructor: [23:21] Beverage
+--
+-- value: [24:34] kindDecoder
+--
+-- value: [25:36] float
+--
