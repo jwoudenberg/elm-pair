@@ -2114,6 +2114,9 @@ mod simulations {
     simulation_test!(
         remove_module_qualifier_from_type_with_same_name_as_local_type_alias
     );
+    simulation_test!(
+        remove_module_qualifier_from_type_with_same_name_as_local_type
+    );
 
     // Changing as-clauses
     simulation_test!(add_as_clause_to_import);

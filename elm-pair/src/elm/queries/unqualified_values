@@ -12,6 +12,9 @@
     (type_alias_declaration
         (type_identifier) @type_
     )
+    (type_declaration
+        (type_identifier) @type_
+    )
     (type_qid
         .
         (type_identifier) @type_
@@ -55,6 +58,8 @@ decoder kind =
 -- type_: [8:12] BeverageKind
 --
 -- type_: [9:14] Float
+--
+-- type_: [13:5] BeverageKind
 --
 -- value: [18:0] decoder
 --
