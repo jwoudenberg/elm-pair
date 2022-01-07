@@ -23,7 +23,7 @@
         };
         packages.elm-pair = naersk.lib."${system}".buildPackage {
           pname = "elm-pair";
-          root = ./.;
+          root = ./elm-pair;
           doCheck = true;
           ELM_BINARY_PATH = "${pkgs.elmPackages.elm}/bin/elm";
         };
