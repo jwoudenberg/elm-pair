@@ -1,6 +1,6 @@
 module Main exposing (..)
 
-import Support.Date exposing (..)
+import Support.Date exposing (Date, now)
 import Task exposing (Task)
 import Time exposing (Posix)
 
@@ -28,5 +28,5 @@ dateAndTime =
 -- dateAndTime : Task e ( Date, Posix )
 -- dateAndTime =
 --     Task.map
---         (\time -> ( Date.now, time ))
+--         (\time -> ( Support.Date.now, time ))
 --         now

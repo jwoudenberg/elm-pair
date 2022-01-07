@@ -444,7 +444,9 @@ fn on_added_constructors_to_exposing_list(
         if let Exposed::Type(type_) = &exposed {
             if type_.name == type_name {
                 exposed.for_each_reference(module, |reference| {
-                    references_to_unqualify.insert(reference);
+                    if reference.kind == ReferenceKind::Constructor {
+                        references_to_unqualify.insert(reference);
+                    }
                 });
                 break;
             }
@@ -631,6 +633,7 @@ fn on_removed_constructors_from_exposing_list(
         refactor,
         &mut QueryCursor::new(),
         &diff.new,
+        None,
         &old_import,
         references_to_qualify,
     )?;
@@ -671,8 +674,14 @@ fn on_changed_values_in_exposing_list(
     }
 
     let references_to_qualify = old_references
+        .clone()
         .into_iter()
         .filter(|reference| !new_references.contains(reference))
+        .collect();
+
+    let references_to_unqualify = new_references
+        .into_iter()
+        .filter(|reference| !old_references.contains(reference))
         .collect();
 
     add_qualifier_to_references(
@@ -680,6 +689,7 @@ fn on_changed_values_in_exposing_list(
         refactor,
         &mut QueryCursor::new(),
         &diff.new,
+        None,
         &new_import,
         references_to_qualify,
     )?;
@@ -689,7 +699,7 @@ fn on_changed_values_in_exposing_list(
         refactor,
         &diff.new,
         &new_import.aliased_name(),
-        new_references,
+        references_to_unqualify,
         None,
     )?;
 
@@ -777,26 +787,13 @@ fn remove_qualifier_from_references(
     // Find existing unqualified references, so we can check whether removing
     // a qualifier from a qualified reference will introduce a naming conflict.
     let mut cursor = QueryCursor::new();
-    let mut names_in_use: HashSet<Reference> = engine
+    let names_in_use: HashSet<Reference> = engine
         .query_for_unqualified_values
         .run_in(&mut cursor, code, code.tree.root_node())
-        .filter_map(|r| {
-            r.map(|(node, reference)| {
-                if let Some(node_id) = node_stripped_of_qualifier.map(|n| n.id()) {
-                    if node.id() == node_id {
-                        None
-                    } else {
-                        Some(reference)
-                    }
-                } else {
-                    Some(reference)
-                }
-            })
-            .transpose()
-        })
+        .map(|r| r.map(|(_, reference)| reference))
         .collect::<Result<HashSet<Reference>, Error>>()?;
 
-    let mut names_exposed: HashSet<Reference> = HashSet::new();
+    let mut names_exposed: HashMap<Reference, Rope> = HashMap::new();
     let imports = engine.query_for_imports.run(&mut cursor, code);
     let project_info = engine.buffer_project(code.buffer)?;
     for import in imports {
@@ -807,9 +804,39 @@ fn remove_qualifier_from_references(
                 let (_, exposed) = res?;
                 let module = get_elm_module(project_info, &import.unaliased_name())?;
                 exposed.for_each_reference(module, |reference| {
-                    names_exposed.insert(reference);
+                    names_exposed.insert(reference, import.aliased_name().into());
                 });
             }
+        }
+    }
+
+    for reference in names_in_use.intersection(&references) {
+        // if another module is exposing a variable by this name, un-expose it
+        if let Some(other_qualifier) = names_exposed.get(reference) {
+            qualify_value(
+                engine,
+                refactor,
+                code,
+                node_stripped_of_qualifier,
+                other_qualifier,
+                reference,
+            )?;
+            continue;
+        }
+
+        // If an unqualified variable with this name already exists, rename it
+        if names_in_use.contains(reference) {
+            let new_name = names_with_digit(reference)
+                .find(|name| !names_in_use.contains(name))
+                .ok_or_else(|| log::mk_err!("names_with_digit unexpectedly ran out of names."))?;
+            rename(
+                engine,
+                refactor,
+                code,
+                node_stripped_of_qualifier,
+                reference,
+                &new_name,
+            )?;
         }
     }
 
@@ -819,35 +846,6 @@ fn remove_qualifier_from_references(
             .run_in(&mut cursor, code, code.tree.root_node());
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
-
-        // if another module is exposing a variable by this name, un-expose it
-        if names_exposed.contains(&qualified.reference) {
-            qualify_value(
-                engine,
-                refactor,
-                code,
-                &qualified.qualifier,
-                &qualified.reference,
-            )?;
-        }
-
-        // If an unqualified variable with this name already exists, rename it
-        if names_in_use.contains(&qualified.reference) {
-            let new_name = names_with_digit(&qualified.reference)
-                .find(|name| !names_in_use.contains(name))
-                .ok_or_else(|| log::mk_err!("names_with_digit unexpectedly ran out of names."))?;
-            rename(
-                engine,
-                refactor,
-                code,
-                node_stripped_of_qualifier,
-                &qualified.reference,
-                &new_name,
-            )?;
-            names_in_use.remove(&qualified.reference);
-        }
-
-        // Remove qualifier
         if references.contains(&qualified.reference) {
             refactor.add_change(
                 // The +1 makes it include the trailing dot between qualifier
@@ -1022,7 +1020,7 @@ fn on_added_module_qualifier_to_value(
         .next()
         .ok_or_else(|| log::mk_err!("parsing qualified value node using query failed"))??;
     if old_reference.name == reference.name {
-        qualify_value(engine, refactor, &diff.new, &qualifier, &reference)
+        qualify_value(engine, refactor, &diff.new, None, &qualifier, &reference)
     } else {
         Ok(())
     }
@@ -1032,6 +1030,7 @@ fn qualify_value(
     engine: &RefactorEngine,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
+    node_to_skip: Option<Node>,
     qualifier: &Rope,
     reference: &Reference,
 ) -> Result<(), Error> {
@@ -1160,6 +1159,7 @@ fn qualify_value(
         refactor,
         &mut QueryCursor::new(),
         code,
+        node_to_skip,
         &import,
         references_to_qualify,
     )?;
@@ -1217,6 +1217,7 @@ fn on_removed_exposing_list_from_import(
         refactor,
         &mut val_cursor,
         &diff.new,
+        None,
         &import,
         references_to_qualify,
     )?;
@@ -1277,13 +1278,21 @@ fn add_qualifier_to_references(
     refactor: &mut Refactor,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
+    node_to_skip: Option<Node>,
     import: &Import,
     references: HashSet<Reference>,
 ) -> Result<(), Error> {
     let results = engine.query_for_unqualified_values.run(cursor, code);
+    let should_skip = |node: Node| {
+        if let Some(node_to_skip2) = node_to_skip {
+            node.id() == node_to_skip2.id()
+        } else {
+            false
+        }
+    };
     for result in results {
         let (node, reference) = result?;
-        if references.contains(&reference) {
+        if references.contains(&reference) && !should_skip(node) {
             refactor.add_change(
                 node.start_byte()..node.start_byte(),
                 format!("{}.", import.aliased_name()),
