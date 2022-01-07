@@ -1,0 +1,11 @@
+(_
+    (
+        (module_name_segment) @qualifier
+        (dot)
+    )+
+    [
+        (lower_case_identifier)  @value
+        (type_identifier)        @type
+        (constructor_identifier) @constructor
+    ]
+) @root

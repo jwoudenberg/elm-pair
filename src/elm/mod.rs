@@ -1407,19 +1407,7 @@ struct QueryForQualifiedValues {
 
 impl QueryForQualifiedValues {
     fn init(lang: Language) -> Result<QueryForQualifiedValues, Error> {
-        let query_str = r#"
-            (_
-              (
-                (module_name_segment) @qualifier
-                (dot)
-              )+
-              [
-                (lower_case_identifier)  @value
-                (type_identifier)        @type
-                (constructor_identifier) @constructor
-              ]
-            ) @root
-            "#;
+        let query_str = include_str!("./queries/qualified_values");
         let query = Query::new(lang, query_str).map_err(|err| {
             log::mk_err!(
                 "failed to parse tree-sitter QueryForQualifiedValues: {:?}",
@@ -1583,26 +1571,7 @@ struct QueryForUnqualifiedValues {
 
 impl QueryForUnqualifiedValues {
     fn init(lang: Language) -> Result<QueryForUnqualifiedValues, Error> {
-        let query_str = r#"
-            [ (value_qid
-                .
-                (lower_case_identifier) @value
-              )
-              (type_annotation
-                (lower_case_identifier) @value
-              )
-              (function_declaration_left
-                (lower_case_identifier) @value
-              )
-              (type_qid
-                .
-                (type_identifier) @type
-              )
-              (constructor_qid
-                .
-                (constructor_identifier) @constructor
-              )
-            ]"#;
+        let query_str = include_str!("./queries/unqualified_values");
         let query = Query::new(lang, query_str).map_err(|err| {
             log::mk_err!(
                 "failed to parse tree-sitter QueryForUnqualifiedValues: {:?}",
@@ -1683,16 +1652,7 @@ struct QueryForImports {
 
 impl QueryForImports {
     fn init(lang: Language) -> Result<QueryForImports, Error> {
-        let query_str = r#"
-            (import_clause
-                moduleName: (module_identifier) @name
-                asClause:
-                (as_clause
-                    name: (module_name_segment) @as_clause
-                )?
-                exposing: (exposing_list)? @exposing_list
-            ) @root
-            "#;
+        let query_str = include_str!("./queries/imports");
         let query = Query::new(lang, query_str).map_err(|err| {
             log::mk_err!(
                 "failed to parse tree-sitter QueryForImports: {:?}",

@@ -1,0 +1,20 @@
+[
+    (value_qid
+        .
+        (lower_case_identifier) @value
+    )
+    (type_annotation
+        (lower_case_identifier) @value
+    )
+    (function_declaration_left
+        (lower_case_identifier) @value
+    )
+    (type_qid
+        .
+        (type_identifier) @type
+    )
+    (constructor_qid
+        .
+        (constructor_identifier) @constructor
+    )
+]

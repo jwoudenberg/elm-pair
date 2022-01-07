@@ -1,0 +1,8 @@
+(import_clause
+    moduleName: (module_identifier) @name
+    asClause:
+    (as_clause
+        name: (module_name_segment) @as_clause
+    )?
+    exposing: (exposing_list)? @exposing_list
+) @root

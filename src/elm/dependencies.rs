@@ -212,40 +212,7 @@ pub struct QueryForExports {
 
 impl QueryForExports {
     pub(crate) fn init(lang: Language) -> Result<QueryForExports, Error> {
-        let query_str = r#"
-            [
-              (module_declaration
-                exposing: (exposing_list
-                  [
-                    (double_dot)       @exposed_all
-                    (exposed_value)    @exposed_value
-                    (exposed_type)     @exposed_type
-                    (exposed_operator) @exposed_value
-                  ]
-                )
-              )
-              (value_declaration
-                  (function_declaration_left
-                    .
-                    (lower_case_identifier) @value
-                  )
-              )
-              (type_alias_declaration
-                name: (type_identifier) @type
-              )
-              (type_declaration
-                name: (type_identifier) @type
-                (union_variant
-                    name: (constructor_identifier) @constructor
-                )
-                (
-                    "|"
-                    (union_variant
-                        name: (constructor_identifier) @constructor
-                    )
-                )*
-              )
-            ]"#;
+        let query_str = include_str!("./queries/exports");
         let query = Query::new(lang, query_str).map_err(|err| {
             log::mk_err!(
                 "Failed to parse tree-sitter QueryForExports: {:?}",
