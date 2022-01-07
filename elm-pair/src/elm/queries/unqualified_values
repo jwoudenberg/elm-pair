@@ -9,6 +9,9 @@
     (function_declaration_left
         (lower_case_identifier) @value
     )
+    (type_alias_declaration
+        (type_identifier) @type_
+    )
     (type_qid
         .
         (type_identifier) @type_
@@ -47,6 +50,8 @@ decoder kind =
         (Json.Decode.field "liters" float)
 
 -- === expected output below ===
+-- type_: [7:11] Beverage
+--
 -- type_: [8:12] BeverageKind
 --
 -- type_: [9:14] Float
