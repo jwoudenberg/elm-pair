@@ -19,6 +19,9 @@
         .
         (type_identifier) @type_
     )
+    (union_variant
+        (constructor_identifier) @constructor
+    )
     (constructor_qid
         .
         (constructor_identifier) @constructor
@@ -51,7 +54,6 @@ decoder kind =
     Json.Decode.map2 Beverage
         (Json.Decode.field "kind" kindDecoder)
         (Json.Decode.field "liters" float)
-
 -- === expected output below ===
 -- type_: [7:11] Beverage
 --
@@ -60,6 +62,10 @@ decoder kind =
 -- type_: [9:14] Float
 --
 -- type_: [13:5] BeverageKind
+--
+-- constructor: [14:6] HotChocolate
+--
+-- constructor: [15:6] Water
 --
 -- value: [18:0] decoder
 --
