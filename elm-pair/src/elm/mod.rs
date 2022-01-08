@@ -2203,6 +2203,16 @@ mod simulations {
     simulation_test!(
         remove_exposing_all_clause_containing_operator_from_import
     );
+    // When we expose a value with the same name as a local variable the local
+    // variable gets renamed to something else. This test demonstrates an edge
+    // case in this logic where the renaming logic is failing. When we expose
+    // multiple variables at the same time, one of which has the same name as
+    // a local variable and the other which has the name we would rename the
+    // local variable too, then we still end up with a naming conflict when all
+    // is done.
+    simulation_test!(
+        add_value_to_exposing_list_of_import_with_same_name_as_local_variable_and_another_with_the_same_name_plus_trailing_2
+    );
 
     #[derive(Debug)]
     enum Error {
