@@ -814,7 +814,7 @@ fn on_removed_module_qualifier_from_value(
         for export in module.exports.iter() {
             match export {
                 ElmExport::Value { .. } => {}
-                ElmExport::TypeAlias { name } => {
+                ElmExport::RecordTypeAlias { name } => {
                     // We're dealing here with a type alias being used as a
                     // constructor. For example, given a type alias like:
                     //
@@ -1299,7 +1299,7 @@ fn qualify_value(
                         for export in exports {
                             match export {
                                 ElmExport::Value { .. } => {}
-                                ElmExport::TypeAlias { .. } => {}
+                                ElmExport::RecordTypeAlias { .. } => {}
                                 ElmExport::Type { constructors, .. } => {
                                     if constructors
                                         .iter()
@@ -1880,7 +1880,7 @@ impl<'a> Exposed<'a> {
                 });
                 import.exports.iter().for_each(|export| match export {
                     ElmExport::Value { .. } => {}
-                    ElmExport::TypeAlias { name } => {
+                    ElmExport::RecordTypeAlias { name } => {
                         if name == &type_.name {
                             f(Reference {
                                 kind: ReferenceKind::Constructor,
@@ -1906,7 +1906,7 @@ impl<'a> Exposed<'a> {
                         kind: ReferenceKind::Value,
                         name: Rope::from_str(name),
                     }),
-                    ElmExport::TypeAlias { name } => {
+                    ElmExport::RecordTypeAlias { name } => {
                         f(Reference {
                             kind: ReferenceKind::Value,
                             name: Rope::from_str(name),
@@ -1964,7 +1964,7 @@ impl ExposedType<'_> {
         for export in engine.module_exports(self.buffer, self.module_name)? {
             match export {
                 ElmExport::Value { .. } => {}
-                ElmExport::TypeAlias { name } => {
+                ElmExport::RecordTypeAlias { name } => {
                     return Ok(ExposedConstructors::FromTypeAlias(name));
                 }
                 ElmExport::Type { name, constructors } => {
@@ -2113,8 +2113,12 @@ mod simulations {
     simulation_test!(add_module_qualifier_to_type_with_same_name);
     simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
     simulation_test!(add_module_qualifier_to_variable);
-    simulation_test!(add_module_qualifier_to_type_alias_in_type_declaration);
-    simulation_test!(add_module_qualifier_to_type_alias_used_as_constructor);
+    simulation_test!(
+        add_module_qualifier_to_record_type_alias_in_type_declaration
+    );
+    simulation_test!(
+        add_module_qualifier_to_record_type_alias_used_as_constructor
+    );
     simulation_test!(remove_constructor_from_exposing_list_of_import);
     simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_all_clause_from_local_import);
@@ -2125,8 +2129,8 @@ mod simulations {
     simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
     simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
     simulation_test!(remove_variable_from_exposing_list_of_import);
-    simulation_test!(remove_type_alias_from_exposing_list_of_import);
-    simulation_test!(add_type_alias_to_exposing_list_of_import);
+    simulation_test!(remove_record_type_alias_from_exposing_list_of_import);
+    simulation_test!(add_record_type_alias_to_exposing_list_of_import);
 
     // Removing module qualifiers from values
     simulation_test!(remove_module_qualifier_from_variable);
@@ -2146,6 +2150,8 @@ mod simulations {
     simulation_test!(add_type_to_exposing_list);
     simulation_test!(add_constructors_for_type_to_exposing_list);
     simulation_test!(add_type_exposing_constructors_to_exposing_list);
+    simulation_test!(add_record_type_alias_with_same_name_as_local_constructor_to_exposing_list_of_import);
+    simulation_test!(add_non_record_type_alias_with_same_name_as_local_constructor_to_exposing_list_of_import);
     simulation_test!(add_exposing_list);
     simulation_test!(add_exposing_all_list);
     simulation_test!(add_and_remove_items_in_exposing_list);

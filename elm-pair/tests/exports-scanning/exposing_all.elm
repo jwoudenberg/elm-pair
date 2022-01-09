@@ -11,6 +11,10 @@ type alias WholeNumber =
     Int
 
 
+type alias Point =
+    { x : Int, y : Int }
+
+
 hindsight : Float
 hindsight =
     20 / 20
@@ -19,5 +23,6 @@ hindsight =
 
 -- === expected output below ===
 -- Type { name: "Clock", constructors: ["Watch", "Alarm", "Grandfather"] }
--- TypeAlias { name: "WholeNumber" }
+-- Type { name: "WholeNumber", constructors: [] }
+-- RecordTypeAlias { name: "Point" }
 -- Value { name: "hindsight" }

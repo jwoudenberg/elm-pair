@@ -1,4 +1,4 @@
-module Support.Date exposing (Clock(..), Date, Time, now)
+module Support.Date exposing (Clock(..), Date, Hours, Minutes, Time, now)
 
 
 type Clock
@@ -14,9 +14,17 @@ type Date
 
 
 type alias Time =
-    { hours : Int
-    , minutes : Int
+    { hours : Hours
+    , minutes : Minutes
     }
+
+
+type alias Hours =
+    Int
+
+
+type alias Minutes =
+    Int
 
 
 now : Date
