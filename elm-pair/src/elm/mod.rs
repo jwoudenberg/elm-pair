@@ -2170,6 +2170,9 @@ mod simulations {
         expose_value_with_same_name_as_exposed_value_from_other_module
     );
     simulation_test!(
+        expose_value_with_same_name_as_value_from_other_module_exposing_all
+    );
+    simulation_test!(
         remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
     );
     simulation_test!(
