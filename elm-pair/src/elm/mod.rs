@@ -673,7 +673,7 @@ fn on_removed_constructors_from_exposing_list(
         let (_, exposed) = result?;
         if let Exposed::Type(type_) = exposed {
             if type_.name == type_name {
-                match type_.constructors(engine)? {
+                match old_import.constructors_of_type(engine, &type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         references_to_qualify.insert(Reference {
                             name: Rope::from_str(ctor),
@@ -925,6 +925,7 @@ fn remove_qualifier_from_references(
                 node_stripped_of_qualifier,
                 other_qualifier,
                 reference,
+                true,
             )?;
             continue;
         }
@@ -1148,7 +1149,9 @@ fn on_added_module_qualifier_to_value(
             log::mk_err!("parsing qualified value node using query failed")
         })??;
     if old_reference.name == reference.name {
-        qualify_value(engine, refactor, &diff.new, None, &qualifier, &reference)
+        qualify_value(
+            engine, refactor, &diff.new, None, &qualifier, &reference, false,
+        )
     } else {
         Ok(())
     }
@@ -1161,6 +1164,11 @@ fn qualify_value(
     node_to_skip: Option<Node>,
     qualifier: &Rope,
     reference: &Reference,
+    // If the qualified value is coming from an import that exposing everything,
+    // then this boolean decides whether to keep the `exposing (..)` clause as
+    // is, or whether to replace it with an explicit list of currently used
+    // values minus the now qualified value.
+    remove_expose_all_if_necessary: bool,
 ) -> Result<(), Error> {
     let import =
         get_import_by_aliased_name(engine, code, &qualifier.slice(..))?;
@@ -1194,7 +1202,7 @@ fn qualify_value(
                     });
                 }
 
-                match type_.constructors(engine)? {
+                match import.constructors_of_type(engine, type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         if ctor == &reference.name {
                             // Ensure we don't remove the item from the exposing
@@ -1260,14 +1268,105 @@ fn qualify_value(
                 }
             }
             Exposed::All => {
-                // The programmer qualified a value coming from a module that
-                // exposes everything. We could interpret this to mean that the
-                // programmer wishes to qualify all values of this module. That
-                // would potentially result in a lot of changes though, so we're
-                // going to be more conservative and qualify only other
-                // occurences of the same value. If the programmer really wishes
-                // to qualify everything they can indicate so by removing the
-                // `exposing (..)` clause.
+                if remove_expose_all_if_necessary {
+                    let mut exposed_names: HashMap<Reference, &ElmExport> =
+                        HashMap::new();
+                    engine
+                        .module_exports(code.buffer, import.unaliased_name())
+                        .map_err(|err| {
+                            log::mk_err!(
+                                "failed to read exports of {}: {:?}",
+                                import.unaliased_name().to_string(),
+                                err
+                            )
+                        })?
+                        .iter()
+                        .for_each(|export| match export {
+                            ElmExport::Value { name } => {
+                                exposed_names.insert(
+                                    Reference {
+                                        name: Rope::from_str(name),
+                                        kind: ReferenceKind::Value,
+                                    },
+                                    export,
+                                );
+                            }
+                            ElmExport::RecordTypeAlias { name } => {
+                                exposed_names.insert(
+                                    Reference {
+                                        name: Rope::from_str(name),
+                                        kind: ReferenceKind::Type,
+                                    },
+                                    export,
+                                );
+                                exposed_names.insert(
+                                    Reference {
+                                        name: Rope::from_str(name),
+                                        kind: ReferenceKind::Constructor,
+                                    },
+                                    export,
+                                );
+                            }
+                            ElmExport::Type { name, constructors } => {
+                                exposed_names.insert(
+                                    Reference {
+                                        name: Rope::from_str(name),
+                                        kind: ReferenceKind::Type,
+                                    },
+                                    export,
+                                );
+                                for ctor in constructors {
+                                    exposed_names.insert(
+                                        Reference {
+                                            name: Rope::from_str(ctor),
+                                            kind: ReferenceKind::Constructor,
+                                        },
+                                        export,
+                                    );
+                                }
+                            }
+                        });
+                    let mut cursor = QueryCursor::new();
+                    let mut unqualified_names_in_use: HashSet<Reference> =
+                        engine
+                            .query_for_unqualified_values
+                            .run(&mut cursor, code)
+                            .map(|r| r.map(|(_, reference)| reference))
+                            .collect::<Result<HashSet<Reference>, Error>>()?;
+                    unqualified_names_in_use.remove(reference);
+                    let mut new_exposed: String = String::new();
+                    exposed_names.into_iter().for_each(
+                        |(reference, export)| {
+                            if unqualified_names_in_use.contains(&reference) {
+                                if !new_exposed.is_empty() {
+                                    new_exposed.push_str(", ")
+                                }
+                                match export {
+                                    ElmExport::Value { name } => {
+                                        new_exposed.push_str(name);
+                                    }
+                                    ElmExport::RecordTypeAlias { name } => {
+                                        new_exposed.push_str(name);
+                                    }
+                                    ElmExport::Type { name, .. } => {
+                                        if reference.kind
+                                            == ReferenceKind::Constructor
+                                        {
+                                            new_exposed.push_str(&format!(
+                                                "{}(..)",
+                                                name
+                                            ));
+                                        } else {
+                                            new_exposed.push_str(name);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
+                    refactor.add_change(node.byte_range(), new_exposed);
+                }
+
                 match reference.kind {
                     ReferenceKind::Operator => {
                         return Err(log::mk_err!(
@@ -1781,16 +1880,40 @@ impl Import<'_> {
         });
         ExposedList {
             code: self.code,
-            module_name: self.code.slice(&self.name_node.byte_range()),
             cursor,
         }
+    }
+
+    fn constructors_of_type<'a>(
+        &'a self,
+        engine: &'a RefactorEngine,
+        type_: &ExposedType,
+    ) -> Result<ExposedConstructors, Error> {
+        for export in engine.module_exports(
+            self.code.buffer,
+            self.code.slice(&self.name_node.byte_range()),
+        )? {
+            match export {
+                ElmExport::Value { .. } => {}
+                ElmExport::RecordTypeAlias { name } => {
+                    return Ok(ExposedConstructors::FromTypeAlias(name));
+                }
+                ElmExport::Type { name, constructors } => {
+                    if type_.name.eq(name) {
+                        return Ok(ExposedConstructors::FromCustomType(
+                            constructors,
+                        ));
+                    }
+                }
+            }
+        }
+        Err(log::mk_err!("did not find type in module"))
     }
 }
 
 struct ExposedList<'a> {
     code: &'a SourceFileSnapshot,
     cursor: Option<TreeCursor<'a>>,
-    module_name: RopeSlice<'a>,
 }
 
 impl<'a> Iterator for ExposedList<'a> {
@@ -1836,8 +1959,6 @@ impl<'a> Iterator for ExposedList<'a> {
                         Exposed::Type(ExposedType {
                             name: self.code.slice(&type_name_node.byte_range()),
                             exposing_constructors: node.child(1).is_some(),
-                            buffer: self.code.buffer,
-                            module_name: self.module_name,
                         })
                     }
                     DOUBLE_DOT => Exposed::All,
@@ -1951,33 +2072,7 @@ struct ExposedValue<'a> {
 #[derive(PartialEq)]
 struct ExposedType<'a> {
     name: RopeSlice<'a>,
-    buffer: Buffer,
-    module_name: RopeSlice<'a>,
     exposing_constructors: bool,
-}
-
-impl ExposedType<'_> {
-    fn constructors<'a>(
-        &'a self,
-        engine: &'a RefactorEngine,
-    ) -> Result<ExposedConstructors, Error> {
-        for export in engine.module_exports(self.buffer, self.module_name)? {
-            match export {
-                ElmExport::Value { .. } => {}
-                ElmExport::RecordTypeAlias { name } => {
-                    return Ok(ExposedConstructors::FromTypeAlias(name));
-                }
-                ElmExport::Type { name, constructors } => {
-                    if self.name.eq(name) {
-                        return Ok(ExposedConstructors::FromCustomType(
-                            constructors,
-                        ));
-                    }
-                }
-            }
-        }
-        Err(log::mk_err!("did not find type in module"))
-    }
 }
 
 #[derive(Clone)]

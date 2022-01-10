@@ -375,7 +375,7 @@ pub(crate) fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
 
 // Tust nightlies already contain a `intersperse` iterator. Once that lands
 // in stable we should switch over.
-trait Intersperse: Iterator {
+pub(crate) trait Intersperse: Iterator {
     fn my_intersperse(self, separator: Self::Item) -> IntersperseState<Self>
     where
         Self::Item: Clone,
@@ -392,7 +392,7 @@ impl<I: Iterator> Intersperse for I {
     }
 }
 
-struct IntersperseState<I: Iterator> {
+pub(crate) struct IntersperseState<I: Iterator> {
     iterator: std::iter::Peekable<I>,
     separator: I::Item,
     separator_is_next: bool,
