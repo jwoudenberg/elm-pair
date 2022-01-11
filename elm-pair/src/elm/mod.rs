@@ -1,6 +1,6 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::dependencies::{
-    index_for_name, load_dependencies, ElmExport, ElmModule, ProjectInfo,
+    index_for_name, load_dependencies, ElmModule, ExportedName, ProjectInfo,
     QueryForExports,
 };
 use crate::support::log;
@@ -278,7 +278,7 @@ impl RefactorEngine {
         &self,
         buffer: Buffer,
         module: RopeSlice,
-    ) -> Result<&Vec<ElmExport>, Error> {
+    ) -> Result<&Vec<ExportedName>, Error> {
         let project = self.buffer_project(buffer)?;
         match project.modules.get(&module.to_string()) {
             None => Err(log::mk_err!("did not find module")),
@@ -420,7 +420,7 @@ fn on_unrecognized_change(
             .run_in(&mut cursor, code, parent)
     {
         let (_, reference) = result?;
-        if reference.reference.name.len_bytes() > 0
+        if reference.unqualified_name.name.len_bytes() > 0
             && !existing_imports.contains(&reference.qualifier)
         {
             new_import_names.insert(reference.qualifier.to_string());
@@ -469,10 +469,10 @@ fn on_added_constructors_to_exposing_list(
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
-        if let Exposed::Type(type_) = &exposed {
+        if let ExposedName::Type(type_) = &exposed {
             if type_.name == type_name {
-                exposed.for_each_reference(module, |reference| {
-                    if reference.kind == ReferenceKind::Constructor {
+                exposed.for_each_name(module, |reference| {
+                    if reference.kind == NameKind::Constructor {
                         references_to_unqualify.insert(reference);
                     }
                 });
@@ -671,20 +671,20 @@ fn on_removed_constructors_from_exposing_list(
     let mut references_to_qualify = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
-        if let Exposed::Type(type_) = exposed {
+        if let ExposedName::Type(type_) = exposed {
             if type_.name == type_name {
                 match old_import.constructors_of_type(engine, &type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
-                        references_to_qualify.insert(Reference {
+                        references_to_qualify.insert(Name {
                             name: Rope::from_str(ctor),
-                            kind: ReferenceKind::Constructor,
+                            kind: NameKind::Constructor,
                         });
                     }
                     ExposedConstructors::FromCustomType(ctors) => {
                         for ctor in ctors {
-                            references_to_qualify.insert(Reference {
+                            references_to_qualify.insert(Name {
                                 name: Rope::from_str(ctor),
-                                kind: ReferenceKind::Constructor,
+                                kind: NameKind::Constructor,
                             });
                         }
                     }
@@ -721,7 +721,7 @@ fn on_changed_values_in_exposing_list(
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_reference(module, |reference| {
+        exposed.for_each_name(module, |reference| {
             old_references.insert(reference);
         });
     }
@@ -735,7 +735,7 @@ fn on_changed_values_in_exposing_list(
     let mut new_references = HashSet::new();
     for result in new_import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_reference(module, |reference| {
+        exposed.for_each_name(module, |reference| {
             new_references.insert(reference);
         });
     }
@@ -791,8 +791,8 @@ fn on_removed_module_qualifier_from_value(
     let mut cursor2 = QueryCursor::new();
     let (
         _,
-        QualifiedReference {
-            reference,
+        QualifiedName {
+            unqualified_name,
             qualifier,
         },
     ) = engine
@@ -802,19 +802,19 @@ fn on_removed_module_qualifier_from_value(
         .ok_or_else(|| {
             log::mk_err!("parsing qualified value node using query failed")
         })??;
-    if new_reference.name != reference.name {
+    if new_reference.name != unqualified_name.name {
         return Ok(());
     }
     let import =
         get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
-    if reference.kind == ReferenceKind::Constructor {
+    if unqualified_name.kind == NameKind::Constructor {
         let project_info = engine.buffer_project(diff.new.buffer)?;
         let module = get_elm_module(project_info, &import.unaliased_name())?;
         for export in module.exports.iter() {
             match export {
-                ElmExport::Value { .. } => {}
-                ElmExport::RecordTypeAlias { name } => {
+                ExportedName::Value { .. } => {}
+                ExportedName::RecordTypeAlias { name } => {
                     // We're dealing here with a type alias being used as a
                     // constructor. For example, given a type alias like:
                     //
@@ -823,16 +823,16 @@ fn on_removed_module_qualifier_from_value(
                     // constructor usage would be doing this:
                     //
                     //     point = Point 7 2
-                    if name == &reference.name.to_string() {
-                        references_to_unqualify.insert(Reference {
-                            kind: ReferenceKind::Constructor,
+                    if name == &unqualified_name.name.to_string() {
+                        references_to_unqualify.insert(Name {
+                            kind: NameKind::Constructor,
                             name: Rope::from_str(name),
                         });
                         add_to_exposing_list(
                             &import,
-                            &Reference {
-                                kind: ReferenceKind::Type,
-                                name: reference.name,
+                            &Name {
+                                kind: NameKind::Type,
+                                name: unqualified_name.name,
                             },
                             None,
                             refactor,
@@ -840,29 +840,30 @@ fn on_removed_module_qualifier_from_value(
                         break;
                     }
                 }
-                ElmExport::Type { name, constructors } => {
-                    if constructors.contains(&reference.name.to_string()) {
+                ExportedName::Type { name, constructors } => {
+                    if constructors.contains(&unqualified_name.name.to_string())
+                    {
                         for ctor in constructors.iter() {
-                            references_to_unqualify.insert(Reference {
-                                kind: ReferenceKind::Constructor,
+                            references_to_unqualify.insert(Name {
+                                kind: NameKind::Constructor,
                                 name: Rope::from_str(ctor),
                             });
                         }
                         add_to_exposing_list(
                             &import,
-                            &reference,
+                            &unqualified_name,
                             Some(name),
                             refactor,
                         )?;
-                        references_to_unqualify.insert(reference);
+                        references_to_unqualify.insert(unqualified_name);
                         break;
                     }
                 }
             }
         }
     } else {
-        add_to_exposing_list(&import, &reference, None, refactor)?;
-        references_to_unqualify.insert(reference);
+        add_to_exposing_list(&import, &unqualified_name, None, refactor)?;
+        references_to_unqualify.insert(unqualified_name);
     };
     remove_qualifier_from_references(
         engine,
@@ -880,7 +881,7 @@ fn remove_qualifier_from_references(
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     qualifier: &RopeSlice,
-    references: HashSet<Reference>,
+    references: HashSet<Name>,
     // If we're removing qualifiers because the programmer started by removing
     // the qualifier from a single node, this is that node.
     // Our logic renaming a pre-existing variable of the same name should not
@@ -890,13 +891,13 @@ fn remove_qualifier_from_references(
     // Find existing unqualified references, so we can check whether removing
     // a qualifier from a qualified reference will introduce a naming conflict.
     let mut cursor = QueryCursor::new();
-    let names_in_use: HashSet<Reference> = engine
+    let names_in_use: HashSet<Name> = engine
         .query_for_unqualified_values
         .run_in(&mut cursor, code, code.tree.root_node())
         .map(|r| r.map(|(_, reference)| reference))
-        .collect::<Result<HashSet<Reference>, Error>>()?;
+        .collect::<Result<HashSet<Name>, Error>>()?;
 
-    let mut names_from_other_modules: HashMap<Reference, Rope> = HashMap::new();
+    let mut names_from_other_modules: HashMap<Name, Rope> = HashMap::new();
     let imports = engine.query_for_imports.run(&mut cursor, code);
     let project_info = engine.buffer_project(code.buffer)?;
     for import in imports {
@@ -907,7 +908,7 @@ fn remove_qualifier_from_references(
                 let (_, exposed) = res?;
                 let module =
                     get_elm_module(project_info, &import.unaliased_name())?;
-                exposed.for_each_reference(module, |reference| {
+                exposed.for_each_name(module, |reference| {
                     names_from_other_modules
                         .insert(reference, import.aliased_name().into());
                 });
@@ -957,7 +958,7 @@ fn remove_qualifier_from_references(
     );
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
-        if references.contains(&qualified.reference) {
+        if references.contains(&qualified.unqualified_name) {
             refactor.add_change(
                 // The +1 makes it include the trailing dot between qualifier
                 // and qualified value.
@@ -971,17 +972,17 @@ fn remove_qualifier_from_references(
 }
 
 struct NamesWithDigit<'a> {
-    base_reference: &'a Reference,
+    base_reference: &'a Name,
     next_digit: usize,
 }
 
 impl<'a> Iterator for NamesWithDigit<'a> {
-    type Item = Reference;
+    type Item = Name;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut new_name = self.base_reference.name.clone();
         new_name.append(Rope::from_str(self.next_digit.to_string().as_str()));
-        let next_ref = Reference {
+        let next_ref = Name {
             name: new_name,
             kind: self.base_reference.kind,
         };
@@ -990,7 +991,7 @@ impl<'a> Iterator for NamesWithDigit<'a> {
     }
 }
 
-fn names_with_digit(reference: &Reference) -> NamesWithDigit {
+fn names_with_digit(reference: &Name) -> NamesWithDigit {
     NamesWithDigit {
         base_reference: reference,
         next_digit: 2,
@@ -1003,9 +1004,9 @@ mod names_with_digit {
 
     #[test]
     fn iterator_returns_values_with_increasing_trailing_digit() {
-        let base_reference = Reference {
+        let base_reference = Name {
             name: Rope::from_str("hi"),
-            kind: ReferenceKind::Value,
+            kind: NameKind::Value,
         };
         let first_tree: Vec<Rope> = names_with_digit(&base_reference)
             .map(|reference| reference.name)
@@ -1020,8 +1021,8 @@ fn rename(
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     node_stripped_of_qualifier: Option<Node>,
-    from: &Reference,
-    to: &Reference,
+    from: &Name,
+    to: &Name,
 ) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
     let unqualified_values = engine.query_for_unqualified_values.run_in(
@@ -1043,7 +1044,7 @@ fn rename(
 // Add a name to the list of values exposed from a particular module.
 fn add_to_exposing_list(
     import: &Import,
-    reference: &Reference,
+    reference: &Name,
     ctor_type: Option<&String>,
     refactor: &mut Refactor,
 ) -> Result<(), Error> {
@@ -1060,10 +1061,10 @@ fn add_to_exposing_list(
     for result in import.exposing_list() {
         let (node, exposed) = result?;
         let exposed_name = match exposed {
-            Exposed::Operator(op) => op.name,
-            Exposed::Value(val) => val.name,
-            Exposed::Type(type_) => type_.name,
-            Exposed::All => {
+            ExposedName::Operator(op) => op.name,
+            ExposedName::Value(val) => val.name,
+            ExposedName::Type(type_) => type_.name,
+            ExposedName::All => {
                 return Ok(());
             }
         };
@@ -1137,9 +1138,9 @@ fn on_added_module_qualifier_to_value(
         })??;
     let (
         _,
-        QualifiedReference {
+        QualifiedName {
             qualifier,
-            reference,
+            unqualified_name,
         },
     ) = engine
         .query_for_qualified_values
@@ -1148,9 +1149,15 @@ fn on_added_module_qualifier_to_value(
         .ok_or_else(|| {
             log::mk_err!("parsing qualified value node using query failed")
         })??;
-    if old_reference.name == reference.name {
+    if old_reference.name == unqualified_name.name {
         qualify_value(
-            engine, refactor, &diff.new, None, &qualifier, &reference, false,
+            engine,
+            refactor,
+            &diff.new,
+            None,
+            &qualifier,
+            &unqualified_name,
+            false,
         )
     } else {
         Ok(())
@@ -1163,7 +1170,7 @@ fn qualify_value(
     code: &SourceFileSnapshot,
     node_to_skip: Option<Node>,
     qualifier: &Rope,
-    reference: &Reference,
+    reference: &Name,
     // If the qualified value is coming from an import that exposing everything,
     // then this boolean decides whether to keep the `exposing (..)` clause as
     // is, or whether to replace it with an explicit list of currently used
@@ -1178,27 +1185,27 @@ fn qualify_value(
     for result in import.exposing_list() {
         let (node, exposed) = result?;
         match &exposed {
-            Exposed::Operator(op) => {
+            ExposedName::Operator(op) => {
                 if op.name == reference.name
-                    && reference.kind == ReferenceKind::Operator
+                    && reference.kind == NameKind::Operator
                 {
                     return Err(log::mk_err!(
                         "cannot qualify operator, Elm doesn't allow it!"
                     ));
                 }
             }
-            Exposed::Type(type_) => {
+            ExposedName::Type(type_) => {
                 if type_.name == reference.name
-                    && reference.kind == ReferenceKind::Type
+                    && reference.kind == NameKind::Type
                 {
                     if exposing_list_length == 1 {
                         remove_exposing_list(refactor, &import);
                     } else {
                         remove_from_exposing_list(refactor, &node)?;
                     }
-                    references_to_qualify.insert(Reference {
+                    references_to_qualify.insert(Name {
                         name: type_.name.into(),
-                        kind: ReferenceKind::Type,
+                        kind: NameKind::Type,
                     });
                 }
 
@@ -1208,20 +1215,20 @@ fn qualify_value(
                             // Ensure we don't remove the item from the exposing
                             // list twice (see code above).
                             // TODO: Clean this up.
-                            if reference.kind != ReferenceKind::Type {
+                            if reference.kind != NameKind::Type {
                                 if exposing_list_length == 1 {
                                     remove_exposing_list(refactor, &import);
                                 } else {
                                     remove_from_exposing_list(refactor, &node)?;
                                 }
                             }
-                            references_to_qualify.insert(Reference {
+                            references_to_qualify.insert(Name {
                                 name: Rope::from_str(ctor),
-                                kind: ReferenceKind::Type,
+                                kind: NameKind::Type,
                             });
-                            references_to_qualify.insert(Reference {
+                            references_to_qualify.insert(Name {
                                 name: Rope::from_str(ctor),
-                                kind: ReferenceKind::Constructor,
+                                kind: NameKind::Constructor,
                             });
                         }
                     }
@@ -1241,9 +1248,9 @@ fn qualify_value(
                             // so if the programmer qualifies one constructor assume
                             // intend to do them all.
                             let constructor_references =
-                                ctors.iter().map(|ctor| Reference {
+                                ctors.iter().map(|ctor| Name {
                                     name: Rope::from_str(ctor),
-                                    kind: ReferenceKind::Constructor,
+                                    kind: NameKind::Constructor,
                                 });
                             references_to_qualify
                                 .extend(constructor_references);
@@ -1251,25 +1258,25 @@ fn qualify_value(
                     }
                 }
             }
-            Exposed::Value(val) => {
+            ExposedName::Value(val) => {
                 if val.name == reference.name
-                    && reference.kind == ReferenceKind::Value
+                    && reference.kind == NameKind::Value
                 {
                     if exposing_list_length == 1 {
                         remove_exposing_list(refactor, &import);
                     } else {
                         remove_from_exposing_list(refactor, &node)?;
                     }
-                    references_to_qualify.insert(Reference {
+                    references_to_qualify.insert(Name {
                         name: val.name.into(),
-                        kind: ReferenceKind::Value,
+                        kind: NameKind::Value,
                     });
                     break;
                 }
             }
-            Exposed::All => {
+            ExposedName::All => {
                 if remove_expose_all_if_necessary {
-                    let mut exposed_names: HashMap<Reference, &ElmExport> =
+                    let mut exposed_names: HashMap<Name, &ExportedName> =
                         HashMap::new();
                     engine
                         .module_exports(code.buffer, import.unaliased_name())
@@ -1282,44 +1289,44 @@ fn qualify_value(
                         })?
                         .iter()
                         .for_each(|export| match export {
-                            ElmExport::Value { name } => {
+                            ExportedName::Value { name } => {
                                 exposed_names.insert(
-                                    Reference {
+                                    Name {
                                         name: Rope::from_str(name),
-                                        kind: ReferenceKind::Value,
+                                        kind: NameKind::Value,
                                     },
                                     export,
                                 );
                             }
-                            ElmExport::RecordTypeAlias { name } => {
+                            ExportedName::RecordTypeAlias { name } => {
                                 exposed_names.insert(
-                                    Reference {
+                                    Name {
                                         name: Rope::from_str(name),
-                                        kind: ReferenceKind::Type,
+                                        kind: NameKind::Type,
                                     },
                                     export,
                                 );
                                 exposed_names.insert(
-                                    Reference {
+                                    Name {
                                         name: Rope::from_str(name),
-                                        kind: ReferenceKind::Constructor,
+                                        kind: NameKind::Constructor,
                                     },
                                     export,
                                 );
                             }
-                            ElmExport::Type { name, constructors } => {
+                            ExportedName::Type { name, constructors } => {
                                 exposed_names.insert(
-                                    Reference {
+                                    Name {
                                         name: Rope::from_str(name),
-                                        kind: ReferenceKind::Type,
+                                        kind: NameKind::Type,
                                     },
                                     export,
                                 );
                                 for ctor in constructors {
                                     exposed_names.insert(
-                                        Reference {
+                                        Name {
                                             name: Rope::from_str(ctor),
-                                            kind: ReferenceKind::Constructor,
+                                            kind: NameKind::Constructor,
                                         },
                                         export,
                                     );
@@ -1327,12 +1334,11 @@ fn qualify_value(
                             }
                         });
                     let mut cursor = QueryCursor::new();
-                    let mut unqualified_names_in_use: HashSet<Reference> =
-                        engine
-                            .query_for_unqualified_values
-                            .run(&mut cursor, code)
-                            .map(|r| r.map(|(_, reference)| reference))
-                            .collect::<Result<HashSet<Reference>, Error>>()?;
+                    let mut unqualified_names_in_use: HashSet<Name> = engine
+                        .query_for_unqualified_values
+                        .run(&mut cursor, code)
+                        .map(|r| r.map(|(_, reference)| reference))
+                        .collect::<Result<HashSet<Name>, Error>>()?;
                     unqualified_names_in_use.remove(reference);
                     let mut new_exposed: String = String::new();
                     exposed_names.into_iter().for_each(
@@ -1342,15 +1348,15 @@ fn qualify_value(
                                     new_exposed.push_str(", ")
                                 }
                                 match export {
-                                    ElmExport::Value { name } => {
+                                    ExportedName::Value { name } => {
                                         new_exposed.push_str(name);
                                     }
-                                    ElmExport::RecordTypeAlias { name } => {
+                                    ExportedName::RecordTypeAlias { name } => {
                                         new_exposed.push_str(name);
                                     }
-                                    ElmExport::Type { name, .. } => {
+                                    ExportedName::Type { name, .. } => {
                                         if reference.kind
-                                            == ReferenceKind::Constructor
+                                            == NameKind::Constructor
                                         {
                                             new_exposed.push_str(&format!(
                                                 "{}(..)",
@@ -1368,15 +1374,15 @@ fn qualify_value(
                 }
 
                 match reference.kind {
-                    ReferenceKind::Operator => {
+                    NameKind::Operator => {
                         return Err(log::mk_err!(
                             "cannot qualify operator, Elm doesn't allow it!"
                         ));
                     }
-                    ReferenceKind::Value | ReferenceKind::Type => {
+                    NameKind::Value | NameKind::Type => {
                         references_to_qualify.insert(reference.clone());
                     }
-                    ReferenceKind::Constructor => {
+                    NameKind::Constructor => {
                         // We know a constructor got qualified, but not which
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
@@ -1397,17 +1403,19 @@ fn qualify_value(
                         };
                         for export in exports {
                             match export {
-                                ElmExport::Value { .. } => {}
-                                ElmExport::RecordTypeAlias { .. } => {}
-                                ElmExport::Type { constructors, .. } => {
+                                ExportedName::Value { .. } => {}
+                                ExportedName::RecordTypeAlias { .. } => {}
+                                ExportedName::Type { constructors, .. } => {
                                     if constructors
                                         .iter()
                                         .any(|ctor| *ctor == reference.name)
                                     {
                                         let constructor_references =
-                                            constructors.iter().map(|ctor| Reference {
-                                                name: Rope::from_str(ctor),
-                                                kind: ReferenceKind::Constructor,
+                                            constructors.iter().map(|ctor| {
+                                                Name {
+                                                    name: Rope::from_str(ctor),
+                                                    kind: NameKind::Constructor,
+                                                }
                                             });
                                         references_to_qualify
                                             .extend(constructor_references);
@@ -1445,7 +1453,7 @@ fn on_added_exposing_list_to_import(
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_reference(module, |reference| {
+        exposed.for_each_name(module, |reference| {
             references_to_unqualify.insert(reference);
         })
     }
@@ -1476,7 +1484,7 @@ fn on_removed_exposing_list_from_import(
         get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
     for result in import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_reference(module, |reference| {
+        exposed.for_each_name(module, |reference| {
             references_to_qualify.insert(reference);
         });
     }
@@ -1556,7 +1564,7 @@ fn add_qualifier_to_references(
     code: &SourceFileSnapshot,
     node_to_skip: Option<Node>,
     import: &Import,
-    references: HashSet<Reference>,
+    references: HashSet<Name>,
 ) -> Result<(), Error> {
     let results = engine.query_for_unqualified_values.run(cursor, code);
     let should_skip = |node: Node| {
@@ -1594,7 +1602,7 @@ impl QueryForQualifiedValues {
         &'a self,
         cursor: &'a mut QueryCursor,
         code: &'tree SourceFileSnapshot,
-    ) -> QualifiedReferences<'a, 'tree> {
+    ) -> QualifiedNames<'a, 'tree> {
         self.run_in(cursor, code, code.tree.root_node())
     }
 
@@ -1603,8 +1611,8 @@ impl QueryForQualifiedValues {
         cursor: &'a mut QueryCursor,
         code: &'tree SourceFileSnapshot,
         node: Node<'tree>,
-    ) -> QualifiedReferences<'a, 'tree> {
-        QualifiedReferences {
+    ) -> QualifiedNames<'a, 'tree> {
+        QualifiedNames {
             code,
             query: self,
             matches: cursor.matches(&self.query, node, code),
@@ -1612,14 +1620,14 @@ impl QueryForQualifiedValues {
     }
 }
 
-struct QualifiedReferences<'a, 'tree> {
+struct QualifiedNames<'a, 'tree> {
     query: &'a QueryForQualifiedValues,
     code: &'tree SourceFileSnapshot,
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
 }
 
-impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
-    type Item = Result<(Node<'a>, QualifiedReference), Error>;
+impl<'a, 'tree> Iterator for QualifiedNames<'a, 'tree> {
+    type Item = Result<(Node<'a>, QualifiedName), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
@@ -1627,11 +1635,11 @@ impl<'a, 'tree> Iterator for QualifiedReferences<'a, 'tree> {
     }
 }
 
-impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
+impl<'a, 'tree> QualifiedNames<'a, 'tree> {
     fn parse_match(
         &self,
         match_: QueryMatch<'a, 'tree>,
-    ) -> Result<(Node<'a>, QualifiedReference), Error> {
+    ) -> Result<(Node<'a>, QualifiedName), Error> {
         let mut qualifier_range = None;
         let mut root_node = None;
         let mut opt_name_capture = None;
@@ -1661,9 +1669,9 @@ impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
         })?;
         let qualifier = self.code.slice(&qualifier_range);
         let kind = match name_capture.index {
-            index if index == self.query.value => ReferenceKind::Value,
-            index if index == self.query.type_ => ReferenceKind::Type,
-            index if index == self.query.constructor => ReferenceKind::Constructor,
+            index if index == self.query.value => NameKind::Value,
+            index if index == self.query.type_ => NameKind::Type,
+            index if index == self.query.constructor => NameKind::Constructor,
             index => {
                 return Err(log::mk_err!(
                     "name in match of qualified reference has unexpected index {:?}",
@@ -1671,13 +1679,13 @@ impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
                 ))
             }
         };
-        let reference = Reference {
+        let unqualified_name = Name {
             name: self.code.slice(&name_capture.node.byte_range()).into(),
             kind,
         };
-        let qualified = QualifiedReference {
+        let qualified = QualifiedName {
             qualifier: qualifier.into(),
-            reference,
+            unqualified_name,
         };
         Ok((
             root_node.ok_or_else(|| {
@@ -1691,41 +1699,40 @@ impl<'a, 'tree> QualifiedReferences<'a, 'tree> {
 }
 
 #[derive(PartialEq)]
-struct QualifiedReference {
+struct QualifiedName {
     qualifier: Rope,
-    reference: Reference,
+    unqualified_name: Name,
 }
 
-#[derive(Clone, Debug)]
-struct Reference {
+#[derive(Clone, Debug, Eq)]
+struct Name {
     name: Rope,
-    kind: ReferenceKind,
+    kind: NameKind,
 }
 
-impl PartialEq for Reference {
+impl PartialEq for Name {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name && self.kind == other.kind
     }
 }
 
-impl std::hash::Hash for Reference {
+impl std::hash::Hash for Name {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // TODO: try to implement this without allocating a string.
         self.name.to_string().hash(state);
         self.kind.hash(state);
     }
 }
 
-impl Eq for Reference {}
-
 #[derive(PartialEq, Clone, Copy, Debug, Hash)]
-enum ReferenceKind {
+enum NameKind {
     Value,
     Type,
     Constructor,
     Operator,
 }
 
-impl Eq for ReferenceKind {}
+impl Eq for NameKind {}
 
 query::query!(
     QueryForUnqualifiedValues,
@@ -1767,15 +1774,15 @@ struct UnqualifiedValues<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
-    type Item = Result<(Node<'a>, Reference), Error>;
+    type Item = Result<(Node<'a>, Name), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
         let capture = match_.captures.first()?;
         let kind = match capture.index {
-            index if index == self.query.value => ReferenceKind::Value,
-            index if index == self.query.type_ => ReferenceKind::Type,
-            index if index == self.query.constructor => ReferenceKind::Constructor,
+            index if index == self.query.value => NameKind::Value,
+            index if index == self.query.type_ => NameKind::Type,
+            index if index == self.query.constructor => NameKind::Constructor,
             index => {
                 return Some(Err(log::mk_err!(
                     "query for unqualified values captured name with unexpected index {:?}",
@@ -1785,7 +1792,7 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
         };
         let node = capture.node;
         let name = self.code.slice(&node.byte_range());
-        let reference = Reference {
+        let reference = Name {
             name: name.into(),
             kind,
         };
@@ -1894,11 +1901,11 @@ impl Import<'_> {
             self.code.slice(&self.name_node.byte_range()),
         )? {
             match export {
-                ElmExport::Value { .. } => {}
-                ElmExport::RecordTypeAlias { name } => {
+                ExportedName::Value { .. } => {}
+                ExportedName::RecordTypeAlias { name } => {
                     return Ok(ExposedConstructors::FromTypeAlias(name));
                 }
-                ElmExport::Type { name, constructors } => {
+                ExportedName::Type { name, constructors } => {
                     if type_.name.eq(name) {
                         return Ok(ExposedConstructors::FromCustomType(
                             constructors,
@@ -1917,7 +1924,7 @@ struct ExposedList<'a> {
 }
 
 impl<'a> Iterator for ExposedList<'a> {
-    type Item = Result<(Node<'a>, Exposed<'a>), Error>;
+    type Item = Result<(Node<'a>, ExposedName<'a>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let cursor = self.cursor.as_mut()?;
@@ -1941,10 +1948,10 @@ impl<'a> Iterator for ExposedList<'a> {
             // comment explaining it.
             if node.is_named() && !node.byte_range().is_empty() {
                 let exposed = match node.kind_id() {
-                    EXPOSED_VALUE => Exposed::Value(ExposedValue {
+                    EXPOSED_VALUE => ExposedName::Value(ExposedValue {
                         name: self.code.slice(&node.byte_range()),
                     }),
-                    EXPOSED_OPERATOR => Exposed::Operator(ExposedOperator {
+                    EXPOSED_OPERATOR => ExposedName::Operator(ExposedOperator {
                         name: self.code.slice(&node.byte_range()),
                     }),
                     EXPOSED_TYPE => {
@@ -1956,12 +1963,12 @@ impl<'a> Iterator for ExposedList<'a> {
                                 )));
                             }
                         };
-                        Exposed::Type(ExposedType {
+                        ExposedName::Type(ExposedType {
                             name: self.code.slice(&type_name_node.byte_range()),
                             exposing_constructors: node.child(1).is_some(),
                         })
                     }
-                    DOUBLE_DOT => Exposed::All,
+                    DOUBLE_DOT => ExposedName::All,
                     _ => {
                         return Some(Err(log::mk_err!(
                             "capture in query for exposing list has unexpected kind {:?}",
@@ -1977,43 +1984,43 @@ impl<'a> Iterator for ExposedList<'a> {
 }
 
 #[derive(PartialEq)]
-enum Exposed<'a> {
+enum ExposedName<'a> {
     Operator(ExposedOperator<'a>),
     Value(ExposedValue<'a>),
     Type(ExposedType<'a>),
     All,
 }
 
-impl<'a> Exposed<'a> {
-    fn for_each_reference<F>(&self, import: &ElmModule, mut f: F)
+impl<'a> ExposedName<'a> {
+    fn for_each_name<F>(&self, import: &ElmModule, mut f: F)
     where
-        F: FnMut(Reference),
+        F: FnMut(Name),
     {
         match self {
-            Exposed::Value(val) => f(Reference {
-                kind: ReferenceKind::Value,
+            ExposedName::Value(val) => f(Name {
+                kind: NameKind::Value,
                 name: val.name.into(),
             }),
-            Exposed::Type(type_) => {
-                f(Reference {
-                    kind: ReferenceKind::Type,
+            ExposedName::Type(type_) => {
+                f(Name {
+                    kind: NameKind::Type,
                     name: type_.name.into(),
                 });
                 import.exports.iter().for_each(|export| match export {
-                    ElmExport::Value { .. } => {}
-                    ElmExport::RecordTypeAlias { name } => {
+                    ExportedName::Value { .. } => {}
+                    ExportedName::RecordTypeAlias { name } => {
                         if name == &type_.name {
-                            f(Reference {
-                                kind: ReferenceKind::Constructor,
+                            f(Name {
+                                kind: NameKind::Constructor,
                                 name: Rope::from_str(name),
                             });
                         }
                     }
-                    ElmExport::Type { name, constructors } => {
+                    ExportedName::Type { name, constructors } => {
                         if type_.exposing_constructors && name == &type_.name {
                             for ctor in constructors.iter() {
-                                f(Reference {
-                                    kind: ReferenceKind::Constructor,
+                                f(Name {
+                                    kind: NameKind::Constructor,
                                     name: Rope::from_str(ctor),
                                 })
                             }
@@ -2021,38 +2028,38 @@ impl<'a> Exposed<'a> {
                     }
                 });
             }
-            Exposed::All => {
+            ExposedName::All => {
                 import.exports.iter().for_each(|export| match export {
-                    ElmExport::Value { name } => f(Reference {
-                        kind: ReferenceKind::Value,
+                    ExportedName::Value { name } => f(Name {
+                        kind: NameKind::Value,
                         name: Rope::from_str(name),
                     }),
-                    ElmExport::RecordTypeAlias { name } => {
-                        f(Reference {
-                            kind: ReferenceKind::Value,
+                    ExportedName::RecordTypeAlias { name } => {
+                        f(Name {
+                            kind: NameKind::Value,
                             name: Rope::from_str(name),
                         });
-                        f(Reference {
-                            kind: ReferenceKind::Type,
+                        f(Name {
+                            kind: NameKind::Type,
                             name: Rope::from_str(name),
                         });
                     }
-                    ElmExport::Type { name, constructors } => {
-                        f(Reference {
-                            kind: ReferenceKind::Type,
+                    ExportedName::Type { name, constructors } => {
+                        f(Name {
+                            kind: NameKind::Type,
                             name: Rope::from_str(name),
                         });
                         for ctor in constructors.iter() {
-                            f(Reference {
-                                kind: ReferenceKind::Constructor,
+                            f(Name {
+                                kind: NameKind::Constructor,
                                 name: Rope::from_str(ctor),
                             });
                         }
                     }
                 });
             }
-            Exposed::Operator(op) => f(Reference {
-                kind: ReferenceKind::Operator,
+            ExposedName::Operator(op) => f(Name {
+                kind: NameKind::Operator,
                 name: op.name.into(),
             }),
         }

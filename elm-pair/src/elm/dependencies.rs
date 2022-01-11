@@ -19,11 +19,11 @@ pub struct ProjectInfo {
 
 #[derive(Debug)]
 pub struct ElmModule {
-    pub exports: Vec<ElmExport>,
+    pub exports: Vec<ExportedName>,
 }
 
 #[derive(Debug)]
-pub enum ElmExport {
+pub enum ExportedName {
     Value {
         name: String,
     },
@@ -231,7 +231,11 @@ crate::elm::query::query!(
 );
 
 impl QueryForExports {
-    fn run(&self, tree: &Tree, code: &[u8]) -> Result<Vec<ElmExport>, Error> {
+    fn run(
+        &self,
+        tree: &Tree,
+        code: &[u8],
+    ) -> Result<Vec<ExportedName>, Error> {
         let mut cursor = QueryCursor::new();
         let matches = cursor
             .matches(&self.query, tree.root_node(), code)
@@ -266,7 +270,7 @@ impl QueryForExports {
             } else if self.value == capture.index {
                 let name = code_slice(code, &capture.node)?;
                 if exposed.has(&Exposed::Value(name)) {
-                    let export = ElmExport::Value {
+                    let export = ExportedName::Value {
                         name: name.to_owned(),
                     };
                     exports.push(export);
@@ -281,11 +285,11 @@ impl QueryForExports {
                         .and_then(|n| n.child_by_field_name("part"))
                         .map(|n| n.kind());
                     let export = if aliased_type == Some("record_type") {
-                        ElmExport::RecordTypeAlias {
+                        ExportedName::RecordTypeAlias {
                             name: name.to_owned(),
                         }
                     } else {
-                        ElmExport::Type {
+                        ExportedName::Type {
                             name: name.to_owned(),
                             constructors: Vec::new(),
                         }
@@ -302,13 +306,13 @@ impl QueryForExports {
                                 .map(std::borrow::ToOwned::to_owned)
                         })
                         .collect::<Result<Vec<String>, Error>>()?;
-                    let export = ElmExport::Type {
+                    let export = ExportedName::Type {
                         name: name.to_owned(),
                         constructors,
                     };
                     exports.push(export);
                 } else if exposed.has(&Exposed::Type(name)) {
-                    let export = ElmExport::Type {
+                    let export = ExportedName::Type {
                         name: name.to_owned(),
                         constructors: Vec::new(),
                     };
@@ -490,13 +494,13 @@ fn elm_module_from_interface(
 
 fn elm_export_from_value(
     (idat::Name(name), _): (idat::Name, idat::CanonicalAnnotation),
-) -> ElmExport {
-    ElmExport::Value { name }
+) -> ExportedName {
+    ExportedName::Value { name }
 }
 
 fn elm_export_from_union(
     (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ElmExport {
+) -> ExportedName {
     let constructor_names = |canonical_union: idat::CanonicalUnion| {
         let iter = canonical_union
             .alts
@@ -514,13 +518,13 @@ fn elm_export_from_union(
         idat::Union::Closed(_) => Vec::new(),
         idat::Union::Private(_) => Vec::new(),
     };
-    ElmExport::Type { name, constructors }
+    ExportedName::Type { name, constructors }
 }
 
 fn elm_export_from_alias(
     (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ElmExport {
-    ElmExport::Type {
+) -> ExportedName {
+    ExportedName::Type {
         name,
         constructors: Vec::new(),
     }
