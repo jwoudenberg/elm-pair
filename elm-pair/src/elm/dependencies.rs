@@ -31,6 +31,19 @@ pub enum ExportedName {
         name: String,
         constructors: Vec<String>,
     },
+    // We treat RecordTypeAlias separately from type, because it can be used as
+    // both a type and a constructor in imported code, i.e. you can do this:
+    //
+    //     type alias Point = { x : Int, y : Int }
+    //
+    //     origin : Point       // using `Point` as a type
+    //     origin = Point 0 0   // using `Point` as a constructor
+    //
+    // Modeling this as a `Type` with name `Point` and a single constructor also
+    // named `Point` wouldn't be entirely accurate, because constructors of
+    // custom types are imported using `exposing (MyType(..))`, whereas
+    // `exposing (Point)` is enough to import both type and constructor in case
+    // of a record type alias.
     RecordTypeAlias {
         name: String,
     },
