@@ -1,15 +1,124 @@
 use crate::elm::idat;
 use crate::support::log;
 use crate::support::log::Error;
+use abomonation_derive::Abomonation;
+use differential_dataflow::operators::Join;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{BufReader, Read};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::RwLock;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
-#[derive(Debug)]
+pub struct DataflowComputation {
+    worker: timely::worker::Worker<timely::communication::allocator::thread::Thread>,
+    probe: timely::dataflow::operators::probe::Handle<u32>,
+    project_roots: differential_dataflow::input::InputSession<u32, PathBuf, isize>,
+    projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
+}
+
+impl DataflowComputation {
+    pub(crate) fn new(query_for_exports: &'static QueryForExports) -> DataflowComputation {
+        let alloc = timely::communication::allocator::thread::Thread::new();
+        let projects = Rc::new(RwLock::new(HashMap::new()));
+        let projects_clone = projects.clone();
+        let mut worker = timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
+
+        let mut project_roots_input = differential_dataflow::input::InputSession::new();
+
+        let probe = worker.dataflow(|scope| {
+            let project_roots = project_roots_input.to_collection(scope);
+
+            // TODO: Clean up, removing clone's, unwrap's.
+            let elm_jsons = project_roots.map(|project_root: PathBuf| {
+                let elm_json_path = project_root.join("elm.json");
+                let elm_json = load_elm_json(&elm_json_path).unwrap();
+                (project_root.to_str().unwrap().to_string(), elm_json)
+            });
+
+            project_roots
+                .map(|path| {
+                    (
+                        path.to_str().unwrap().to_string(),
+                        path.to_str().unwrap().to_string(),
+                    )
+                })
+                .join(&elm_jsons)
+                .map(move |(project_root_clone, (project_root, elm_json))| {
+                    let project_info = load_dependencies(
+                        query_for_exports,
+                        &PathBuf::from(project_root),
+                        elm_json,
+                    )
+                    .unwrap();
+                    (project_root_clone, project_info)
+                })
+                .inspect(move |((project_root, project_info), _, diff)| {
+                    if *diff > 0 {
+                        projects_clone
+                            .write()
+                            .unwrap()
+                            .insert(PathBuf::from(project_root.clone()), project_info.clone());
+                    }
+                    if *diff < 0 {
+                        projects_clone
+                            .write()
+                            .unwrap()
+                            .remove(&PathBuf::from(project_root));
+                    }
+                })
+                .probe()
+        });
+
+        project_roots_input.advance_to(0);
+
+        DataflowComputation {
+            worker,
+            probe,
+            project_roots: project_roots_input,
+            projects,
+        }
+    }
+
+    pub(crate) fn watch_project(&mut self, project_root: PathBuf) {
+        self.project_roots.insert(project_root)
+    }
+
+    pub(crate) fn _unwatch_project(&mut self, project_root: PathBuf) {
+        self.project_roots.remove(project_root)
+    }
+
+    pub(crate) fn advance(&mut self) {
+        let DataflowComputation {
+            worker,
+            project_roots,
+            probe,
+            ..
+        } = self;
+        project_roots.advance_to(project_roots.time() + 1);
+        project_roots.flush();
+        worker.step_while(|| probe.less_than(project_roots.time()));
+    }
+
+    pub(crate) fn with_project<F, R>(&self, root: &Path, f: F) -> Result<R, Error>
+    where
+        F: FnOnce(&ProjectInfo) -> Result<R, Error>,
+    {
+        let projects = self
+            .projects
+            .read()
+            .map_err(|err| log::mk_err!("failed to obtain read lock for projects: {:?}", err))?;
+        let project = projects
+            .get(root)
+            .ok_or_else(|| log::mk_err!("did not find project for path {:?}", root))?;
+        f(project)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ProjectInfo {
     pub source_directories: Vec<PathBuf>,
     pub modules: HashMap<String, ElmModule>,
@@ -17,12 +126,12 @@ pub struct ProjectInfo {
     pub idat_path: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ElmModule {
     pub exports: Vec<ExportedName>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ExportedName {
     Value {
         name: String,
@@ -49,22 +158,22 @@ pub enum ExportedName {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct ElmJson {
     #[serde(rename = "source-directories")]
-    source_directories: Vec<PathBuf>,
+    source_directories: Vec<String>,
 }
 
-pub(crate) fn load_dependencies(
+fn load_dependencies(
     query_for_exports: &QueryForExports,
     project_root: &Path,
+    elm_json: ElmJson,
 ) -> Result<ProjectInfo, Error> {
     // TODO: Remove harcoded Elm version.
     let idat_path = project_root.join("elm-stuff/0.19.1/i.dat");
     let mut modules = from_idat(project_root, &idat_path)?;
     let elm_json_path = project_root.join("elm.json");
-    let elm_json = load_elm_json(&elm_json_path)?;
     modules.extend(find_project_modules(
         query_for_exports,
         project_root,
@@ -84,9 +193,8 @@ pub(crate) fn load_dependencies(
 }
 
 fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
-    let file = std::fs::File::open(path).map_err(|err| {
-        log::mk_err!("error while reading elm.json: {:?}", err)
-    })?;
+    let file = std::fs::File::open(path)
+        .map_err(|err| log::mk_err!("error while reading elm.json: {:?}", err))?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
         .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
@@ -152,12 +260,7 @@ fn find_project_modules_in_dir(
     });
     for path in valid_paths {
         if path.is_dir() {
-            find_project_modules_in_dir(
-                query_for_exports,
-                &path,
-                source_dir,
-                modules,
-            );
+            find_project_modules_in_dir(query_for_exports, &path, source_dir, modules);
         } else if path.extension() == Some(std::ffi::OsStr::new("elm")) {
             let module_name = match module_name_from_path(source_dir, &path) {
                 Ok(name) => name,
@@ -184,10 +287,7 @@ fn find_project_modules_in_dir(
     }
 }
 
-fn module_name_from_path(
-    source_dir: &Path,
-    path: &Path,
-) -> Result<String, Error> {
+fn module_name_from_path(source_dir: &Path, path: &Path) -> Result<String, Error> {
     path.with_extension("")
         .strip_prefix(source_dir)
         .map_err(|err| {
@@ -216,10 +316,7 @@ fn module_name_from_path(
         })
 }
 
-fn parse_module(
-    query_for_exports: &QueryForExports,
-    path: &Path,
-) -> Result<ElmModule, Error> {
+fn parse_module(query_for_exports: &QueryForExports, path: &Path) -> Result<ElmModule, Error> {
     let mut file = std::fs::File::open(path)
         .map_err(|err| log::mk_err!("failed to open module file: {:?}", err))?;
     let mut bytes = Vec::new();
@@ -244,11 +341,7 @@ crate::elm::query::query!(
 );
 
 impl QueryForExports {
-    fn run(
-        &self,
-        tree: &Tree,
-        code: &[u8],
-    ) -> Result<Vec<ExportedName>, Error> {
+    fn run(&self, tree: &Tree, code: &[u8]) -> Result<Vec<ExportedName>, Error> {
         let mut cursor = QueryCursor::new();
         let matches = cursor
             .matches(&self.query, tree.root_node(), code)
@@ -269,9 +362,7 @@ impl QueryForExports {
                 exposed = exposed.add(val);
             } else if self.exposed_type == capture.index {
                 let name_node = capture.node.child(0).ok_or_else(|| {
-                    log::mk_err!(
-                        "could not find name node of type in exposing list"
-                    )
+                    log::mk_err!("could not find name node of type in exposing list")
                 })?;
                 let name = code_slice(code, &name_node)?;
                 let val = if capture.node.child(1).is_some() {
@@ -315,8 +406,7 @@ impl QueryForExports {
                     let constructors = rest
                         .iter()
                         .map(|ctor_capture| {
-                            code_slice(code, &ctor_capture.node)
-                                .map(std::borrow::ToOwned::to_owned)
+                            code_slice(code, &ctor_capture.node).map(std::borrow::ToOwned::to_owned)
                         })
                         .collect::<Result<Vec<String>, Error>>()?;
                     let export = ExportedName::Type {
@@ -434,16 +524,12 @@ where
     }
 }
 
-fn from_idat(
-    project_root: &Path,
-    path: &Path,
-) -> Result<HashMap<String, ElmModule>, Error> {
+fn from_idat(project_root: &Path, path: &Path) -> Result<HashMap<String, ElmModule>, Error> {
     let file = std::fs::File::open(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             create_elm_stuff(project_root)?;
-            std::fs::File::open(path).map_err(|err| {
-                log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
-            })
+            std::fs::File::open(path)
+                .map_err(|err| log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err))
         } else {
             Err(log::mk_err!(
                 "error opening elm-stuff/i.dat file: {:?}",
@@ -452,14 +538,13 @@ fn from_idat(
         }
     })?;
     let reader = BufReader::new(file);
-    let iter =
-        idat::parse(reader)?
-            .into_iter()
-            .filter_map(|(canonical_name, i)| {
-                let idat::Name(name) = canonical_name.module;
-                let module = elm_module_from_interface(i)?;
-                Some((name, module))
-            });
+    let iter = idat::parse(reader)?
+        .into_iter()
+        .filter_map(|(canonical_name, i)| {
+            let idat::Name(name) = canonical_name.module;
+            let module = elm_module_from_interface(i)?;
+            Some((name, module))
+        });
     Ok(HashMap::from_iter(iter))
 }
 
@@ -490,9 +575,7 @@ fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
     }
 }
 
-fn elm_module_from_interface(
-    dep_i: idat::DependencyInterface,
-) -> Option<ElmModule> {
+fn elm_module_from_interface(dep_i: idat::DependencyInterface) -> Option<ElmModule> {
     if let idat::DependencyInterface::Public(interface) = dep_i {
         // TODO: add binops
         let values = interface.values.into_iter().map(elm_export_from_value);
@@ -511,9 +594,7 @@ fn elm_export_from_value(
     ExportedName::Value { name }
 }
 
-fn elm_export_from_union(
-    (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ExportedName {
+fn elm_export_from_union((idat::Name(name), union): (idat::Name, idat::Union)) -> ExportedName {
     let constructor_names = |canonical_union: idat::CanonicalUnion| {
         let iter = canonical_union
             .alts
@@ -522,9 +603,7 @@ fn elm_export_from_union(
         Vec::from_iter(iter)
     };
     let constructors = match union {
-        idat::Union::Open(canonical_union) => {
-            constructor_names(canonical_union)
-        }
+        idat::Union::Open(canonical_union) => constructor_names(canonical_union),
         // We're reading this information for use by other modules.
         // These external modules can't see private constructors,
         // so we don't need to return them here.
@@ -534,9 +613,7 @@ fn elm_export_from_union(
     ExportedName::Type { name, constructors }
 }
 
-fn elm_export_from_alias(
-    (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ExportedName {
+fn elm_export_from_alias((idat::Name(name), _): (idat::Name, idat::Alias)) -> ExportedName {
     ExportedName::Type {
         name,
         constructors: Vec::new(),
@@ -545,9 +622,7 @@ fn elm_export_from_alias(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::dependencies::{
-        parse_module, ElmModule, Intersperse, QueryForExports,
-    };
+    use crate::elm::dependencies::{parse_module, ElmModule, Intersperse, QueryForExports};
     use crate::support::log::Error;
     use crate::test_support::included_answer_test as ia_test;
     use std::path::Path;
