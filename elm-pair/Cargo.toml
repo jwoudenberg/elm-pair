@@ -22,6 +22,9 @@ timely = "^0.12.0"
 tree-sitter = "^0.20.1"
 tree-sitter-elm = { git = "https://github.com/jwoudenberg/tree-sitter-elm", branch = "main" }
 
+[patch.crates-io]
+abomonation = { git = "https://github.com/jwoudenberg/abomonation", branch = "master" }
+
 [[bin]]
 name = "elm-pair"
 path = "src/main.rs"
