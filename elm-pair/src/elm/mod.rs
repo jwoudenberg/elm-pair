@@ -345,14 +345,6 @@ fn _is_elm_file(path: &Path) -> bool {
     path.extension() == Some(std::ffi::OsStr::new("elm"))
 }
 
-fn _is_project_source_file(project_info: &ProjectInfo, path: &Path) -> bool {
-    _is_elm_file(path)
-        && project_info
-            .source_directories
-            .iter()
-            .any(|dir| path.starts_with(dir))
-}
-
 #[allow(clippy::needless_collect)]
 fn on_unrecognized_change(
     engine: &RefactorEngine,

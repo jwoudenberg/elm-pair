@@ -57,8 +57,11 @@ impl DataflowComputation {
             });
 
             let paths_to_watch = elm_jsons
-                .flat_map(|(_, elm_json)| {
-                    elm_json.source_directories.into_iter()
+                .flat_map(|(project_root, elm_json)| {
+                    elm_json
+                        .source_directories
+                        .into_iter()
+                        .map(move |dir| project_root.join(dir))
                 })
                 .concat(&project_roots.map(|path| elm_json_path(&path)))
                 .concat(&project_roots.map(|path| idat_path(&path)))
@@ -78,27 +81,50 @@ impl DataflowComputation {
                     }
                 });
 
-            let project_infos = project_roots
-                .map(|path| (path.clone(), path))
-                .join(&elm_jsons)
-                .map(move |(project_root_clone, (project_root, elm_json))| {
-                    let project_info = load_dependencies(
+            let project_idats = project_roots.map(|path| {
+                let modules = from_idat(&path).unwrap();
+                (path, modules)
+            });
+
+            let project_modules =
+                elm_jsons.map(move |(project_root, elm_json)| {
+                    let modules = find_project_modules(
                         query_for_exports,
                         &project_root,
-                        elm_json,
+                        &elm_json,
                     )
                     .unwrap();
-                    (project_root_clone, project_info)
-                })
+                    (project_root, modules)
+                });
+
+            let project_infos = project_idats
+                .join(&project_modules)
+                .map(
+                    move |(project_root, (mut idat_modules, local_modules))| {
+                        idat_modules.extend(local_modules);
+                        (
+                            project_root,
+                            ProjectInfo {
+                                modules: idat_modules.into_iter().collect(),
+                            },
+                        )
+                    },
+                )
                 .inspect(move |((project_root, project_info), _, diff)| {
-                    if *diff > 0 {
-                        projects_clone
-                            .write()
-                            .unwrap()
-                            .insert(project_root.clone(), project_info.clone());
-                    }
-                    if *diff < 0 {
-                        projects_clone.write().unwrap().remove(project_root);
+                    match std::cmp::Ord::cmp(diff, &0) {
+                        std::cmp::Ordering::Equal => {}
+                        std::cmp::Ordering::Less => {
+                            projects_clone
+                                .write()
+                                .unwrap()
+                                .remove(project_root);
+                        }
+                        std::cmp::Ordering::Greater => {
+                            projects_clone.write().unwrap().insert(
+                                project_root.clone(),
+                                project_info.clone(),
+                            );
+                        }
                     }
                 });
 
@@ -174,16 +200,19 @@ impl DataflowComputation {
 
 #[derive(Clone, Debug)]
 pub struct ProjectInfo {
-    pub source_directories: Vec<PathBuf>,
     pub modules: HashMap<String, ElmModule>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(
+    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
+)]
 pub struct ElmModule {
     pub exports: Vec<ExportedName>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(
+    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
+)]
 pub enum ExportedName {
     Value {
         name: String,
@@ -219,28 +248,6 @@ struct ElmJson {
     source_directories: Vec<PathBuf>,
 }
 
-fn load_dependencies(
-    query_for_exports: &QueryForExports,
-    project_root: &Path,
-    elm_json: ElmJson,
-) -> Result<ProjectInfo, Error> {
-    let mut modules = from_idat(project_root, &idat_path(project_root))?;
-    modules.extend(find_project_modules(
-        query_for_exports,
-        project_root,
-        &elm_json,
-    )?);
-    let project_info = ProjectInfo {
-        modules,
-        source_directories: elm_json
-            .source_directories
-            .into_iter()
-            .map(|dir| project_root.join(dir))
-            .collect(),
-    };
-    Ok(project_info)
-}
-
 fn elm_json_path(project_root: &Path) -> PathBuf {
     project_root.join("elm.json")
 }
@@ -263,8 +270,8 @@ fn find_project_modules(
     query_for_exports: &QueryForExports,
     project_root: &Path,
     elm_json: &ElmJson,
-) -> Result<HashMap<String, ElmModule>, Error> {
-    let mut modules_found = HashMap::new();
+) -> Result<Vec<(String, ElmModule)>, Error> {
+    let mut modules_found = Vec::new();
     for dir in elm_json.source_directories.iter() {
         match project_root.join(&dir).canonicalize() {
             Ok(source_dir) => find_project_modules_in_dir(
@@ -294,7 +301,7 @@ fn find_project_modules_in_dir(
     query_for_exports: &QueryForExports,
     dir_path: &Path,
     source_dir: &Path,
-    modules: &mut HashMap<String, ElmModule>,
+    modules: &mut Vec<(String, ElmModule)>,
 ) {
     let read_dir = match std::fs::read_dir(dir_path) {
         Ok(d) => d,
@@ -346,7 +353,7 @@ fn find_project_modules_in_dir(
                     continue;
                 }
             };
-            modules.insert(module_name, elm_module);
+            modules.push((module_name, elm_module));
         }
     }
 }
@@ -601,10 +608,8 @@ where
     }
 }
 
-fn from_idat(
-    project_root: &Path,
-    path: &Path,
-) -> Result<HashMap<String, ElmModule>, Error> {
+fn from_idat(project_root: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
+    let path = &idat_path(project_root);
     let file = std::fs::File::open(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             create_elm_stuff(project_root)?;
@@ -619,15 +624,15 @@ fn from_idat(
         }
     })?;
     let reader = BufReader::new(file);
-    let iter =
-        idat::parse(reader)?
-            .into_iter()
-            .filter_map(|(canonical_name, i)| {
-                let idat::Name(name) = canonical_name.module;
-                let module = elm_module_from_interface(i)?;
-                Some((name, module))
-            });
-    Ok(HashMap::from_iter(iter))
+    let modules = idat::parse(reader)?
+        .into_iter()
+        .filter_map(|(canonical_name, i)| {
+            let idat::Name(name) = canonical_name.module;
+            let module = elm_module_from_interface(i)?;
+            Some((name, module))
+        })
+        .collect();
+    Ok(modules)
 }
 
 fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
