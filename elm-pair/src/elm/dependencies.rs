@@ -19,7 +19,7 @@ pub struct DataflowComputation {
     worker: timely::worker::Worker<
         timely::communication::allocator::thread::Thread,
     >,
-    probe: timely::dataflow::operators::probe::Handle<u32>,
+    probes: Vec<timely::dataflow::operators::probe::Handle<u32>>,
     project_roots:
         differential_dataflow::input::InputSession<u32, PathBuf, isize>,
     projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
@@ -45,7 +45,7 @@ impl DataflowComputation {
         let mut project_roots_input =
             differential_dataflow::input::InputSession::new();
 
-        let probe = worker.dataflow(|scope| {
+        let probes = worker.dataflow(|scope| {
             let project_roots =
                 project_roots_input.to_collection(scope).distinct();
 
@@ -62,21 +62,23 @@ impl DataflowComputation {
                 })
                 .concat(&project_roots.map(|path| elm_json_path(&path)))
                 .concat(&project_roots.map(|path| idat_path(&path)))
-                .distinct();
-
-            paths_to_watch.inspect(move |(path, _, diff)| {
-                match std::cmp::Ord::cmp(diff, &0) {
-                    std::cmp::Ordering::Equal => {}
-                    std::cmp::Ordering::Less => {
-                        sender.send(Msg::UnwatchPath(path.to_owned())).unwrap();
+                .inspect(move |(path, _, diff)| {
+                    match std::cmp::Ord::cmp(diff, &0) {
+                        std::cmp::Ordering::Equal => {}
+                        std::cmp::Ordering::Less => {
+                            sender
+                                .send(Msg::UnwatchPath(path.to_owned()))
+                                .unwrap();
+                        }
+                        std::cmp::Ordering::Greater => {
+                            sender
+                                .send(Msg::WatchPath(path.to_owned()))
+                                .unwrap();
+                        }
                     }
-                    std::cmp::Ordering::Greater => {
-                        sender.send(Msg::WatchPath(path.to_owned())).unwrap();
-                    }
-                }
-            });
+                });
 
-            project_roots
+            let project_infos = project_roots
                 .map(|path| (path.clone(), path))
                 .join(&elm_jsons)
                 .map(move |(project_root_clone, (project_root, elm_json))| {
@@ -98,15 +100,16 @@ impl DataflowComputation {
                     if *diff < 0 {
                         projects_clone.write().unwrap().remove(project_root);
                     }
-                })
-                .probe()
+                });
+
+            vec![paths_to_watch.probe(), project_infos.probe()]
         });
 
         project_roots_input.advance_to(0);
 
         DataflowComputation {
             worker,
-            probe,
+            probes,
             project_roots: project_roots_input,
             projects,
             msgs,
@@ -132,13 +135,17 @@ impl DataflowComputation {
         let DataflowComputation {
             worker,
             project_roots,
-            probe,
+            probes,
             msgs,
             ..
         } = self;
         project_roots.advance_to(project_roots.time() + 1);
         project_roots.flush();
-        worker.step_while(|| probe.less_than(project_roots.time()));
+        worker.step_while(|| {
+            probes
+                .iter()
+                .all(|probe| probe.less_than(project_roots.time()))
+        });
         while let Ok(msg) = msgs.try_recv() {
             match msg {
                 Msg::WatchPath(path) => watch_path(&path),
