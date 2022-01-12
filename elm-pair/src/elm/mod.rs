@@ -1,6 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::dependencies::{
-    index_for_name, DataflowComputation, ElmModule, ExportedName, ProjectInfo, QueryForExports,
+    index_for_name, DataflowComputation, ElmModule, ExportedName, ProjectInfo,
+    QueryForExports,
 };
 use crate::support::log;
 use crate::support::log::Error;
@@ -43,8 +44,9 @@ mod kind_constants {
     #[test]
     fn check_kind_constants() {
         let language = tree_sitter_elm::language();
-        let check =
-            |constant, str, named| assert_eq!(constant, language.id_for_node_kind(str, named));
+        let check = |constant, str, named| {
+            assert_eq!(constant, language.id_for_node_kind(str, named))
+        };
         check(super::AS_CLAUSE, "as_clause", true);
         check(super::BLOCK_COMMENT, "block_comment", true);
         check(super::COMMA, ",", false);
@@ -75,7 +77,8 @@ mod kind_constants {
 }
 
 const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
-    "Basics", "Char", "Cmd", "List", "Maybe", "Platform", "Result", "String", "Sub", "Tuple",
+    "Basics", "Char", "Cmd", "List", "Maybe", "Platform", "Result", "String",
+    "Sub", "Tuple",
 ];
 
 pub(crate) struct RefactorEngine {
@@ -106,7 +109,10 @@ impl Refactor {
         self.replacements.push((range, new_bytes))
     }
 
-    pub fn edits(mut self, code: &mut SourceFileSnapshot) -> Result<Vec<Edit>, Error> {
+    pub fn edits(
+        mut self,
+        code: &mut SourceFileSnapshot,
+    ) -> Result<Vec<Edit>, Error> {
         // Sort edits in reverse order of where they change the source file. This
         // ensures when we apply the edits in sorted order that earlier edits don't
         // move the area of affect of later edits.
@@ -118,7 +124,8 @@ impl Refactor {
 
         let mut edits = Vec::with_capacity(self.replacements.len());
         for (range, new_bytes) in self.replacements {
-            let edit = Edit::new(code.buffer, &mut code.bytes, &range, new_bytes);
+            let edit =
+                Edit::new(code.buffer, &mut code.bytes, &range, new_bytes);
             code.apply_edit(edit.input_edit)?;
             edits.push(edit);
         }
@@ -132,10 +139,16 @@ impl RefactorEngine {
         let query_for_exports = Box::new(QueryForExports::init(language)?);
         let engine = RefactorEngine {
             buffers: HashMap::new(),
-            dataflow_computation: DataflowComputation::new(Box::leak(query_for_exports)),
+            dataflow_computation: DataflowComputation::new(Box::leak(
+                query_for_exports,
+            )),
             query_for_imports: QueryForImports::init(language)?,
-            query_for_unqualified_values: QueryForUnqualifiedValues::init(language)?,
-            query_for_qualified_values: QueryForQualifiedValues::init(language)?,
+            query_for_unqualified_values: QueryForUnqualifiedValues::init(
+                language,
+            )?,
+            query_for_qualified_values: QueryForQualifiedValues::init(
+                language,
+            )?,
         };
 
         Ok(engine)
@@ -174,7 +187,10 @@ impl RefactorEngine {
                     changes.old_parent,
                     changes.new_parent,
                 ),
-                ([TYPE_IDENTIFIER], [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER])
+                (
+                    [TYPE_IDENTIFIER],
+                    [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+                )
                 | (
                     [CONSTRUCTOR_IDENTIFIER],
                     [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
@@ -190,7 +206,10 @@ impl RefactorEngine {
                     changes.old_parent,
                     changes.new_parent,
                 ),
-                ([MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER], [TYPE_IDENTIFIER])
+                (
+                    [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+                    [TYPE_IDENTIFIER],
+                )
                 | (
                     [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
                     [CONSTRUCTOR_IDENTIFIER],
@@ -220,20 +239,24 @@ impl RefactorEngine {
                     diff,
                     changes.old_parent,
                 ),
-                ([], [EXPOSED_UNION_CONSTRUCTORS]) => on_added_constructors_to_exposing_list(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    diff,
-                    changes.new_parent,
-                ),
-                ([EXPOSED_UNION_CONSTRUCTORS], []) => on_removed_constructors_from_exposing_list(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                ),
+                ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
+                    on_added_constructors_to_exposing_list(
+                        self,
+                        project_info,
+                        &mut refactor,
+                        diff,
+                        changes.new_parent,
+                    )
+                }
+                ([EXPOSED_UNION_CONSTRUCTORS], []) => {
+                    on_removed_constructors_from_exposing_list(
+                        self,
+                        project_info,
+                        &mut refactor,
+                        diff,
+                        changes.old_parent,
+                    )
+                }
                 ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
                     self,
                     &mut refactor,
@@ -241,13 +264,15 @@ impl RefactorEngine {
                     changes.old_parent,
                     changes.new_parent,
                 ),
-                ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => on_changed_module_name(
-                    self,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                ),
+                ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => {
+                    on_changed_module_name(
+                        self,
+                        &mut refactor,
+                        diff,
+                        changes.old_parent,
+                        changes.new_parent,
+                    )
+                }
                 _ => on_unrecognized_change(
                     self,
                     project_info,
@@ -264,10 +289,9 @@ impl RefactorEngine {
     where
         F: FnOnce(&ProjectInfo) -> Result<R, Error>,
     {
-        let buffer_info = self
-            .buffers
-            .get(&buffer)
-            .ok_or_else(|| log::mk_err!("no project on file for buffer {:?}", buffer))?;
+        let buffer_info = self.buffers.get(&buffer).ok_or_else(|| {
+            log::mk_err!("no project on file for buffer {:?}", buffer)
+        })?;
         self.dataflow_computation
             .with_project(&buffer_info.project_root, f)
     }
@@ -281,9 +305,7 @@ impl RefactorEngine {
     where
         W: FnMut(&Path),
     {
-        // TODO: Figure out a more dataflow-ish approach to deduping projects.
         let project_root = project_root_for_path(&path)?.to_owned();
-        // if !self.projects().contains_key(&project_root) {
         self.dataflow_computation
             .watch_project(project_root.to_owned());
         self.dataflow_computation.advance(
@@ -291,7 +313,6 @@ impl RefactorEngine {
             // TODO: Add callback for unwatching path
             |_| {},
         );
-        // }
         let buffer_info = BufferInfo { path, project_root };
         self.buffers.insert(buffer, buffer_info);
         Ok(())
@@ -349,9 +370,10 @@ fn on_unrecognized_change(
         .map(|import| import.aliased_name().into())
         .collect();
     let mut new_import_names = HashSet::new();
-    for result in engine
-        .query_for_qualified_values
-        .run_in(&mut cursor, code, parent)
+    for result in
+        engine
+            .query_for_qualified_values
+            .run_in(&mut cursor, code, parent)
     {
         let (_, reference) = result?;
         if reference.unqualified_name.name.len_bytes() > 0
@@ -389,14 +411,14 @@ fn on_added_constructors_to_exposing_list(
     diff: &SourceFileDiff,
     parent: Node,
 ) -> Result<(), Error> {
-    let type_name_node = parent
-        .child(0)
-        .ok_or_else(|| log::mk_err!("did not find node with type name of exposed constructor"))?;
+    let type_name_node = parent.child(0).ok_or_else(|| {
+        log::mk_err!("did not find node with type name of exposed constructor")
+    })?;
     let type_name = diff.new.slice(&type_name_node.byte_range());
-    let import_node = parent
-        .parent()
-        .and_then(|n| n.parent())
-        .ok_or_else(|| log::mk_err!("did not find parent import of exposed constructor"))?;
+    let import_node =
+        parent.parent().and_then(|n| n.parent()).ok_or_else(|| {
+            log::mk_err!("did not find parent import of exposed constructor")
+        })?;
     let import = parse_import_node(engine, &diff.new, import_node)?;
     let module = get_elm_module(project_info, &import.unaliased_name())?;
     let mut references_to_unqualify = HashSet::new();
@@ -429,10 +451,9 @@ fn get_elm_module<'a>(
     project_info: &'a ProjectInfo,
     name: &RopeSlice,
 ) -> Result<&'a ElmModule, Error> {
-    project_info
-        .modules
-        .get(&name.to_string())
-        .ok_or_else(|| log::mk_err!("could not find module named {}", name.to_string()))
+    project_info.modules.get(&name.to_string()).ok_or_else(|| {
+        log::mk_err!("could not find module named {}", name.to_string())
+    })
 }
 
 fn on_changed_module_name(
@@ -444,16 +465,30 @@ fn on_changed_module_name(
 ) -> Result<(), Error> {
     match old_parent_node.kind_id() {
         AS_CLAUSE => {
-            let old_import_node = old_parent_node
-                .parent()
-                .ok_or_else(|| log::mk_err!("found an unexpected root as_clause node"))?;
-            let new_import_node = new_parent_node
-                .parent()
-                .ok_or_else(|| log::mk_err!("found an unexpected root as_clause node"))?;
-            on_changed_as_clause(engine, refactor, diff, old_import_node, new_import_node)?;
+            let old_import_node =
+                old_parent_node.parent().ok_or_else(|| {
+                    log::mk_err!("found an unexpected root as_clause node")
+                })?;
+            let new_import_node =
+                new_parent_node.parent().ok_or_else(|| {
+                    log::mk_err!("found an unexpected root as_clause node")
+                })?;
+            on_changed_as_clause(
+                engine,
+                refactor,
+                diff,
+                old_import_node,
+                new_import_node,
+            )?;
         }
         VALUE_QID | TYPE_QID | CONSTRUCTOR_QID => {
-            on_changed_module_qualifier(engine, refactor, diff, old_parent_node, new_parent_node)?;
+            on_changed_module_qualifier(
+                engine,
+                refactor,
+                diff,
+                old_parent_node,
+                new_parent_node,
+            )?;
         }
         _ => {}
     };
@@ -472,28 +507,38 @@ fn on_changed_module_qualifier(
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.old, old_parent_node)
         .next()
-        .ok_or_else(|| log::mk_err!("parsing qualified value node using query failed"))??;
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
     let (_, new_reference) = engine
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.new, new_parent_node)
         .next()
-        .ok_or_else(|| log::mk_err!("parsing qualified value node using query failed"))??;
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
 
     let import = engine
         .query_for_imports
         .run(&mut cursor, &diff.new)
         .find(|import| import.aliased_name() == old_reference.qualifier)
         .ok_or_else(|| {
-            log::mk_err!("did not find import statement with the expected aliased name")
+            log::mk_err!(
+                "did not find import statement with the expected aliased name"
+            )
         })?;
     match import.as_clause_node {
         Some(as_clause_name_node) => {
             if import.unaliased_name() == new_reference.qualifier {
-                let as_clause_node = as_clause_name_node
-                    .parent()
-                    .ok_or_else(|| log::mk_err!("found unexpected root as clause name nood"))?;
+                let as_clause_node =
+                    as_clause_name_node.parent().ok_or_else(|| {
+                        log::mk_err!(
+                            "found unexpected root as clause name nood"
+                        )
+                    })?;
                 refactor.add_change(
-                    (as_clause_node.start_byte() - 1)..as_clause_node.end_byte(),
+                    (as_clause_node.start_byte() - 1)
+                        ..as_clause_node.end_byte(),
                     String::new(),
                 )
             } else {
@@ -567,14 +612,18 @@ fn on_removed_constructors_from_exposing_list(
     diff: &SourceFileDiff,
     old_parent: Node,
 ) -> Result<(), Error> {
-    let type_name_node = old_parent
-        .child(0)
-        .ok_or_else(|| log::mk_err!("could not find name node of exposed type node"))?;
+    let type_name_node = old_parent.child(0).ok_or_else(|| {
+        log::mk_err!("could not find name node of exposed type node")
+    })?;
     let type_name = diff.old.slice(&type_name_node.byte_range());
     let old_import_node = old_parent
         .parent()
         .and_then(|n| n.parent())
-        .ok_or_else(|| log::mk_err!("could not find import parent node of exposed type node"))?;
+        .ok_or_else(|| {
+            log::mk_err!(
+                "could not find import parent node of exposed type node"
+            )
+        })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let mut references_to_qualify = HashSet::new();
     for result in old_import.exposing_list() {
@@ -621,9 +670,9 @@ fn on_changed_values_in_exposing_list(
     old_parent: Node,
     new_parent: Node,
 ) -> Result<(), Error> {
-    let old_import_node = old_parent
-        .parent()
-        .ok_or_else(|| log::mk_err!("could not find parent import node of exposing list"))?;
+    let old_import_node = old_parent.parent().ok_or_else(|| {
+        log::mk_err!("could not find parent import node of exposing list")
+    })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let module = get_elm_module(project_info, &old_import.unaliased_name())?;
     let mut old_references = HashSet::new();
@@ -635,7 +684,9 @@ fn on_changed_values_in_exposing_list(
     }
 
     let new_import_node = new_parent.parent().ok_or_else(|| {
-        log::mk_err!("could not find import node as parent of exposing list node")
+        log::mk_err!(
+            "could not find import node as parent of exposing list node"
+        )
     })?;
     let new_import = parse_import_node(engine, &diff.new, new_import_node)?;
     let mut new_references = HashSet::new();
@@ -693,7 +744,9 @@ fn on_removed_module_qualifier_from_value(
         .query_for_unqualified_values
         .run_in(&mut cursor, &diff.new, new_parent)
         .next()
-        .ok_or_else(|| log::mk_err!("parsing unqualified value node using query failed"))??;
+        .ok_or_else(|| {
+            log::mk_err!("parsing unqualified value node using query failed")
+        })??;
     let mut cursor2 = QueryCursor::new();
     let (
         _,
@@ -705,11 +758,14 @@ fn on_removed_module_qualifier_from_value(
         .query_for_qualified_values
         .run_in(&mut cursor2, &diff.old, old_parent)
         .next()
-        .ok_or_else(|| log::mk_err!("parsing qualified value node using query failed"))??;
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
     if new_reference.name != unqualified_name.name {
         return Ok(());
     }
-    let import = get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
+    let import =
+        get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if unqualified_name.kind == NameKind::Constructor {
         let module = get_elm_module(project_info, &import.unaliased_name())?;
@@ -743,14 +799,20 @@ fn on_removed_module_qualifier_from_value(
                     }
                 }
                 ExportedName::Type { name, constructors } => {
-                    if constructors.contains(&unqualified_name.name.to_string()) {
+                    if constructors.contains(&unqualified_name.name.to_string())
+                    {
                         for ctor in constructors.iter() {
                             references_to_unqualify.insert(Name {
                                 kind: NameKind::Constructor,
                                 name: Rope::from_str(ctor),
                             });
                         }
-                        add_to_exposing_list(&import, &unqualified_name, Some(name), refactor)?;
+                        add_to_exposing_list(
+                            &import,
+                            &unqualified_name,
+                            Some(name),
+                            refactor,
+                        )?;
                         references_to_unqualify.insert(unqualified_name);
                         break;
                     }
@@ -803,9 +865,11 @@ fn remove_qualifier_from_references(
         } else {
             for res in import.exposing_list() {
                 let (_, exposed) = res?;
-                let module = get_elm_module(project_info, &import.unaliased_name())?;
+                let module =
+                    get_elm_module(project_info, &import.unaliased_name())?;
                 exposed.for_each_name(module, |reference| {
-                    names_from_other_modules.insert(reference, import.aliased_name().into());
+                    names_from_other_modules
+                        .insert(reference, import.aliased_name().into());
                 });
             }
         }
@@ -831,7 +895,11 @@ fn remove_qualifier_from_references(
         if names_in_use.contains(reference) {
             let new_name = names_with_digit(reference)
                 .find(|name| !names_in_use.contains(name))
-                .ok_or_else(|| log::mk_err!("names_with_digit unexpectedly ran out of names."))?;
+                .ok_or_else(|| {
+                    log::mk_err!(
+                        "names_with_digit unexpectedly ran out of names."
+                    )
+                })?;
             rename(
                 engine,
                 refactor,
@@ -843,17 +911,19 @@ fn remove_qualifier_from_references(
         }
     }
 
-    let qualified_references =
-        engine
-            .query_for_qualified_values
-            .run_in(&mut cursor, code, code.tree.root_node());
+    let qualified_references = engine.query_for_qualified_values.run_in(
+        &mut cursor,
+        code,
+        code.tree.root_node(),
+    );
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
         if references.contains(&qualified.unqualified_name) {
             refactor.add_change(
                 // The +1 makes it include the trailing dot between qualifier
                 // and qualified value.
-                node.start_byte()..(node.start_byte() + qualifier.len_bytes() + 1),
+                node.start_byte()
+                    ..(node.start_byte() + qualifier.len_bytes() + 1),
                 String::new(),
             );
         }
@@ -915,13 +985,16 @@ fn rename(
     to: &Name,
 ) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
-    let unqualified_values =
-        engine
-            .query_for_unqualified_values
-            .run_in(&mut cursor, code, code.tree.root_node());
+    let unqualified_values = engine.query_for_unqualified_values.run_in(
+        &mut cursor,
+        code,
+        code.tree.root_node(),
+    );
     for res in unqualified_values {
         let (node, reference) = res?;
-        if &reference == from && Some(node.id()) != node_stripped_of_qualifier.map(|n| n.id()) {
+        if &reference == from
+            && Some(node.id()) != node_stripped_of_qualifier.map(|n| n.id())
+        {
             refactor.add_change(node.byte_range(), to.name.to_string())
         }
     }
@@ -959,21 +1032,30 @@ fn add_to_exposing_list(
         // Insert right before this item to maintain alphabetic order.
         // If the exposing list wasn't ordered alphabetically the insert
         // place might appear random.
-        match std::cmp::Ord::cmp(&target_exposed_name, &exposed_name.to_string()) {
+        match std::cmp::Ord::cmp(
+            &target_exposed_name,
+            &exposed_name.to_string(),
+        ) {
             std::cmp::Ordering::Equal => {
                 if ctor_type.is_some() {
                     // node.child(1) is the node corresponding to the exposed
                     // contructors: `(..)`.
                     if node.child(1).is_none() {
                         let insert_at = node.end_byte();
-                        refactor.add_change(insert_at..insert_at, "(..)".to_string());
+                        refactor.add_change(
+                            insert_at..insert_at,
+                            "(..)".to_string(),
+                        );
                     }
                 };
                 return Ok(());
             }
             std::cmp::Ordering::Less => {
                 let insert_at = node.start_byte();
-                refactor.add_change(insert_at..insert_at, format!("{}, ", insert_str));
+                refactor.add_change(
+                    insert_at..insert_at,
+                    format!("{}, ", insert_str),
+                );
                 return Ok(());
             }
             std::cmp::Ordering::Greater => {}
@@ -992,7 +1074,8 @@ fn add_to_exposing_list(
         }
         Some(node) => {
             let insert_at = node.end_byte();
-            refactor.add_change(insert_at..insert_at, format!(", {}", insert_str));
+            refactor
+                .add_change(insert_at..insert_at, format!(", {}", insert_str));
         }
     }
     Ok(())
@@ -1011,7 +1094,9 @@ fn on_added_module_qualifier_to_value(
         .query_for_unqualified_values
         .run_in(&mut cursor, &diff.old, old_parent)
         .next()
-        .ok_or_else(|| log::mk_err!("parsing unqualified value node using query failed"))??;
+        .ok_or_else(|| {
+            log::mk_err!("parsing unqualified value node using query failed")
+        })??;
     let (
         _,
         QualifiedName {
@@ -1022,7 +1107,9 @@ fn on_added_module_qualifier_to_value(
         .query_for_qualified_values
         .run_in(&mut cursor, &diff.new, new_parent)
         .next()
-        .ok_or_else(|| log::mk_err!("parsing qualified value node using query failed"))??;
+        .ok_or_else(|| {
+            log::mk_err!("parsing qualified value node using query failed")
+        })??;
     if old_reference.name == unqualified_name.name {
         qualify_value(
             engine,
@@ -1053,7 +1140,8 @@ fn qualify_value(
     // values minus the now qualified value.
     remove_expose_all_if_necessary: bool,
 ) -> Result<(), Error> {
-    let import = get_import_by_aliased_name(engine, code, &qualifier.slice(..))?;
+    let import =
+        get_import_by_aliased_name(engine, code, &qualifier.slice(..))?;
 
     let exposing_list_length = import.exposing_list().count();
     let mut references_to_qualify = HashSet::new();
@@ -1061,14 +1149,18 @@ fn qualify_value(
         let (node, exposed) = result?;
         match &exposed {
             ExposedName::Operator(op) => {
-                if op.name == reference.name && reference.kind == NameKind::Operator {
+                if op.name == reference.name
+                    && reference.kind == NameKind::Operator
+                {
                     return Err(log::mk_err!(
                         "cannot qualify operator, Elm doesn't allow it!"
                     ));
                 }
             }
             ExposedName::Type(type_) => {
-                if type_.name == reference.name && reference.kind == NameKind::Type {
+                if type_.name == reference.name
+                    && reference.kind == NameKind::Type
+                {
                     if exposing_list_length == 1 {
                         remove_exposing_list(refactor, &import);
                     } else {
@@ -1109,23 +1201,30 @@ fn qualify_value(
                             let exposing_ctors_node = node.child(1).ok_or_else(|| {
                                 log::mk_err!("could not find `(..)` node behind exposed type")
                             })?;
-                            refactor.add_change(exposing_ctors_node.byte_range(), String::new());
+                            refactor.add_change(
+                                exposing_ctors_node.byte_range(),
+                                String::new(),
+                            );
 
                             // We're qualifying a constructor. In Elm you can only
                             // expose either all constructors of a type or none of them,
                             // so if the programmer qualifies one constructor assume
                             // intend to do them all.
-                            let constructor_references = ctors.iter().map(|ctor| Name {
-                                name: Rope::from_str(ctor),
-                                kind: NameKind::Constructor,
-                            });
-                            references_to_qualify.extend(constructor_references);
+                            let constructor_references =
+                                ctors.iter().map(|ctor| Name {
+                                    name: Rope::from_str(ctor),
+                                    kind: NameKind::Constructor,
+                                });
+                            references_to_qualify
+                                .extend(constructor_references);
                         }
                     }
                 }
             }
             ExposedName::Value(val) => {
-                if val.name == reference.name && reference.kind == NameKind::Value {
+                if val.name == reference.name
+                    && reference.kind == NameKind::Value
+                {
                     if exposing_list_length == 1 {
                         remove_exposing_list(refactor, &import);
                     } else {
@@ -1140,7 +1239,8 @@ fn qualify_value(
             }
             ExposedName::All => {
                 if remove_expose_all_if_necessary {
-                    let mut exposed_names: HashMap<Name, &ExportedName> = HashMap::new();
+                    let mut exposed_names: HashMap<Name, &ExportedName> =
+                        HashMap::new();
                     module_exports(project_info, import.unaliased_name())
                         .map_err(|err| {
                             log::mk_err!(
@@ -1203,28 +1303,35 @@ fn qualify_value(
                         .collect::<Result<HashSet<Name>, Error>>()?;
                     unqualified_names_in_use.remove(reference);
                     let mut new_exposed: String = String::new();
-                    exposed_names.into_iter().for_each(|(reference, export)| {
-                        if unqualified_names_in_use.contains(&reference) {
-                            if !new_exposed.is_empty() {
-                                new_exposed.push_str(", ")
-                            }
-                            match export {
-                                ExportedName::Value { name } => {
-                                    new_exposed.push_str(name);
+                    exposed_names.into_iter().for_each(
+                        |(reference, export)| {
+                            if unqualified_names_in_use.contains(&reference) {
+                                if !new_exposed.is_empty() {
+                                    new_exposed.push_str(", ")
                                 }
-                                ExportedName::RecordTypeAlias { name } => {
-                                    new_exposed.push_str(name);
-                                }
-                                ExportedName::Type { name, .. } => {
-                                    if reference.kind == NameKind::Constructor {
-                                        new_exposed.push_str(&format!("{}(..)", name));
-                                    } else {
+                                match export {
+                                    ExportedName::Value { name } => {
                                         new_exposed.push_str(name);
+                                    }
+                                    ExportedName::RecordTypeAlias { name } => {
+                                        new_exposed.push_str(name);
+                                    }
+                                    ExportedName::Type { name, .. } => {
+                                        if reference.kind
+                                            == NameKind::Constructor
+                                        {
+                                            new_exposed.push_str(&format!(
+                                                "{}(..)",
+                                                name
+                                            ));
+                                        } else {
+                                            new_exposed.push_str(name);
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
+                        },
+                    );
                     refactor.add_change(node.byte_range(), new_exposed);
                 }
 
@@ -1242,7 +1349,10 @@ fn qualify_value(
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let exports = match module_exports(project_info, import.unaliased_name()) {
+                        let exports = match module_exports(
+                            project_info,
+                            import.unaliased_name(),
+                        ) {
                             Ok(exports_) => exports_,
                             Err(err) => {
                                 log::error!(
@@ -1258,13 +1368,19 @@ fn qualify_value(
                                 ExportedName::Value { .. } => {}
                                 ExportedName::RecordTypeAlias { .. } => {}
                                 ExportedName::Type { constructors, .. } => {
-                                    if constructors.iter().any(|ctor| *ctor == reference.name) {
+                                    if constructors
+                                        .iter()
+                                        .any(|ctor| *ctor == reference.name)
+                                    {
                                         let constructor_references =
-                                            constructors.iter().map(|ctor| Name {
-                                                name: Rope::from_str(ctor),
-                                                kind: NameKind::Constructor,
+                                            constructors.iter().map(|ctor| {
+                                                Name {
+                                                    name: Rope::from_str(ctor),
+                                                    kind: NameKind::Constructor,
+                                                }
                                             });
-                                        references_to_qualify.extend(constructor_references);
+                                        references_to_qualify
+                                            .extend(constructor_references);
                                     }
                                 }
                             }
@@ -1327,7 +1443,8 @@ fn on_removed_exposing_list_from_import(
     let mut val_cursor = QueryCursor::new();
     let module = get_elm_module(project_info, &import.unaliased_name())?;
     let mut references_to_qualify = HashSet::new();
-    let import = get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
+    let import =
+        get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
     for result in import.exposing_list() {
         let (_, exposed) = result?;
         exposed.for_each_name(module, |reference| {
@@ -1363,10 +1480,17 @@ fn get_import_by_aliased_name<'a>(
         .query_for_imports
         .run(&mut cursor, code)
         .find(|import| import.aliased_name() == *qualifier)
-        .ok_or_else(|| log::mk_err!("could not find an import with the requested aliased name"))
+        .ok_or_else(|| {
+            log::mk_err!(
+                "could not find an import with the requested aliased name"
+            )
+        })
 }
 
-fn remove_from_exposing_list(refactor: &mut Refactor, node: &Node) -> Result<(), Error> {
+fn remove_from_exposing_list(
+    refactor: &mut Refactor,
+    node: &Node,
+) -> Result<(), Error> {
     // TODO: Automatically clean up extra or missing comma's.
     let range_including_comma_and_whitespace = |exposed_node: &Node| {
         let next = exposed_node.next_sibling();
@@ -1391,7 +1515,8 @@ fn remove_from_exposing_list(refactor: &mut Refactor, node: &Node) -> Result<(),
         }
         exposed_node.byte_range()
     };
-    refactor.add_change(range_including_comma_and_whitespace(node), String::new());
+    refactor
+        .add_change(range_including_comma_and_whitespace(node), String::new());
     Ok(())
 }
 
@@ -1489,17 +1614,21 @@ impl<'a, 'tree> QualifiedNames<'a, 'tree> {
                 match &qualifier_range {
                     None => qualifier_range = Some(capture.node.byte_range()),
                     Some(existing_range) => {
-                        qualifier_range = Some(existing_range.start..capture.node.end_byte())
+                        qualifier_range =
+                            Some(existing_range.start..capture.node.end_byte())
                     }
                 }
             } else {
                 opt_name_capture = Some(capture)
             }
         });
-        let name_capture = opt_name_capture
-            .ok_or_else(|| log::mk_err!("match of qualified reference did not include name"))?;
+        let name_capture = opt_name_capture.ok_or_else(|| {
+            log::mk_err!("match of qualified reference did not include name")
+        })?;
         let qualifier_range = qualifier_range.ok_or_else(|| {
-            log::mk_err!("match of qualified reference did not include qualifier")
+            log::mk_err!(
+                "match of qualified reference did not include qualifier"
+            )
         })?;
         let qualifier = self.code.slice(&qualifier_range);
         let kind = match name_capture.index {
@@ -1523,7 +1652,9 @@ impl<'a, 'tree> QualifiedNames<'a, 'tree> {
         };
         Ok((
             root_node.ok_or_else(|| {
-                log::mk_err!("match of qualified reference did not include root node")
+                log::mk_err!(
+                    "match of qualified reference did not include root node"
+                )
             })?,
             qualified,
         ))
@@ -1677,11 +1808,9 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut nodes: [Option<Node>; 4] = [None; 4];
-        self.matches
-            .next()?
-            .captures
-            .iter()
-            .for_each(|capture| nodes[capture.index as usize] = Some(capture.node));
+        self.matches.next()?.captures.iter().for_each(|capture| {
+            nodes[capture.index as usize] = Some(capture.node)
+        });
         Some(Import {
             code: self.code,
             root_node: nodes[self.query.root as usize]?,
@@ -1730,7 +1859,10 @@ impl Import<'_> {
         project_info: &'a ProjectInfo,
         type_: &ExposedType,
     ) -> Result<ExposedConstructors, Error> {
-        for export in module_exports(project_info, self.code.slice(&self.name_node.byte_range()))? {
+        for export in module_exports(
+            project_info,
+            self.code.slice(&self.name_node.byte_range()),
+        )? {
             match export {
                 ExportedName::Value { .. } => {}
                 ExportedName::RecordTypeAlias { name } => {
@@ -1738,7 +1870,9 @@ impl Import<'_> {
                 }
                 ExportedName::Type { name, constructors } => {
                     if type_.name.eq(name) {
-                        return Ok(ExposedConstructors::FromCustomType(constructors));
+                        return Ok(ExposedConstructors::FromCustomType(
+                            constructors,
+                        ));
                     }
                 }
             }
@@ -1947,7 +2081,9 @@ fn parse_import_node<'a>(
         .query_for_imports
         .run_in(&mut cursor, code, node)
         .next()
-        .ok_or_else(|| log::mk_err!("query of import node did not result in any matches"))
+        .ok_or_else(|| {
+            log::mk_err!("query of import node did not result in any matches")
+        })
 }
 
 fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
@@ -2035,13 +2171,19 @@ mod simulations {
     // Qualifying values
     simulation_test!(add_module_alias_as_qualifier_to_variable);
     simulation_test!(add_module_qualifier_to_constructor);
-    simulation_test!(add_module_qualifier_to_constructor_from_expose_all_import);
+    simulation_test!(
+        add_module_qualifier_to_constructor_from_expose_all_import
+    );
     simulation_test!(add_module_qualifier_to_type);
     simulation_test!(add_module_qualifier_to_type_with_same_name);
     simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
     simulation_test!(add_module_qualifier_to_variable);
-    simulation_test!(add_module_qualifier_to_record_type_alias_in_type_declaration);
-    simulation_test!(add_module_qualifier_to_record_type_alias_used_as_constructor);
+    simulation_test!(
+        add_module_qualifier_to_record_type_alias_in_type_declaration
+    );
+    simulation_test!(
+        add_module_qualifier_to_record_type_alias_used_as_constructor
+    );
     simulation_test!(remove_constructor_from_exposing_list_of_import);
     simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_all_clause_from_local_import);
@@ -2058,13 +2200,17 @@ mod simulations {
     // Removing module qualifiers from values
     simulation_test!(remove_module_qualifier_from_variable);
     simulation_test!(remove_module_qualifier_from_type);
-    simulation_test!(remove_module_qualifier_inserting_variable_at_end_of_exposing_list);
+    simulation_test!(
+        remove_module_qualifier_inserting_variable_at_end_of_exposing_list
+    );
     simulation_test!(remove_module_qualifier_for_module_without_exposing_list);
     simulation_test!(remove_module_qualifier_for_module_exposing_all);
     simulation_test!(remove_module_qualifier_from_constructor);
     simulation_test!(remove_module_qualifier_from_exposed_constructor);
     simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
-    simulation_test!(remove_module_qualifier_from_record_type_alias_used_as_function);
+    simulation_test!(
+        remove_module_qualifier_from_record_type_alias_used_as_function
+    );
     simulation_test!(add_value_to_exposing_list);
     simulation_test!(add_type_to_exposing_list);
     simulation_test!(add_constructors_for_type_to_exposing_list);
@@ -2080,16 +2226,30 @@ mod simulations {
     simulation_test!(add_and_remove_items_in_exposing_list);
     simulation_test!(replace_exposing_list_with_double_dot);
     simulation_test!(replace_double_dot_with_exposing_list);
-    simulation_test!(add_value_to_exposing_list_with_same_name_as_local_variable);
-    simulation_test!(add_value_to_exposing_list_with_same_name_as_top_level_function);
-    simulation_test!(remove_module_qualifier_from_variable_with_same_name_as_local_variable);
-    simulation_test!(expose_value_with_same_name_as_exposed_value_from_other_module);
-    simulation_test!(expose_value_with_same_name_as_value_from_other_module_exposing_all);
+    simulation_test!(
+        add_value_to_exposing_list_with_same_name_as_local_variable
+    );
+    simulation_test!(
+        add_value_to_exposing_list_with_same_name_as_top_level_function
+    );
+    simulation_test!(
+        remove_module_qualifier_from_variable_with_same_name_as_local_variable
+    );
+    simulation_test!(
+        expose_value_with_same_name_as_exposed_value_from_other_module
+    );
+    simulation_test!(
+        expose_value_with_same_name_as_value_from_other_module_exposing_all
+    );
     simulation_test!(
         remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
     );
-    simulation_test!(remove_module_qualifier_from_type_with_same_name_as_local_type_alias);
-    simulation_test!(remove_module_qualifier_from_type_with_same_name_as_local_type);
+    simulation_test!(
+        remove_module_qualifier_from_type_with_same_name_as_local_type_alias
+    );
+    simulation_test!(
+        remove_module_qualifier_from_type_with_same_name_as_local_type
+    );
     simulation_test!(remove_module_qualifier_from_constructor_with_same_name_as_local_constructor);
 
     // Changing as-clauses
@@ -2099,7 +2259,9 @@ mod simulations {
     simulation_test!(change_module_qualifier_of_value);
     simulation_test!(change_module_qualifier_of_type);
     simulation_test!(change_module_qualifier_of_constructor);
-    simulation_test!(change_module_qualifier_of_variable_from_unaliased_import_name);
+    simulation_test!(
+        change_module_qualifier_of_variable_from_unaliased_import_name
+    );
     simulation_test!(change_module_qualifier_to_match_unaliased_import_name);
     simulation_test!(change_module_qualifier_to_invalid_name);
 
@@ -2116,7 +2278,9 @@ mod simulations {
     // this refactor doesn't produce compiling code.
     // Potential fix: Add the exposing list back containing just the operator.
     simulation_test!(remove_exposing_clause_containing_operator_from_import);
-    simulation_test!(remove_exposing_all_clause_containing_operator_from_import);
+    simulation_test!(
+        remove_exposing_all_clause_containing_operator_from_import
+    );
     // When we expose a value with the same name as a local variable the local
     // variable gets renamed to something else. This test demonstrates an edge
     // case in this logic where the renaming logic is failing. When we expose

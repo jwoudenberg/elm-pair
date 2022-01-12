@@ -46,7 +46,8 @@ impl DataflowComputation {
             differential_dataflow::input::InputSession::new();
 
         let probe = worker.dataflow(|scope| {
-            let project_roots = project_roots_input.to_collection(scope);
+            let project_roots =
+                project_roots_input.to_collection(scope).distinct();
 
             // TODO: Clean up, removing clone's, unwrap's.
             let elm_jsons = project_roots.map(|project_root: PathBuf| {
