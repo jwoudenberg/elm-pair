@@ -72,10 +72,9 @@ where
         } = self;
 
         if !changed_files.is_empty() {
-            refactor_engine
-                .on_files_changed(changed_files, &mut |changed_path| {
-                    watch_path(file_watcher, changed_path)
-                })?;
+            refactor_engine.on_files_changed(changed_files, &mut |changed_path| {
+                watch_path(file_watcher, changed_path)
+            })?;
             self.changed_files.drain();
         }
 
@@ -85,9 +84,7 @@ where
                 refactor_engine,
                 ..
             } = self;
-            if let Some(editor_driver) =
-                editor_driver.get(&diff.new.buffer.editor_id)
-            {
+            if let Some(editor_driver) = editor_driver.get(&diff.new.buffer.editor_id) {
                 log::info!(
                     "diffing revision {:?} against {:?} for buffer {:?}",
                     diff.new.revision,
@@ -123,8 +120,7 @@ where
                                 // communicates the changes made by the refactor
                                 // back to us _and_ the compilation thread
                                 // compiles that version (which may be never).
-                                self.last_compiling_code
-                                    .insert(diff.new.buffer, diff.new);
+                                self.last_compiling_code.insert(diff.new.buffer, diff.new);
                             }
                         }
                     }
@@ -163,11 +159,9 @@ where
                 } = self;
                 // TODO: We error here if elm-stuff/i.dat is missing. Figure out
                 // something that won't bring the application down in this case.
-                refactor_engine.init_buffer(
-                    buffer,
-                    path,
-                    &mut |changed_path| watch_path(file_watcher, changed_path),
-                )?;
+                refactor_engine.init_buffer(buffer, path, &mut |changed_path| {
+                    watch_path(file_watcher, changed_path)
+                })?;
             }
             Msg::CompilationSucceeded(snapshot) => {
                 // Replace 'last compiling version' with a newer revision only.
@@ -190,10 +184,7 @@ where
             }
             Msg::FileWatcherEventReceived(opt_event) => match opt_event {
                 Err(err) => {
-                    log::error!(
-                        "Failed while processing file watcher event: {:?}",
-                        err
-                    );
+                    log::error!("Failed while processing file watcher event: {:?}", err);
                 }
                 Ok(event) => {
                     if let Some(path) = event.paths.into_iter().next() {
@@ -254,8 +245,7 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let mut old_parent = old.node();
     let mut new_parent = new.node();
     loop {
-        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new)
-        {
+        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new) {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
                     old_parent,
@@ -284,12 +274,8 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         };
         let first_old_changed = old.node();
         let first_new_changed = new.node();
-        let (old_removed_count, new_added_count) = count_changed_siblings(
-            old_code,
-            new_code,
-            &mut old.clone(),
-            &mut new.clone(),
-        );
+        let (old_removed_count, new_added_count) =
+            count_changed_siblings(old_code, new_code, &mut old.clone(), &mut new.clone());
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
@@ -370,12 +356,8 @@ fn goto_first_changed_sibling(
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
                 (true, true) => continue,
                 (false, false) => return FirstChangedSibling::NoneFound,
-                (true, false) => {
-                    return FirstChangedSibling::OldAtFirstAdditional
-                }
-                (false, true) => {
-                    return FirstChangedSibling::NewAtFirstAdditional
-                }
+                (true, false) => return FirstChangedSibling::OldAtFirstAdditional,
+                (false, true) => return FirstChangedSibling::NewAtFirstAdditional,
             }
         }
     }

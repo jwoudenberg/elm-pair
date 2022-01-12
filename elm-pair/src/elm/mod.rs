@@ -276,7 +276,7 @@ impl RefactorEngine {
         &mut self,
         buffer: Buffer,
         path: PathBuf,
-        _watch_path: &mut W,
+        watch_path: &mut W,
     ) -> Result<(), Error>
     where
         W: FnMut(&Path),
@@ -286,7 +286,11 @@ impl RefactorEngine {
         // if !self.projects().contains_key(&project_root) {
         self.dataflow_computation
             .watch_project(project_root.to_owned());
-        self.dataflow_computation.advance();
+        self.dataflow_computation.advance(
+            watch_path,
+            // TODO: Add callback for unwatching path
+            |_| {},
+        );
         // }
         let buffer_info = BufferInfo { path, project_root };
         self.buffers.insert(buffer, buffer_info);

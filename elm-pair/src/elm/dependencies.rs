@@ -10,6 +10,7 @@ use std::io::{BufReader, Read};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::sync::RwLock;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
@@ -18,10 +19,17 @@ pub struct DataflowComputation {
     probe: timely::dataflow::operators::probe::Handle<u32>,
     project_roots: differential_dataflow::input::InputSession<u32, PathBuf, isize>,
     projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
+    msgs: mpsc::Receiver<Msg>,
+}
+
+enum Msg {
+    WatchPath(PathBuf),
+    UnwatchPath(PathBuf),
 }
 
 impl DataflowComputation {
     pub(crate) fn new(query_for_exports: &'static QueryForExports) -> DataflowComputation {
+        let (sender, msgs) = mpsc::channel();
         let alloc = timely::communication::allocator::thread::Thread::new();
         let projects = Rc::new(RwLock::new(HashMap::new()));
         let projects_clone = projects.clone();
@@ -36,6 +44,23 @@ impl DataflowComputation {
             let elm_jsons = project_roots.map(|project_root: PathBuf| {
                 let elm_json = load_elm_json(&elm_json_path(&project_root)).unwrap();
                 (project_root.to_str().unwrap().to_string(), elm_json)
+            });
+
+            let paths_to_watch = elm_jsons
+                .flat_map(|(_, elm_json)| {
+                    elm_json.source_directories.into_iter().map(PathBuf::from)
+                })
+                .concat(&project_roots.map(|path| elm_json_path(&path)))
+                .concat(&project_roots.map(|path| idat_path(&path)));
+
+            paths_to_watch.inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
+                std::cmp::Ordering::Equal => {}
+                std::cmp::Ordering::Less => {
+                    sender.send(Msg::UnwatchPath(path.to_owned())).unwrap();
+                }
+                std::cmp::Ordering::Greater => {
+                    sender.send(Msg::WatchPath(path.to_owned())).unwrap();
+                }
             });
 
             project_roots
@@ -79,6 +104,7 @@ impl DataflowComputation {
             probe,
             project_roots: project_roots_input,
             projects,
+            msgs,
         }
     }
 
@@ -90,16 +116,27 @@ impl DataflowComputation {
         self.project_roots.remove(project_root)
     }
 
-    pub(crate) fn advance(&mut self) {
+    pub(crate) fn advance<W, U>(&mut self, mut watch_path: W, mut unwatch_path: U)
+    where
+        W: FnMut(&Path),
+        U: FnMut(&Path),
+    {
         let DataflowComputation {
             worker,
             project_roots,
             probe,
+            msgs,
             ..
         } = self;
         project_roots.advance_to(project_roots.time() + 1);
         project_roots.flush();
         worker.step_while(|| probe.less_than(project_roots.time()));
+        while let Ok(msg) = msgs.try_recv() {
+            match msg {
+                Msg::WatchPath(path) => watch_path(&path),
+                Msg::UnwatchPath(path) => unwatch_path(&path),
+            }
+        }
     }
 
     pub(crate) fn with_project<F, R>(&self, root: &Path, f: F) -> Result<R, Error>
