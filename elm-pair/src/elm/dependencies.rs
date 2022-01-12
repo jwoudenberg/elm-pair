@@ -34,8 +34,7 @@ impl DataflowComputation {
 
             // TODO: Clean up, removing clone's, unwrap's.
             let elm_jsons = project_roots.map(|project_root: PathBuf| {
-                let elm_json_path = project_root.join("elm.json");
-                let elm_json = load_elm_json(&elm_json_path).unwrap();
+                let elm_json = load_elm_json(&elm_json_path(&project_root)).unwrap();
                 (project_root.to_str().unwrap().to_string(), elm_json)
             });
 
@@ -122,8 +121,6 @@ impl DataflowComputation {
 pub struct ProjectInfo {
     pub source_directories: Vec<PathBuf>,
     pub modules: HashMap<String, ElmModule>,
-    pub elm_json_path: PathBuf,
-    pub idat_path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -170,18 +167,13 @@ fn load_dependencies(
     project_root: &Path,
     elm_json: ElmJson,
 ) -> Result<ProjectInfo, Error> {
-    // TODO: Remove harcoded Elm version.
-    let idat_path = project_root.join("elm-stuff/0.19.1/i.dat");
-    let mut modules = from_idat(project_root, &idat_path)?;
-    let elm_json_path = project_root.join("elm.json");
+    let mut modules = from_idat(project_root, &idat_path(project_root))?;
     modules.extend(find_project_modules(
         query_for_exports,
         project_root,
         &elm_json,
     )?);
     let project_info = ProjectInfo {
-        elm_json_path,
-        idat_path,
         modules,
         source_directories: elm_json
             .source_directories
@@ -190,6 +182,15 @@ fn load_dependencies(
             .collect(),
     };
     Ok(project_info)
+}
+
+fn elm_json_path(project_root: &Path) -> PathBuf {
+    project_root.join("elm.json")
+}
+
+fn idat_path(project_root: &Path) -> PathBuf {
+    // TODO: Remove harcoded Elm version.
+    project_root.join("elm-stuff/0.19.1/i.dat")
 }
 
 fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
