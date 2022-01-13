@@ -2,7 +2,9 @@ use crate::elm::idat;
 use crate::support::log;
 use crate::support::log::Error;
 use abomonation_derive::Abomonation;
+use differential_dataflow::operators::Count;
 use differential_dataflow::operators::Join;
+use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -11,7 +13,7 @@ use std::io::{BufReader, Read};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::RwLock;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
@@ -19,23 +21,28 @@ pub struct DataflowComputation {
     worker: timely::worker::Worker<
         timely::communication::allocator::thread::Thread,
     >,
-    probes: Vec<timely::dataflow::operators::probe::Handle<u32>>,
-    project_roots:
-        differential_dataflow::input::InputSession<u32, PathBuf, isize>,
+    probes: Vec<timely::dataflow::operators::probe::Handle<Timestamp>>,
+    // An input representing projects we're currently tracking.
+    project_roots_input: DataflowInput<PathBuf>,
+    // An input representing events happening to files. Whether it's file
+    // creation, removal, or modification, we just push a path in here to let
+    // it know something's changed.
+    filepath_events_input: DataflowInput<PathBuf>,
+    file_event_receiver: Receiver<notify::DebouncedEvent>,
     projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
-    msgs: mpsc::Receiver<Msg>,
+    current_time: Timestamp,
 }
 
-enum Msg {
-    WatchPath(PathBuf),
-    UnwatchPath(PathBuf),
-}
+type Timestamp = u32;
+
+type DataflowInput<A> =
+    differential_dataflow::input::InputSession<Timestamp, A, isize>;
 
 impl DataflowComputation {
-    pub(crate) fn new(
+    pub(crate) fn new<F: notify::Watcher + 'static>(
         query_for_exports: &'static QueryForExports,
-    ) -> DataflowComputation {
-        let (sender, msgs) = mpsc::channel();
+        _file_watcher_type: std::marker::PhantomData<F>,
+    ) -> Result<DataflowComputation, Error> {
         let alloc = timely::communication::allocator::thread::Thread::new();
         let projects = Rc::new(RwLock::new(HashMap::new()));
         let projects_clone = projects.clone();
@@ -44,39 +51,120 @@ impl DataflowComputation {
 
         let mut project_roots_input =
             differential_dataflow::input::InputSession::new();
+        let mut filepath_events_input =
+            differential_dataflow::input::InputSession::new();
 
+        let (file_event_sender, file_event_receiver) = channel();
+        let mut file_watcher: F = notify::Watcher::new(
+            file_event_sender,
+            core::time::Duration::from_millis(100),
+        )
+        .map_err(|err| {
+            log::mk_err!("failed creating file watcher: {:?}", err)
+        })?;
+
+        // TODO: Clean up, removing clone's, unwrap's.
+        // TODO: Introduce ProjectId type to replace `project_root` in most places.
+        // TODO: Introduce FileId type to replace PathBuf in most places.
+        // TODO: Wrap ElmModule in Rc for cheaper cloning.
         let probes = worker.dataflow(|scope| {
             let project_roots =
                 project_roots_input.to_collection(scope).distinct();
 
-            // TODO: Clean up, removing clone's, unwrap's.
+            let filepath_events = filepath_events_input.to_collection(scope);
+
             let elm_jsons = project_roots.map(|project_root: PathBuf| {
                 let elm_json =
                     load_elm_json(&elm_json_path(&project_root)).unwrap();
                 (project_root, elm_json)
             });
 
-            let paths_to_watch = elm_jsons
+            let source_directories_by_project = elm_jsons
                 .flat_map(|(project_root, elm_json)| {
-                    elm_json
-                        .source_directories
-                        .into_iter()
-                        .map(move |dir| project_root.join(dir))
+                    elm_json.source_directories.into_iter().map(move |dir| {
+                        let abs_dir =
+                            project_root.join(dir).canonicalize().unwrap();
+                        (project_root.clone(), abs_dir)
+                    })
                 })
-                .concat(&project_roots.map(|path| elm_json_path(&path)))
-                .concat(&project_roots.map(|path| idat_path(&path)))
+                .distinct();
+
+            let source_directories =
+                source_directories_by_project.map(|(_, path)| path);
+
+            let files = source_directories
+                .flat_map(|path| project_source_files_in_dir(&path))
+                .concat(&filepath_events)
+                .distinct();
+
+            let files_with_versions = files.count();
+
+            let parsed_modules = files_with_versions.map(
+                move |(path, _version): (PathBuf, isize)| {
+                    let module =
+                        parse_module(query_for_exports, &path).unwrap();
+                    (path, module)
+                },
+            );
+
+            let project_modules = files
+                // Join on `()`, i.e. create a record for every combination of
+                // source path and source directory. Then later we can filter
+                // that down to keep just the combinations where the path is
+                // in the directory.
+                .map(|path| ((), path))
+                .join(&source_directories_by_project.map(|x| ((), x)))
+                .flat_map(|((), (file_path, (project_root, src_dir)))| {
+                    if file_path.starts_with(&src_dir) {
+                        Some((file_path, (project_root, src_dir)))
+                    } else {
+                        None
+                    }
+                })
+                .join_map(
+                    &parsed_modules,
+                    |file_path, (project_root, src_dir), parsed_module| {
+                        let module_name =
+                            module_name_from_path(src_dir, file_path).unwrap();
+                        (
+                            project_root.clone(),
+                            (module_name, parsed_module.clone()),
+                        )
+                    },
+                );
+
+            let paths_to_watch = source_directories_by_project
+                .map(|(_project_root, path)| path)
+                .concat(
+                    &project_roots
+                        .map_in_place(|path| *path = elm_json_path(path)),
+                )
+                .concat(
+                    &project_roots.map_in_place(|path| *path = idat_path(path)),
+                )
+                .distinct()
                 .inspect(move |(path, _, diff)| {
                     match std::cmp::Ord::cmp(diff, &0) {
                         std::cmp::Ordering::Equal => {}
                         std::cmp::Ordering::Less => {
-                            sender
-                                .send(Msg::UnwatchPath(path.to_owned()))
-                                .unwrap();
+                            if let Err(err) = file_watcher.unwatch(path) {
+                                log::error!(
+                "failed while remove path {:?} to watch for changes: {:?}",
+                path,
+                err
+            )
+                            }
                         }
                         std::cmp::Ordering::Greater => {
-                            sender
-                                .send(Msg::WatchPath(path.to_owned()))
-                                .unwrap();
+                            if let Err(err) = file_watcher
+                                .watch(path, notify::RecursiveMode::Recursive)
+                            {
+                                log::error!(
+                "failed while adding path {:?} to watch for changes: {:?}",
+                path,
+                err
+            )
+                            }
                         }
                     }
                 });
@@ -86,21 +174,16 @@ impl DataflowComputation {
                 (path, modules)
             });
 
-            let project_modules =
-                elm_jsons.map(move |(project_root, elm_json)| {
-                    let modules = find_project_modules(
-                        query_for_exports,
-                        &project_root,
-                        &elm_json,
-                    )
-                    .unwrap();
-                    (project_root, modules)
-                });
-
-            let project_infos = project_idats
-                .join(&project_modules)
+            let project_infos = project_modules
+                .reduce(|_project_root, inputs, output| {
+                    let modules: Vec<(String, ElmModule)> = Vec::from_iter(
+                        inputs.iter().map(|(module, _count)| (*module).clone()),
+                    );
+                    output.push((modules, 1));
+                })
+                .join(&project_idats)
                 .map(
-                    move |(project_root, (mut idat_modules, local_modules))| {
+                    move |(project_root, (local_modules, mut idat_modules))| {
                         idat_modules.extend(local_modules);
                         (
                             project_root,
@@ -131,53 +214,76 @@ impl DataflowComputation {
             vec![paths_to_watch.probe(), project_infos.probe()]
         });
 
-        project_roots_input.advance_to(0);
-
-        DataflowComputation {
+        let computation = DataflowComputation {
             worker,
             probes,
-            project_roots: project_roots_input,
+            project_roots_input,
+            filepath_events_input,
             projects,
-            msgs,
-        }
+            file_event_receiver,
+            current_time: 0,
+        };
+
+        Ok(computation)
     }
 
     pub(crate) fn watch_project(&mut self, project_root: PathBuf) {
-        self.project_roots.insert(project_root)
+        self.project_roots_input.insert(project_root)
     }
 
     pub(crate) fn _unwatch_project(&mut self, project_root: PathBuf) {
-        self.project_roots.remove(project_root)
+        self.project_roots_input.remove(project_root)
     }
 
-    pub(crate) fn advance<W, U>(
-        &mut self,
-        mut watch_path: W,
-        mut unwatch_path: U,
-    ) where
-        W: FnMut(&Path),
-        U: FnMut(&Path),
-    {
+    pub(crate) fn advance(&mut self) {
         let DataflowComputation {
             worker,
-            project_roots,
+            project_roots_input,
+            filepath_events_input,
             probes,
-            msgs,
-            ..
+            mut current_time,
+            file_event_receiver,
+            projects: _projects,
         } = self;
-        project_roots.advance_to(project_roots.time() + 1);
-        project_roots.flush();
-        worker.step_while(|| {
-            probes
-                .iter()
-                .all(|probe| probe.less_than(project_roots.time()))
-        });
-        while let Ok(msg) = msgs.try_recv() {
-            match msg {
-                Msg::WatchPath(path) => watch_path(&path),
-                Msg::UnwatchPath(path) => unwatch_path(&path),
+        while let Ok(event) = file_event_receiver.try_recv() {
+            let mut push_event = |path: PathBuf| {
+                if is_elm_file(&path) {
+                    filepath_events_input.insert(path)
+                }
+            };
+            match event {
+                notify::DebouncedEvent::NoticeWrite(_) => {}
+                notify::DebouncedEvent::NoticeRemove(_) => {}
+                notify::DebouncedEvent::Create(path)
+                | notify::DebouncedEvent::Chmod(path)
+                | notify::DebouncedEvent::Write(path)
+                | notify::DebouncedEvent::Remove(path) => push_event(path),
+                notify::DebouncedEvent::Rename(from, to) => {
+                    push_event(from);
+                    push_event(to);
+                }
+                notify::DebouncedEvent::Rescan => {
+                    // TODO: Do something smart here.
+                }
+                notify::DebouncedEvent::Error(err, opt_path) => {
+                    log::error!(
+                        "File watcher error related to file {:?}: {:?}",
+                        opt_path,
+                        err
+                    );
+                }
             }
         }
+
+        current_time += 1;
+        project_roots_input.advance_to(current_time);
+        project_roots_input.flush();
+        filepath_events_input.advance_to(current_time);
+        filepath_events_input.flush();
+
+        worker.step_while(|| {
+            probes.iter().any(|probe| probe.less_than(&current_time))
+        });
     }
 
     pub(crate) fn with_project<F, R>(
@@ -248,6 +354,10 @@ struct ElmJson {
     source_directories: Vec<PathBuf>,
 }
 
+fn is_elm_file(path: &Path) -> bool {
+    path.extension() == Some(std::ffi::OsStr::new("elm"))
+}
+
 fn elm_json_path(project_root: &Path) -> PathBuf {
     project_root.join("elm.json")
 }
@@ -266,42 +376,19 @@ fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
         .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
 }
 
-fn find_project_modules(
-    query_for_exports: &QueryForExports,
-    project_root: &Path,
-    elm_json: &ElmJson,
-) -> Result<Vec<(String, ElmModule)>, Error> {
-    let mut modules_found = Vec::new();
-    for dir in elm_json.source_directories.iter() {
-        match project_root.join(&dir).canonicalize() {
-            Ok(source_dir) => find_project_modules_in_dir(
-                query_for_exports,
-                &source_dir,
-                &source_dir,
-                &mut modules_found,
-            ),
-            Err(err) => {
-                // If a source directory does not exist skip it. We'll still
-                // read the other directories, but if the missing directory is
-                // added later we'll need to load it then.
-                log::error!(
-                    "error while canonicalizing source directory {:?}: {:?}",
-                    dir,
-                    err
-                )
-            }
-        };
-    }
-    Ok(modules_found)
+// This function finds as many files as it can and so logs rather than fails
+// when it encounters an error.
+// TODO: Don't build up Vec.
+fn project_source_files_in_dir(source_dir: &Path) -> Vec<PathBuf> {
+    let mut res = Vec::new();
+    project_source_files_in_dir_helper(source_dir, source_dir, &mut res);
+    res
 }
 
-// This function finds as many modules as it can and so logs rather than fails
-// when it encounters an error.
-fn find_project_modules_in_dir(
-    query_for_exports: &QueryForExports,
+fn project_source_files_in_dir_helper(
     dir_path: &Path,
     source_dir: &Path,
-    modules: &mut Vec<(String, ElmModule)>,
+    files: &mut Vec<PathBuf>,
 ) {
     let read_dir = match std::fs::read_dir(dir_path) {
         Ok(d) => d,
@@ -326,34 +413,9 @@ fn find_project_modules_in_dir(
     });
     for path in valid_paths {
         if path.is_dir() {
-            find_project_modules_in_dir(
-                query_for_exports,
-                &path,
-                source_dir,
-                modules,
-            );
+            project_source_files_in_dir_helper(&path, source_dir, files);
         } else if path.extension() == Some(std::ffi::OsStr::new("elm")) {
-            let module_name = match module_name_from_path(source_dir, &path) {
-                Ok(name) => name,
-                Err(err) => {
-                    log::error!(
-                        "I've skipped scanning a source path because I encountered an error: {:?}",
-                        err
-                    );
-                    continue;
-                }
-            };
-            let elm_module = match parse_module(query_for_exports, &path) {
-                Ok(module) => module,
-                Err(err) => {
-                    log::error!(
-                        "I've skipped scanning a source path because I encountered an error: {:?}",
-                        err
-                    );
-                    continue;
-                }
-            };
-            modules.push((module_name, elm_module));
+            files.push(path);
         }
     }
 }

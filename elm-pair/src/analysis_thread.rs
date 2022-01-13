@@ -3,9 +3,9 @@ use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
 
 pub(crate) enum Msg {
@@ -15,7 +15,6 @@ pub(crate) enum Msg {
     EditorDisconnected(u32),
     OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
     CompilationSucceeded(SourceFileSnapshot),
-    FileWatcherEventReceived(notify::Result<notify::Event>),
 }
 
 impl From<Error> for Msg {
@@ -26,65 +25,37 @@ impl From<Error> for Msg {
 
 pub(crate) fn run(
     latest_code: &MVar<SourceFileSnapshot>,
-    analysis_sender: Sender<Msg>,
     analysis_receiver: Receiver<Msg>,
 ) -> Result<(), Error> {
-    let file_watcher = notify::recommended_watcher(move |event| {
-        // If sending fails there's nothing more we can do to report this error,
-        // hence the unwrap().
-        analysis_sender
-            .send(Msg::FileWatcherEventReceived(event))
-            .unwrap();
-    })
-    .map_err(|err| log::mk_err!("failed creating file watcher: {:?}", err))?;
     AnalysisLoop {
         latest_code,
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new()?,
-        changed_files: HashSet::new(),
-        file_watcher,
     }
     .start(analysis_receiver)
 }
 
-struct AnalysisLoop<'a, W> {
+struct AnalysisLoop<'a> {
     latest_code: &'a MVar<SourceFileSnapshot>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
-    changed_files: HashSet<PathBuf>,
-    file_watcher: W,
 }
 
-impl<'a, W> MsgLoop<Error> for AnalysisLoop<'a, W>
-where
-    W: notify::Watcher,
-{
+impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
-        let AnalysisLoop {
-            refactor_engine,
-            changed_files,
-            file_watcher,
-            ..
-        } = self;
-
-        if !changed_files.is_empty() {
-            refactor_engine.on_files_changed(changed_files, &mut |changed_path| {
-                watch_path(file_watcher, changed_path)
-            })?;
-            self.changed_files.drain();
-        }
-
         if let Some(mut diff) = self.source_file_diff() {
             let AnalysisLoop {
                 editor_driver,
                 refactor_engine,
                 ..
             } = self;
-            if let Some(editor_driver) = editor_driver.get(&diff.new.buffer.editor_id) {
+            if let Some(editor_driver) =
+                editor_driver.get(&diff.new.buffer.editor_id)
+            {
                 log::info!(
                     "diffing revision {:?} against {:?} for buffer {:?}",
                     diff.new.revision,
@@ -120,7 +91,8 @@ where
                                 // communicates the changes made by the refactor
                                 // back to us _and_ the compilation thread
                                 // compiles that version (which may be never).
-                                self.last_compiling_code.insert(diff.new.buffer, diff.new);
+                                self.last_compiling_code
+                                    .insert(diff.new.buffer, diff.new);
                             }
                         }
                     }
@@ -153,15 +125,11 @@ where
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
                 let AnalysisLoop {
-                    file_watcher,
-                    refactor_engine,
-                    ..
+                    refactor_engine, ..
                 } = self;
                 // TODO: We error here if elm-stuff/i.dat is missing. Figure out
                 // something that won't bring the application down in this case.
-                refactor_engine.init_buffer(buffer, path, &mut |changed_path| {
-                    watch_path(file_watcher, changed_path)
-                })?;
+                refactor_engine.init_buffer(buffer, path)?;
             }
             Msg::CompilationSucceeded(snapshot) => {
                 // Replace 'last compiling version' with a newer revision only.
@@ -182,22 +150,12 @@ where
                     };
                 }
             }
-            Msg::FileWatcherEventReceived(opt_event) => match opt_event {
-                Err(err) => {
-                    log::error!("Failed while processing file watcher event: {:?}", err);
-                }
-                Ok(event) => {
-                    if let Some(path) = event.paths.into_iter().next() {
-                        self.changed_files.insert(path);
-                    }
-                }
-            },
         }
         Ok(true)
     }
 }
 
-impl<'a, W> AnalysisLoop<'a, W> {
+impl<'a> AnalysisLoop<'a> {
     fn source_file_diff(&self) -> Option<SourceFileDiff> {
         let new = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();
@@ -206,16 +164,6 @@ impl<'a, W> AnalysisLoop<'a, W> {
         }
         let diff = SourceFileDiff { old, new };
         Some(diff)
-    }
-}
-
-fn watch_path<W: notify::Watcher>(watcher: &mut W, path: &Path) {
-    if let Err(err) = watcher.watch(path, notify::RecursiveMode::Recursive) {
-        log::error!(
-            "failed while adding path {:?} to watch for changes: {:?}",
-            path,
-            err
-        )
     }
 }
 
@@ -245,7 +193,8 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let mut old_parent = old.node();
     let mut new_parent = new.node();
     loop {
-        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new) {
+        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new)
+        {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
                     old_parent,
@@ -274,8 +223,12 @@ pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         };
         let first_old_changed = old.node();
         let first_new_changed = new.node();
-        let (old_removed_count, new_added_count) =
-            count_changed_siblings(old_code, new_code, &mut old.clone(), &mut new.clone());
+        let (old_removed_count, new_added_count) = count_changed_siblings(
+            old_code,
+            new_code,
+            &mut old.clone(),
+            &mut new.clone(),
+        );
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
@@ -356,8 +309,12 @@ fn goto_first_changed_sibling(
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
                 (true, true) => continue,
                 (false, false) => return FirstChangedSibling::NoneFound,
-                (true, false) => return FirstChangedSibling::OldAtFirstAdditional,
-                (false, true) => return FirstChangedSibling::NewAtFirstAdditional,
+                (true, false) => {
+                    return FirstChangedSibling::OldAtFirstAdditional
+                }
+                (false, true) => {
+                    return FirstChangedSibling::NewAtFirstAdditional
+                }
             }
         }
     }

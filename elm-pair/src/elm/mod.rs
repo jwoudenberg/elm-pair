@@ -137,11 +137,15 @@ impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = Box::new(QueryForExports::init(language)?);
+        let file_watcher_type: std::marker::PhantomData<
+            notify::RecommendedWatcher,
+        > = std::marker::PhantomData;
         let engine = RefactorEngine {
             buffers: HashMap::new(),
-            dataflow_computation: DataflowComputation::new(Box::leak(
-                query_for_exports,
-            )),
+            dataflow_computation: DataflowComputation::new(
+                Box::leak(query_for_exports),
+                file_watcher_type,
+            )?,
             query_for_imports: QueryForImports::init(language)?,
             query_for_unqualified_values: QueryForUnqualifiedValues::init(
                 language,
@@ -296,37 +300,17 @@ impl RefactorEngine {
             .with_project(&buffer_info.project_root, f)
     }
 
-    pub(crate) fn init_buffer<W>(
+    pub(crate) fn init_buffer(
         &mut self,
         buffer: Buffer,
         path: PathBuf,
-        watch_path: &mut W,
-    ) -> Result<(), Error>
-    where
-        W: FnMut(&Path),
-    {
+    ) -> Result<(), Error> {
         let project_root = project_root_for_path(&path)?.to_owned();
         self.dataflow_computation
             .watch_project(project_root.to_owned());
-        self.dataflow_computation.advance(
-            watch_path,
-            // TODO: Add callback for unwatching path
-            |_| {},
-        );
+        self.dataflow_computation.advance();
         let buffer_info = BufferInfo { path, project_root };
         self.buffers.insert(buffer, buffer_info);
-        Ok(())
-    }
-
-    pub(crate) fn on_files_changed<W>(
-        &mut self,
-        _paths: &HashSet<PathBuf>,
-        _watch_path: &mut W,
-    ) -> Result<(), Error>
-    where
-        W: FnMut(&Path),
-    {
-        // TODO: figure out what to do here!
         Ok(())
     }
 }
@@ -2099,6 +2083,7 @@ fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
 mod simulations {
     use crate::analysis_thread::{diff_trees, SourceFileDiff};
     use crate::elm::RefactorEngine;
+    use crate::support::log;
     use crate::support::source_code::Buffer;
     use crate::test_support::included_answer_test as ia_test;
     use crate::test_support::simulation::Simulation;
@@ -2144,7 +2129,12 @@ mod simulations {
         let mut diff = SourceFileDiff { old, new };
         let tree_changes = diff_trees(&diff);
         let mut refactor_engine = RefactorEngine::new()?;
-        refactor_engine.init_buffer(buffer, path.to_owned(), &mut |_| {})?;
+        refactor_engine.init_buffer(
+            buffer,
+            path.canonicalize().map_err(|err| {
+                log::mk_err!("failed to canonicalize path: {:?}", err)
+            })?,
+        )?;
         let edits = refactor_engine
             .respond_to_change(&diff, tree_changes)?
             .edits(&mut diff.new)?;
