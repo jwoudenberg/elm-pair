@@ -93,7 +93,7 @@ impl DataflowComputation {
                 source_directories_by_project.map(|(_, path)| path);
 
             let files = source_directories
-                .flat_map(|path| project_source_files_in_dir(&path))
+                .flat_map(|path| DirWalker::new(&path))
                 .concat(&filepath_events)
                 .distinct();
 
@@ -376,47 +376,75 @@ fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
         .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
 }
 
-// This function finds as many files as it can and so logs rather than fails
+// This iterator finds as many files as it can and so logs rather than fails
 // when it encounters an error.
-// TODO: Don't build up Vec.
-fn project_source_files_in_dir(source_dir: &Path) -> Vec<PathBuf> {
-    let mut res = Vec::new();
-    project_source_files_in_dir_helper(source_dir, source_dir, &mut res);
-    res
+struct DirWalker {
+    directories: Vec<std::fs::ReadDir>,
 }
 
-fn project_source_files_in_dir_helper(
-    dir_path: &Path,
-    source_dir: &Path,
-    files: &mut Vec<PathBuf>,
-) {
-    let read_dir = match std::fs::read_dir(dir_path) {
-        Ok(d) => d,
-        Err(err) => {
-            return log::error!(
-                "error while reading contents of source directory {:?}: {:?}",
-                dir_path,
-                err
-            );
+impl DirWalker {
+    fn new(root: &Path) -> DirWalker {
+        let directories = match std::fs::read_dir(root) {
+            Ok(read_dir) => vec![read_dir],
+            Err(err) => {
+                log::error!(
+                    "error while reading contents of source directory {:?}: {:?}",
+                    root,
+                    err
+                );
+                Vec::new()
+            }
+        };
+        DirWalker { directories }
+    }
+}
+
+impl Iterator for DirWalker {
+    type Item = PathBuf;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(read_dir) = self.directories.last_mut() {
+            match read_dir.next() {
+                None => {
+                    self.directories.pop();
+                }
+                Some(Err(err)) => {
+                    log::error!(
+                        "error while reading entry of source (sub)directory: {:?}",
+                        err
+                    );
+                }
+                Some(Ok(entry)) => match entry.file_type() {
+                    Err(err) => {
+                        log::error!(
+                            "error while reading file type of path {:?}: {:?}",
+                            entry.path(),
+                            err
+                        );
+                    }
+                    Ok(file_type) => {
+                        let path = entry.path();
+                        if file_type.is_dir() {
+                            match std::fs::read_dir(&path) {
+                                Ok(inner_read_dir) => {
+                                    self.directories.push(inner_read_dir)
+                                }
+                                Err(err) => {
+                                    log::error!(
+                                                    "error while reading contents of source directory {:?}: {:?}",
+                                                    path,
+                                                    err
+                                                );
+                                }
+                            }
+                        } else {
+                            return Some(path);
+                        }
+                    }
+                },
+            }
         }
-    };
-    let valid_paths = read_dir.filter_map(|entry| match entry {
-        Ok(entry_) => Some(entry_.path()),
-        Err(err) => {
-            log::error!(
-                "error while reading entry of source (sub)directory {:?}: {:?}",
-                dir_path,
-                err
-            );
-            None
-        }
-    });
-    for path in valid_paths {
-        if path.is_dir() {
-            project_source_files_in_dir_helper(&path, source_dir, files);
-        } else if path.extension() == Some(std::ffi::OsStr::new("elm")) {
-            files.push(path);
-        }
+        None
     }
 }
 
