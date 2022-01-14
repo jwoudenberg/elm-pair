@@ -43,8 +43,8 @@ impl<R: Read> IdatParser<R> {
     fn elm_utf8_under256(&mut self) -> Result<String, Error> {
         let len = self.data_binary_word8()? as usize;
         let mut full_bytes = [0; 256];
-        let mut bytes = &mut full_bytes[0..len];
-        self.reader.read_exact(&mut bytes).map_err(|err| {
+        let bytes = &mut full_bytes[0..len];
+        self.reader.read_exact(bytes).map_err(|err| {
             log::mk_err!("error reading text from i.dat: {:?}", err)
         })?;
         let str = std::str::from_utf8(bytes).map_err(|err| {
@@ -128,14 +128,8 @@ impl<R: Read> IdatParser<R> {
             }
             1 => {
                 let package_name = self.elm_package_name()?;
-                let unions = self.data_binary_map(
-                    Self::elm_name,
-                    Self::elm_canonical_union,
-                )?;
-                let aliases = self.data_binary_map(
-                    Self::elm_name,
-                    Self::elm_canonical_alias,
-                )?;
+                let unions = self.data_binary_map(Self::elm_name, Self::elm_canonical_union)?;
+                let aliases = self.data_binary_map(Self::elm_name, Self::elm_canonical_alias)?;
                 Ok(DependencyInterface::Private(package_name, unions, aliases))
             }
             _ => Err(log::mk_err!(

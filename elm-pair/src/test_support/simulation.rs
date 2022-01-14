@@ -142,8 +142,8 @@ impl SimulationBuilder {
         let at_cursor = self.current_bytes.slice(range.clone());
         if at_cursor != to_delete {
             return Err(Error::TextToDeleteDoesNotMatchStringAtCursor {
-                to_delete: to_delete.to_owned(),
-                at_cursor: at_cursor.to_string(),
+                _to_delete: to_delete.to_owned(),
+                _at_cursor: at_cursor.to_string(),
             });
         }
         self.add_edit(&range, String::new());
@@ -173,8 +173,8 @@ pub(crate) enum Error {
     FailureWhileNavigatingSimulationRope(ropey::Error),
     GettingRopeSlice,
     TextToDeleteDoesNotMatchStringAtCursor {
-        to_delete: String,
-        at_cursor: String,
+        _to_delete: String,
+        _at_cursor: String,
     },
 }
 
