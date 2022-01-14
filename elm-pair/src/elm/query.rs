@@ -1,13 +1,13 @@
 #[macro_export]
 macro_rules! query {
     ($name:ident, $test_mod_name:ident, $file:literal $(, $capture:ident )* $(,)? ) => {
-        pub struct $name {
+        struct $name {
             query: Query,
             $($capture: u32,)*
         }
 
         impl $name {
-            pub fn init(lang: Language) -> Result<$name, Error> {
+            fn init(lang: Language) -> Result<$name, Error> {
                 let query_file_contents = include_str!($file);
                 let separator = "=== test input below ===";
                 let query_str =

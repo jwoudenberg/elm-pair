@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{BufReader, Read};
 use std::iter::FromIterator;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
@@ -18,17 +19,33 @@ use std::sync::RwLock;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
 pub struct DataflowComputation {
+    // The dataflow worker contains state managed by the differential-dataflow
+    // library. Differential-dataflow supports having multiple workers share
+    // work, but we don't make use of that.
     worker: timely::worker::Worker<timely::communication::allocator::thread::Thread>,
+    // These probes let us check whether the dataflow computation has processed
+    // all changes made to the inputs below, i.e. whether the outputs will show
+    // up-to-date information.
     probes: Vec<DataflowProbe>,
+    // Changes made to the dataflow inputs below will receive this timestamp.
+    current_time: Timestamp,
     // An input representing projects we're currently tracking.
     project_roots_input: DataflowInput<PathBuf>,
     // An input representing events happening to files. Whether it's file
     // creation, removal, or modification, we just push a path in here to let
     // it know something's changed.
     filepath_events_input: DataflowInput<PathBuf>,
+    // A channel receiver that will receive events for changes to files in Elm
+    // projects being tracked.
     file_event_receiver: Receiver<notify::DebouncedEvent>,
+    // A map containing all parsed informations for all projects currently being
+    // tracked.
+    //
+    // TODO: remove this field with something better.
+    // This structure needs to be rebuilt anytype any code in any Elm project
+    // changes. Given no code needs all this information in one place together
+    // it's wasteful to construct it.
     projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
-    current_time: Timestamp,
 }
 
 type Timestamp = u32;
@@ -37,11 +54,97 @@ type DataflowInput<A> = differential_dataflow::input::InputSession<Timestamp, A,
 
 type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
+// This trait exists to allow dependency injection of side-effecty functions
+// that read and write files into pure dataflow computation logic. The goal is
+// to allow the dataflow logic to be tested in isolation.
+trait ElmIO {
+    type FileWatcher: notify::Watcher + 'static;
+    type FilesInDir: IntoIterator<Item = PathBuf>;
+
+    fn parse_elm_json(path: &Path) -> Result<ElmJson, Error>;
+    fn parse_elm_module(
+        query_for_exports: &QueryForExports,
+        path: &Path,
+    ) -> Result<ElmModule, Error>;
+    fn parse_elm_stuff_idat(path: &Path) -> Result<Vec<(String, ElmModule)>, Error>;
+    fn find_elm_files_recursively(path: &Path) -> Self::FilesInDir;
+}
+
+struct RealElmIO;
+
+impl ElmIO for RealElmIO {
+    type FileWatcher = notify::RecommendedWatcher;
+    type FilesInDir = DirWalker;
+
+    fn parse_elm_json(path: &Path) -> Result<ElmJson, Error> {
+        let file = std::fs::File::open(path)
+            .map_err(|err| log::mk_err!("error while reading elm.json: {:?}", err))?;
+        let reader = BufReader::new(file);
+        serde_json::from_reader(reader)
+            .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
+    }
+
+    fn parse_elm_module(
+        query_for_exports: &QueryForExports,
+        path: &Path,
+    ) -> Result<ElmModule, Error> {
+        let mut file = std::fs::File::open(path)
+            .map_err(|err| log::mk_err!("failed to open module file: {:?}", err))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|err| log::mk_err!("failed to read module file: {:?}", err))?;
+        let tree = crate::support::source_code::parse_bytes(&bytes)?;
+        let exports = query_for_exports.run(&tree, &bytes)?;
+        let elm_module = ElmModule { exports };
+        Ok(elm_module)
+    }
+
+    fn parse_elm_stuff_idat(project_root: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
+        let path = &idat_path(project_root);
+        let file = std::fs::File::open(path).or_else(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                create_elm_stuff(project_root)?;
+                std::fs::File::open(path)
+                    .map_err(|err| log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err))
+            } else {
+                Err(log::mk_err!(
+                    "error opening elm-stuff/i.dat file: {:?}",
+                    err
+                ))
+            }
+        })?;
+        let reader = BufReader::new(file);
+        let modules = idat::parse(reader)?
+            .into_iter()
+            .filter_map(|(canonical_name, i)| {
+                let idat::Name(name) = canonical_name.module;
+                let module = elm_module_from_interface(i)?;
+                Some((name, module))
+            })
+            .collect();
+        Ok(modules)
+    }
+
+    fn find_elm_files_recursively(path: &Path) -> Self::FilesInDir {
+        DirWalker::new(path)
+    }
+}
+
 impl DataflowComputation {
-    pub(crate) fn new<F: notify::Watcher + 'static>(
-        query_for_exports: QueryForExports,
-        _file_watcher_type: std::marker::PhantomData<F>,
-    ) -> Result<DataflowComputation, Error> {
+    pub(crate) fn new() -> Result<DataflowComputation, Error> {
+        let elm_io: PhantomData<&RealElmIO> = PhantomData;
+        Self::new_configurable(elm_io)
+    }
+
+    fn new_configurable<D>(
+        elm_io: std::marker::PhantomData<&D>,
+    ) -> Result<DataflowComputation, Error>
+    where
+        D: ElmIO,
+    {
+        let language = tree_sitter_elm::language();
+        let query_for_exports = QueryForExports::init(language)?;
+
         let alloc = timely::communication::allocator::thread::Thread::new();
         let projects = Rc::new(RwLock::new(HashMap::new()));
         let mut worker = timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
@@ -50,12 +153,13 @@ impl DataflowComputation {
         let mut filepath_events_input = differential_dataflow::input::InputSession::new();
 
         let (file_event_sender, file_event_receiver) = channel();
-        let file_watcher: F =
+        let file_watcher: D::FileWatcher =
             notify::Watcher::new(file_event_sender, core::time::Duration::from_millis(100))
                 .map_err(|err| log::mk_err!("failed creating file watcher: {:?}", err))?;
 
         let probes = worker.dataflow(|scope| {
             dataflow_graph(
+                elm_io,
                 scope,
                 query_for_exports,
                 &mut project_roots_input,
@@ -150,7 +254,7 @@ impl DataflowComputation {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectInfo {
     pub modules: HashMap<String, ElmModule>,
 }
@@ -197,7 +301,9 @@ struct ElmJson {
 // TODO: Clean up, removing clone's
 // TODO: Introduce ProjectId type to replace `project_root` in most places.
 // TODO: Introduce FileId type to replace PathBuf in most places.
-fn dataflow_graph<W, G>(
+// TODO: Ensure new paths are canonicalized before they're used.
+fn dataflow_graph<W, G, D>(
+    _elm_io: std::marker::PhantomData<&D>,
     scope: &mut G,
     query_for_exports: QueryForExports,
     project_roots_input: &mut DataflowInput<PathBuf>,
@@ -209,13 +315,14 @@ where
     W: notify::Watcher + 'static,
     G: timely::dataflow::scopes::ScopeParent<Timestamp = Timestamp>
         + timely::dataflow::scopes::Scope,
+    D: ElmIO,
 {
     let project_roots = project_roots_input.to_collection(scope).distinct();
 
     let filepath_events = filepath_events_input.to_collection(scope);
 
-    let elm_jsons = project_roots.flat_map(|project_root: PathBuf| {
-        match load_elm_json(&elm_json_path(&project_root)) {
+    let elm_jsons = project_roots.flat_map(move |project_root: PathBuf| {
+        match D::parse_elm_json(&elm_json_path(&project_root)) {
             Ok(elm_json) => Some((project_root, elm_json)),
             Err(err) => {
                 log::error!("Failed to load elm_json: {:?}", err);
@@ -229,36 +336,28 @@ where
             elm_json
                 .source_directories
                 .into_iter()
-                .flat_map(move |dir| match project_root.join(&dir).canonicalize() {
-                    Ok(abs_dir) => Some((project_root.clone(), abs_dir)),
-                    Err(err) => {
-                        log::error!("Failed to canonicalize path {:?}: {:?}", dir, err);
-                        None
-                    }
-                })
+                .map(move |dir| (project_root.clone(), project_root.join(&dir)))
         })
         .distinct();
 
     let source_directories = source_directories_by_project.map(|(_, path)| path);
 
     let files = source_directories
-        .flat_map(|path| DirWalker::new(&path))
+        .flat_map(move |path| D::find_elm_files_recursively(&path))
         .concat(&filepath_events)
         .distinct();
 
     let files_with_versions = files.count();
 
-    let parsed_modules =
-        files_with_versions.flat_map(
-            move |(path, _version): (PathBuf, isize)| match parse_module(&query_for_exports, &path)
-            {
-                Ok(module) => Some((path, module)),
-                Err(err) => {
-                    log::error!("Failed parsing module: {:?}", err);
-                    None
-                }
-            },
-        );
+    let parsed_modules = files_with_versions.flat_map(move |(path, _version): (PathBuf, isize)| {
+        match D::parse_elm_module(&query_for_exports, &path) {
+            Ok(module) => Some((path, module)),
+            Err(err) => {
+                log::error!("Failed parsing module: {:?}", err);
+                None
+            }
+        }
+    });
 
     let project_modules = files
         // Join on `()`, i.e. create a record for every combination of
@@ -317,7 +416,7 @@ where
             }
         });
 
-    let project_idats = project_roots.flat_map(|path| match from_idat(&path) {
+    let project_idats = project_roots.flat_map(move |path| match D::parse_elm_stuff_idat(&path) {
         Ok(modules) => Some((path, modules)),
         Err(err) => {
             log::error!("could not read i.dat file: {:?}", err);
@@ -366,6 +465,77 @@ where
     vec![paths_to_watch.probe(), project_infos.probe()]
 }
 
+#[cfg(test)]
+mod dataflow_tests {
+    use super::*;
+
+    struct FakeElmIO;
+
+    impl ElmIO for FakeElmIO {
+        type FileWatcher = notify::NullWatcher;
+        type FilesInDir = Vec<PathBuf>;
+
+        fn parse_elm_json(_path: &Path) -> Result<ElmJson, Error> {
+            let elm_json = ElmJson {
+                source_directories: vec![PathBuf::from("src")],
+            };
+            Ok(elm_json)
+        }
+
+        fn parse_elm_module(
+            _query_for_exports: &QueryForExports,
+            _path: &Path,
+        ) -> Result<ElmModule, Error> {
+            Ok(mk_elm_module())
+        }
+
+        fn parse_elm_stuff_idat(_project_root: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
+            Ok(Vec::new())
+        }
+
+        fn find_elm_files_recursively(path: &Path) -> Self::FilesInDir {
+            vec![
+                path.join("/project/src/Animals/Bat.elm"),
+                path.join("/project/src/Care/Soap.elm"),
+            ]
+        }
+    }
+
+    fn mk_elm_module() -> ElmModule {
+        ElmModule {
+            exports: vec![ExportedName::Value {
+                name: "bees".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn project_is_parsed() {
+        let elm_io: PhantomData<&FakeElmIO> = PhantomData;
+        let mut computation = DataflowComputation::new_configurable(elm_io).unwrap();
+        let project_root = PathBuf::from("/project");
+        computation.watch_project(project_root.clone());
+        computation.advance();
+        computation
+            .with_project(&project_root, |project| {
+                assert_eq!(
+                    project,
+                    &ProjectInfo {
+                        modules: HashMap::from_iter(
+                            vec![
+                                ("Animals.Bat".to_string(), mk_elm_module()),
+                                ("Care.Soap".to_string(), mk_elm_module())
+                            ]
+                            .into_iter()
+                        )
+                    }
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
 fn is_elm_file(path: &Path) -> bool {
     path.extension() == Some(std::ffi::OsStr::new("elm"))
 }
@@ -377,14 +547,6 @@ fn elm_json_path(project_root: &Path) -> PathBuf {
 fn idat_path(project_root: &Path) -> PathBuf {
     // TODO: Remove harcoded Elm version.
     project_root.join("elm-stuff/0.19.1/i.dat")
-}
-
-fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
-    let file = std::fs::File::open(path)
-        .map_err(|err| log::mk_err!("error while reading elm.json: {:?}", err))?;
-    let reader = BufReader::new(file);
-    serde_json::from_reader(reader)
-        .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
 }
 
 // This iterator finds as many files as it can and so logs rather than fails
@@ -484,18 +646,6 @@ fn module_name_from_path(source_dir: &Path, path: &Path) -> Result<String, Error
                 os_str
             )
         })
-}
-
-fn parse_module(query_for_exports: &QueryForExports, path: &Path) -> Result<ElmModule, Error> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|err| log::mk_err!("failed to open module file: {:?}", err))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|err| log::mk_err!("failed to read module file: {:?}", err))?;
-    let tree = crate::support::source_code::parse_bytes(&bytes)?;
-    let exports = query_for_exports.run(&tree, &bytes)?;
-    let elm_module = ElmModule { exports };
-    Ok(elm_module)
 }
 
 crate::elm::query::query!(
@@ -694,32 +844,6 @@ where
     }
 }
 
-fn from_idat(project_root: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
-    let path = &idat_path(project_root);
-    let file = std::fs::File::open(path).or_else(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
-            create_elm_stuff(project_root)?;
-            std::fs::File::open(path)
-                .map_err(|err| log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err))
-        } else {
-            Err(log::mk_err!(
-                "error opening elm-stuff/i.dat file: {:?}",
-                err
-            ))
-        }
-    })?;
-    let reader = BufReader::new(file);
-    let modules = idat::parse(reader)?
-        .into_iter()
-        .filter_map(|(canonical_name, i)| {
-            let idat::Name(name) = canonical_name.module;
-            let module = elm_module_from_interface(i)?;
-            Some((name, module))
-        })
-        .collect();
-    Ok(modules)
-}
-
 fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
     log::info!(
         "Running `elm make` to generate elm-stuff in project: {:?}",
@@ -794,10 +918,8 @@ fn elm_export_from_alias((idat::Name(name), _): (idat::Name, idat::Alias)) -> Ex
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::dependencies::{parse_module, ElmModule, Intersperse, QueryForExports};
-    use crate::support::log::Error;
+    use super::*;
     use crate::test_support::included_answer_test as ia_test;
-    use std::path::Path;
 
     macro_rules! exports_scanning_test {
         ($name:ident) => {
@@ -826,7 +948,7 @@ mod tests {
     fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = QueryForExports::init(language)?;
-        let ElmModule { exports } = parse_module(&query_for_exports, path)?;
+        let ElmModule { exports } = <RealElmIO>::parse_elm_module(&query_for_exports, path)?;
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))
