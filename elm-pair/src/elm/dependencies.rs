@@ -789,6 +789,26 @@ mod dataflow_tests {
         // Then the module is parsed again...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
+
+    #[test]
+    fn deleting_an_elm_file_removes_it_from_a_project() {
+        todo!()
+    }
+
+    #[test]
+    fn elm_json_files_are_reparsed_if_we_send_an_event_for_them() {
+        todo!()
+    }
+
+    #[test]
+    fn elm_idat_files_are_reparsed_if_we_send_an_event_for_them() {
+        todo!()
+    }
+
+    #[test]
+    fn no_unnecessary_double_work_when_projects_share_a_source_directory() {
+        todo!()
+    }
 }
 
 fn is_elm_file(path: &Path) -> bool {
