@@ -21,7 +21,7 @@ pub struct DataflowComputation {
     worker: timely::worker::Worker<
         timely::communication::allocator::thread::Thread,
     >,
-    probes: Vec<timely::dataflow::operators::probe::Handle<Timestamp>>,
+    probes: Vec<DataflowProbe>,
     // An input representing projects we're currently tracking.
     project_roots_input: DataflowInput<PathBuf>,
     // An input representing events happening to files. Whether it's file
@@ -37,6 +37,8 @@ type Timestamp = u32;
 
 type DataflowInput<A> =
     differential_dataflow::input::InputSession<Timestamp, A, isize>;
+
+type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
 impl DataflowComputation {
     pub(crate) fn new<F: notify::Watcher + 'static>(
@@ -55,7 +57,7 @@ impl DataflowComputation {
             differential_dataflow::input::InputSession::new();
 
         let (file_event_sender, file_event_receiver) = channel();
-        let mut file_watcher: F = notify::Watcher::new(
+        let file_watcher: F = notify::Watcher::new(
             file_event_sender,
             core::time::Duration::from_millis(100),
         )
@@ -67,199 +69,14 @@ impl DataflowComputation {
         // TODO: Introduce ProjectId type to replace `project_root` in most places.
         // TODO: Introduce FileId type to replace PathBuf in most places.
         let probes = worker.dataflow(|scope| {
-            let project_roots =
-                project_roots_input.to_collection(scope).distinct();
-
-            let filepath_events = filepath_events_input.to_collection(scope);
-
-            let elm_jsons = project_roots.flat_map(|project_root: PathBuf| {
-                match load_elm_json(&elm_json_path(&project_root)) {
-                    Ok(elm_json) => Some((project_root, elm_json)),
-                    Err(err) => {
-                        log::error!("Failed to load elm_json: {:?}", err);
-                        None
-                    }
-                }
-            });
-
-            let source_directories_by_project = elm_jsons
-                .flat_map(|(project_root, elm_json)| {
-                    elm_json.source_directories.into_iter().flat_map(
-                        move |dir| match project_root.join(&dir).canonicalize()
-                        {
-                            Ok(abs_dir) => {
-                                Some((project_root.clone(), abs_dir))
-                            }
-                            Err(err) => {
-                                log::error!(
-                                    "Failed to canonicalize path {:?}: {:?}",
-                                    dir,
-                                    err
-                                );
-                                None
-                            }
-                        },
-                    )
-                })
-                .distinct();
-
-            let source_directories =
-                source_directories_by_project.map(|(_, path)| path);
-
-            let files = source_directories
-                .flat_map(|path| DirWalker::new(&path))
-                .concat(&filepath_events)
-                .distinct();
-
-            let files_with_versions = files.count();
-
-            let parsed_modules = files_with_versions.flat_map(
-                move |(path, _version): (PathBuf, isize)| match parse_module(
-                    query_for_exports,
-                    &path,
-                ) {
-                    Ok(module) => Some((path, module)),
-                    Err(err) => {
-                        log::error!("Failed parsing module: {:?}", err);
-                        None
-                    }
-                },
-            );
-
-            let project_modules = files
-                // Join on `()`, i.e. create a record for every combination of
-                // source path and source directory. Then later we can filter
-                // that down to keep just the combinations where the path is
-                // in the directory.
-                .map(|path| ((), path))
-                .join(&source_directories_by_project.map(|x| ((), x)))
-                .flat_map(|((), (file_path, (project_root, src_dir)))| {
-                    if file_path.starts_with(&src_dir) {
-                        Some((file_path, (project_root, src_dir)))
-                    } else {
-                        None
-                    }
-                })
-                .join_map(
-                    &parsed_modules,
-                    |file_path, (project_root, src_dir), parsed_module| {
-                        match module_name_from_path(src_dir, file_path) {
-                            Ok(module_name) => Some((
-                                project_root.clone(),
-                                (module_name, parsed_module.clone()),
-                            )),
-                            Err(err) => {
-                                log::error!(
-                                    "Failed deriving module name: {:?}",
-                                    err
-                                );
-                                None
-                            }
-                        }
-                    },
-                )
-                .flat_map(|opt| opt);
-
-            let paths_to_watch = source_directories_by_project
-                .map(|(_project_root, path)| path)
-                .concat(
-                    &project_roots
-                        .map_in_place(|path| *path = elm_json_path(path)),
-                )
-                .concat(
-                    &project_roots.map_in_place(|path| *path = idat_path(path)),
-                )
-                .distinct()
-                .inspect(move |(path, _, diff)| {
-                    match std::cmp::Ord::cmp(diff, &0) {
-                        std::cmp::Ordering::Equal => {}
-                        std::cmp::Ordering::Less => {
-                            if let Err(err) = file_watcher.unwatch(path) {
-                                log::error!(
-                "failed while remove path {:?} to watch for changes: {:?}",
-                path,
-                err
+            dataflow_graph(
+                scope,
+                query_for_exports,
+                &mut project_roots_input,
+                &mut filepath_events_input,
+                projects_clone,
+                file_watcher,
             )
-                            }
-                        }
-                        std::cmp::Ordering::Greater => {
-                            if let Err(err) = file_watcher
-                                .watch(path, notify::RecursiveMode::Recursive)
-                            {
-                                log::error!(
-                "failed while adding path {:?} to watch for changes: {:?}",
-                path,
-                err
-            )
-                            }
-                        }
-                    }
-                });
-
-            let project_idats =
-                project_roots.flat_map(|path| match from_idat(&path) {
-                    Ok(modules) => Some((path, modules)),
-                    Err(err) => {
-                        log::error!("could not read i.dat file: {:?}", err);
-                        None
-                    }
-                });
-
-            let project_infos = project_modules
-                .reduce(|_project_root, inputs, output| {
-                    let modules: Vec<(String, ElmModule)> = Vec::from_iter(
-                        inputs.iter().map(|(module, _count)| (*module).clone()),
-                    );
-                    output.push((modules, 1));
-                })
-                .join(&project_idats)
-                .map(
-                    move |(project_root, (local_modules, mut idat_modules))| {
-                        idat_modules.extend(local_modules);
-                        (
-                            project_root,
-                            ProjectInfo {
-                                modules: idat_modules.into_iter().collect(),
-                            },
-                        )
-                    },
-                )
-                .inspect(move |((project_root, project_info), _, diff)| {
-                    match std::cmp::Ord::cmp(diff, &0) {
-                        std::cmp::Ordering::Equal => {}
-                        std::cmp::Ordering::Less => {
-                            match projects_clone.write() {
-                                Ok(mut projects_write) => {
-                                    projects_write.remove(project_root);
-                                }
-                                Err(err) => {
-                                    log::error!(
-                                        "no write lock on projects: {:?}",
-                                        err
-                                    );
-                                }
-                            }
-                        }
-                        std::cmp::Ordering::Greater => {
-                            match projects_clone.write() {
-                                Ok(mut projects_write) => {
-                                    projects_write.insert(
-                                        project_root.clone(),
-                                        project_info.clone(),
-                                    );
-                                }
-                                Err(err) => {
-                                    log::error!(
-                                        "no write lock on projects: {:?}",
-                                        err
-                                    );
-                                }
-                            }
-                        }
-                    }
-                });
-
-            vec![paths_to_watch.probe(), project_infos.probe()]
         });
 
         let computation = DataflowComputation {
@@ -400,6 +217,188 @@ pub enum ExportedName {
 struct ElmJson {
     #[serde(rename = "source-directories")]
     source_directories: Vec<PathBuf>,
+}
+
+fn dataflow_graph<W, G>(
+    scope: &mut G,
+    query_for_exports: &'static QueryForExports,
+    project_roots_input: &mut DataflowInput<PathBuf>,
+    filepath_events_input: &mut DataflowInput<PathBuf>,
+    projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
+    mut file_watcher: W,
+) -> Vec<DataflowProbe>
+where
+    W: notify::Watcher + 'static,
+    G: timely::dataflow::scopes::ScopeParent<Timestamp = Timestamp>
+        + timely::dataflow::scopes::Scope,
+{
+    let project_roots = project_roots_input.to_collection(scope).distinct();
+
+    let filepath_events = filepath_events_input.to_collection(scope);
+
+    let elm_jsons = project_roots.flat_map(|project_root: PathBuf| {
+        match load_elm_json(&elm_json_path(&project_root)) {
+            Ok(elm_json) => Some((project_root, elm_json)),
+            Err(err) => {
+                log::error!("Failed to load elm_json: {:?}", err);
+                None
+            }
+        }
+    });
+
+    let source_directories_by_project = elm_jsons
+        .flat_map(|(project_root, elm_json)| {
+            elm_json
+                .source_directories
+                .into_iter()
+                .flat_map(move |dir| {
+                    match project_root.join(&dir).canonicalize() {
+                        Ok(abs_dir) => Some((project_root.clone(), abs_dir)),
+                        Err(err) => {
+                            log::error!(
+                                "Failed to canonicalize path {:?}: {:?}",
+                                dir,
+                                err
+                            );
+                            None
+                        }
+                    }
+                })
+        })
+        .distinct();
+
+    let source_directories =
+        source_directories_by_project.map(|(_, path)| path);
+
+    let files = source_directories
+        .flat_map(|path| DirWalker::new(&path))
+        .concat(&filepath_events)
+        .distinct();
+
+    let files_with_versions = files.count();
+
+    let parsed_modules = files_with_versions.flat_map(
+        move |(path, _version): (PathBuf, isize)| match parse_module(
+            query_for_exports,
+            &path,
+        ) {
+            Ok(module) => Some((path, module)),
+            Err(err) => {
+                log::error!("Failed parsing module: {:?}", err);
+                None
+            }
+        },
+    );
+
+    let project_modules = files
+        // Join on `()`, i.e. create a record for every combination of
+        // source path and source directory. Then later we can filter
+        // that down to keep just the combinations where the path is
+        // in the directory.
+        .map(|path| ((), path))
+        .join(&source_directories_by_project.map(|x| ((), x)))
+        .flat_map(|((), (file_path, (project_root, src_dir)))| {
+            if file_path.starts_with(&src_dir) {
+                Some((file_path, (project_root, src_dir)))
+            } else {
+                None
+            }
+        })
+        .join_map(
+            &parsed_modules,
+            |file_path, (project_root, src_dir), parsed_module| {
+                match module_name_from_path(src_dir, file_path) {
+                    Ok(module_name) => Some((
+                        project_root.clone(),
+                        (module_name, parsed_module.clone()),
+                    )),
+                    Err(err) => {
+                        log::error!("Failed deriving module name: {:?}", err);
+                        None
+                    }
+                }
+            },
+        )
+        .flat_map(|opt| opt);
+
+    let paths_to_watch = source_directories_by_project
+        .map(|(_project_root, path)| path)
+        .concat(&project_roots.map_in_place(|path| *path = elm_json_path(path)))
+        .concat(&project_roots.map_in_place(|path| *path = idat_path(path)))
+        .distinct()
+        .inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Less => {
+                if let Err(err) = file_watcher.unwatch(path) {
+                    log::error!(
+                "failed while remove path {:?} to watch for changes: {:?}",
+                path,
+                err
+            )
+                }
+            }
+            std::cmp::Ordering::Greater => {
+                if let Err(err) =
+                    file_watcher.watch(path, notify::RecursiveMode::Recursive)
+                {
+                    log::error!(
+                "failed while adding path {:?} to watch for changes: {:?}",
+                path,
+                err
+            )
+                }
+            }
+        });
+
+    let project_idats = project_roots.flat_map(|path| match from_idat(&path) {
+        Ok(modules) => Some((path, modules)),
+        Err(err) => {
+            log::error!("could not read i.dat file: {:?}", err);
+            None
+        }
+    });
+
+    let project_infos = project_modules
+        .reduce(|_project_root, inputs, output| {
+            let modules: Vec<(String, ElmModule)> = Vec::from_iter(
+                inputs.iter().map(|(module, _count)| (*module).clone()),
+            );
+            output.push((modules, 1));
+        })
+        .join(&project_idats)
+        .map(move |(project_root, (local_modules, mut idat_modules))| {
+            idat_modules.extend(local_modules);
+            (
+                project_root,
+                ProjectInfo {
+                    modules: idat_modules.into_iter().collect(),
+                },
+            )
+        })
+        .inspect(move |((project_root, project_info), _, diff)| {
+            match std::cmp::Ord::cmp(diff, &0) {
+                std::cmp::Ordering::Equal => {}
+                std::cmp::Ordering::Less => match projects.write() {
+                    Ok(mut projects_write) => {
+                        projects_write.remove(project_root);
+                    }
+                    Err(err) => {
+                        log::error!("no write lock on projects: {:?}", err);
+                    }
+                },
+                std::cmp::Ordering::Greater => match projects.write() {
+                    Ok(mut projects_write) => {
+                        projects_write
+                            .insert(project_root.clone(), project_info.clone());
+                    }
+                    Err(err) => {
+                        log::error!("no write lock on projects: {:?}", err);
+                    }
+                },
+            }
+        });
+
+    vec![paths_to_watch.probe(), project_infos.probe()]
 }
 
 fn is_elm_file(path: &Path) -> bool {
