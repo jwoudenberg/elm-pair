@@ -18,9 +18,7 @@ use std::sync::RwLock;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
 pub struct DataflowComputation {
-    worker: timely::worker::Worker<
-        timely::communication::allocator::thread::Thread,
-    >,
+    worker: timely::worker::Worker<timely::communication::allocator::thread::Thread>,
     probes: Vec<DataflowProbe>,
     // An input representing projects we're currently tracking.
     project_roots_input: DataflowInput<PathBuf>,
@@ -35,8 +33,7 @@ pub struct DataflowComputation {
 
 type Timestamp = u32;
 
-type DataflowInput<A> =
-    differential_dataflow::input::InputSession<Timestamp, A, isize>;
+type DataflowInput<A> = differential_dataflow::input::InputSession<Timestamp, A, isize>;
 
 type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
@@ -47,34 +44,23 @@ impl DataflowComputation {
     ) -> Result<DataflowComputation, Error> {
         let alloc = timely::communication::allocator::thread::Thread::new();
         let projects = Rc::new(RwLock::new(HashMap::new()));
-        let projects_clone = projects.clone();
-        let mut worker =
-            timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
+        let mut worker = timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
-        let mut project_roots_input =
-            differential_dataflow::input::InputSession::new();
-        let mut filepath_events_input =
-            differential_dataflow::input::InputSession::new();
+        let mut project_roots_input = differential_dataflow::input::InputSession::new();
+        let mut filepath_events_input = differential_dataflow::input::InputSession::new();
 
         let (file_event_sender, file_event_receiver) = channel();
-        let file_watcher: F = notify::Watcher::new(
-            file_event_sender,
-            core::time::Duration::from_millis(100),
-        )
-        .map_err(|err| {
-            log::mk_err!("failed creating file watcher: {:?}", err)
-        })?;
+        let file_watcher: F =
+            notify::Watcher::new(file_event_sender, core::time::Duration::from_millis(100))
+                .map_err(|err| log::mk_err!("failed creating file watcher: {:?}", err))?;
 
-        // TODO: Clean up, removing clone's
-        // TODO: Introduce ProjectId type to replace `project_root` in most places.
-        // TODO: Introduce FileId type to replace PathBuf in most places.
         let probes = worker.dataflow(|scope| {
             dataflow_graph(
                 scope,
                 query_for_exports,
                 &mut project_roots_input,
                 &mut filepath_events_input,
-                projects_clone,
+                projects.clone(),
                 file_watcher,
             )
         });
@@ -146,25 +132,20 @@ impl DataflowComputation {
         filepath_events_input.advance_to(current_time);
         filepath_events_input.flush();
 
-        worker.step_while(|| {
-            probes.iter().any(|probe| probe.less_than(&current_time))
-        });
+        worker.step_while(|| probes.iter().any(|probe| probe.less_than(&current_time)));
     }
 
-    pub(crate) fn with_project<F, R>(
-        &self,
-        root: &Path,
-        f: F,
-    ) -> Result<R, Error>
+    pub(crate) fn with_project<F, R>(&self, root: &Path, f: F) -> Result<R, Error>
     where
         F: FnOnce(&ProjectInfo) -> Result<R, Error>,
     {
-        let projects = self.projects.read().map_err(|err| {
-            log::mk_err!("failed to obtain read lock for projects: {:?}", err)
-        })?;
-        let project = projects.get(root).ok_or_else(|| {
-            log::mk_err!("did not find project for path {:?}", root)
-        })?;
+        let projects = self
+            .projects
+            .read()
+            .map_err(|err| log::mk_err!("failed to obtain read lock for projects: {:?}", err))?;
+        let project = projects
+            .get(root)
+            .ok_or_else(|| log::mk_err!("did not find project for path {:?}", root))?;
         f(project)
     }
 }
@@ -174,16 +155,12 @@ pub struct ProjectInfo {
     pub modules: HashMap<String, ElmModule>,
 }
 
-#[derive(
-    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
-)]
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 pub struct ElmModule {
     pub exports: Vec<ExportedName>,
 }
 
-#[derive(
-    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
-)]
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 pub enum ExportedName {
     Value {
         name: String,
@@ -210,15 +187,16 @@ pub enum ExportedName {
     },
 }
 
-#[derive(
-    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
-)]
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct ElmJson {
     #[serde(rename = "source-directories")]
     source_directories: Vec<PathBuf>,
 }
 
+// TODO: Clean up, removing clone's
+// TODO: Introduce ProjectId type to replace `project_root` in most places.
+// TODO: Introduce FileId type to replace PathBuf in most places.
 fn dataflow_graph<W, G>(
     scope: &mut G,
     query_for_exports: QueryForExports,
@@ -251,24 +229,17 @@ where
             elm_json
                 .source_directories
                 .into_iter()
-                .flat_map(move |dir| {
-                    match project_root.join(&dir).canonicalize() {
-                        Ok(abs_dir) => Some((project_root.clone(), abs_dir)),
-                        Err(err) => {
-                            log::error!(
-                                "Failed to canonicalize path {:?}: {:?}",
-                                dir,
-                                err
-                            );
-                            None
-                        }
+                .flat_map(move |dir| match project_root.join(&dir).canonicalize() {
+                    Ok(abs_dir) => Some((project_root.clone(), abs_dir)),
+                    Err(err) => {
+                        log::error!("Failed to canonicalize path {:?}: {:?}", dir, err);
+                        None
                     }
                 })
         })
         .distinct();
 
-    let source_directories =
-        source_directories_by_project.map(|(_, path)| path);
+    let source_directories = source_directories_by_project.map(|(_, path)| path);
 
     let files = source_directories
         .flat_map(|path| DirWalker::new(&path))
@@ -277,18 +248,17 @@ where
 
     let files_with_versions = files.count();
 
-    let parsed_modules = files_with_versions.flat_map(
-        move |(path, _version): (PathBuf, isize)| match parse_module(
-            &query_for_exports,
-            &path,
-        ) {
-            Ok(module) => Some((path, module)),
-            Err(err) => {
-                log::error!("Failed parsing module: {:?}", err);
-                None
-            }
-        },
-    );
+    let parsed_modules =
+        files_with_versions.flat_map(
+            move |(path, _version): (PathBuf, isize)| match parse_module(&query_for_exports, &path)
+            {
+                Ok(module) => Some((path, module)),
+                Err(err) => {
+                    log::error!("Failed parsing module: {:?}", err);
+                    None
+                }
+            },
+        );
 
     let project_modules = files
         // Join on `()`, i.e. create a record for every combination of
@@ -306,16 +276,15 @@ where
         })
         .join_map(
             &parsed_modules,
-            |file_path, (project_root, src_dir), parsed_module| {
-                match module_name_from_path(src_dir, file_path) {
-                    Ok(module_name) => Some((
-                        project_root.clone(),
-                        (module_name, parsed_module.clone()),
-                    )),
-                    Err(err) => {
-                        log::error!("Failed deriving module name: {:?}", err);
-                        None
-                    }
+            |file_path, (project_root, src_dir), parsed_module| match module_name_from_path(
+                src_dir, file_path,
+            ) {
+                Ok(module_name) => {
+                    Some((project_root.clone(), (module_name, parsed_module.clone())))
+                }
+                Err(err) => {
+                    log::error!("Failed deriving module name: {:?}", err);
+                    None
                 }
             },
         )
@@ -331,21 +300,19 @@ where
             std::cmp::Ordering::Less => {
                 if let Err(err) = file_watcher.unwatch(path) {
                     log::error!(
-                "failed while remove path {:?} to watch for changes: {:?}",
-                path,
-                err
-            )
+                        "failed while remove path {:?} to watch for changes: {:?}",
+                        path,
+                        err
+                    )
                 }
             }
             std::cmp::Ordering::Greater => {
-                if let Err(err) =
-                    file_watcher.watch(path, notify::RecursiveMode::Recursive)
-                {
+                if let Err(err) = file_watcher.watch(path, notify::RecursiveMode::Recursive) {
                     log::error!(
-                "failed while adding path {:?} to watch for changes: {:?}",
-                path,
-                err
-            )
+                        "failed while adding path {:?} to watch for changes: {:?}",
+                        path,
+                        err
+                    )
                 }
             }
         });
@@ -360,9 +327,8 @@ where
 
     let project_infos = project_modules
         .reduce(|_project_root, inputs, output| {
-            let modules: Vec<(String, ElmModule)> = Vec::from_iter(
-                inputs.iter().map(|(module, _count)| (*module).clone()),
-            );
+            let modules: Vec<(String, ElmModule)> =
+                Vec::from_iter(inputs.iter().map(|(module, _count)| (*module).clone()));
             output.push((modules, 1));
         })
         .join(&project_idats)
@@ -388,8 +354,7 @@ where
                 },
                 std::cmp::Ordering::Greater => match projects.write() {
                     Ok(mut projects_write) => {
-                        projects_write
-                            .insert(project_root.clone(), project_info.clone());
+                        projects_write.insert(project_root.clone(), project_info.clone());
                     }
                     Err(err) => {
                         log::error!("no write lock on projects: {:?}", err);
@@ -415,9 +380,8 @@ fn idat_path(project_root: &Path) -> PathBuf {
 }
 
 fn load_elm_json(path: &Path) -> Result<ElmJson, Error> {
-    let file = std::fs::File::open(path).map_err(|err| {
-        log::mk_err!("error while reading elm.json: {:?}", err)
-    })?;
+    let file = std::fs::File::open(path)
+        .map_err(|err| log::mk_err!("error while reading elm.json: {:?}", err))?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
         .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))
@@ -473,9 +437,7 @@ impl Iterator for DirWalker {
                         let path = entry.path();
                         if file_type.is_dir() {
                             match std::fs::read_dir(&path) {
-                                Ok(inner_read_dir) => {
-                                    self.directories.push(inner_read_dir)
-                                }
+                                Ok(inner_read_dir) => self.directories.push(inner_read_dir),
                                 Err(err) => {
                                     log::error!(
                                                     "error while reading contents of source directory {:?}: {:?}",
@@ -495,10 +457,7 @@ impl Iterator for DirWalker {
     }
 }
 
-fn module_name_from_path(
-    source_dir: &Path,
-    path: &Path,
-) -> Result<String, Error> {
+fn module_name_from_path(source_dir: &Path, path: &Path) -> Result<String, Error> {
     path.with_extension("")
         .strip_prefix(source_dir)
         .map_err(|err| {
@@ -527,10 +486,7 @@ fn module_name_from_path(
         })
 }
 
-fn parse_module(
-    query_for_exports: &QueryForExports,
-    path: &Path,
-) -> Result<ElmModule, Error> {
+fn parse_module(query_for_exports: &QueryForExports, path: &Path) -> Result<ElmModule, Error> {
     let mut file = std::fs::File::open(path)
         .map_err(|err| log::mk_err!("failed to open module file: {:?}", err))?;
     let mut bytes = Vec::new();
@@ -555,11 +511,7 @@ crate::elm::query::query!(
 );
 
 impl QueryForExports {
-    fn run(
-        &self,
-        tree: &Tree,
-        code: &[u8],
-    ) -> Result<Vec<ExportedName>, Error> {
+    fn run(&self, tree: &Tree, code: &[u8]) -> Result<Vec<ExportedName>, Error> {
         let mut cursor = QueryCursor::new();
         let matches = cursor
             .matches(&self.query, tree.root_node(), code)
@@ -580,9 +532,7 @@ impl QueryForExports {
                 exposed = exposed.add(val);
             } else if self.exposed_type == capture.index {
                 let name_node = capture.node.child(0).ok_or_else(|| {
-                    log::mk_err!(
-                        "could not find name node of type in exposing list"
-                    )
+                    log::mk_err!("could not find name node of type in exposing list")
                 })?;
                 let name = code_slice(code, &name_node)?;
                 let val = if capture.node.child(1).is_some() {
@@ -626,8 +576,7 @@ impl QueryForExports {
                     let constructors = rest
                         .iter()
                         .map(|ctor_capture| {
-                            code_slice(code, &ctor_capture.node)
-                                .map(std::borrow::ToOwned::to_owned)
+                            code_slice(code, &ctor_capture.node).map(std::borrow::ToOwned::to_owned)
                         })
                         .collect::<Result<Vec<String>, Error>>()?;
                     let export = ExportedName::Type {
@@ -750,9 +699,8 @@ fn from_idat(project_root: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
     let file = std::fs::File::open(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             create_elm_stuff(project_root)?;
-            std::fs::File::open(path).map_err(|err| {
-                log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
-            })
+            std::fs::File::open(path)
+                .map_err(|err| log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err))
         } else {
             Err(log::mk_err!(
                 "error opening elm-stuff/i.dat file: {:?}",
@@ -799,9 +747,7 @@ fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
     }
 }
 
-fn elm_module_from_interface(
-    dep_i: idat::DependencyInterface,
-) -> Option<ElmModule> {
+fn elm_module_from_interface(dep_i: idat::DependencyInterface) -> Option<ElmModule> {
     if let idat::DependencyInterface::Public(interface) = dep_i {
         // TODO: add binops
         let values = interface.values.into_iter().map(elm_export_from_value);
@@ -820,9 +766,7 @@ fn elm_export_from_value(
     ExportedName::Value { name }
 }
 
-fn elm_export_from_union(
-    (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ExportedName {
+fn elm_export_from_union((idat::Name(name), union): (idat::Name, idat::Union)) -> ExportedName {
     let constructor_names = |canonical_union: idat::CanonicalUnion| {
         let iter = canonical_union
             .alts
@@ -831,9 +775,7 @@ fn elm_export_from_union(
         Vec::from_iter(iter)
     };
     let constructors = match union {
-        idat::Union::Open(canonical_union) => {
-            constructor_names(canonical_union)
-        }
+        idat::Union::Open(canonical_union) => constructor_names(canonical_union),
         // We're reading this information for use by other modules.
         // These external modules can't see private constructors,
         // so we don't need to return them here.
@@ -843,9 +785,7 @@ fn elm_export_from_union(
     ExportedName::Type { name, constructors }
 }
 
-fn elm_export_from_alias(
-    (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ExportedName {
+fn elm_export_from_alias((idat::Name(name), _): (idat::Name, idat::Alias)) -> ExportedName {
     ExportedName::Type {
         name,
         constructors: Vec::new(),
@@ -854,9 +794,7 @@ fn elm_export_from_alias(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::dependencies::{
-        parse_module, ElmModule, Intersperse, QueryForExports,
-    };
+    use crate::elm::dependencies::{parse_module, ElmModule, Intersperse, QueryForExports};
     use crate::support::log::Error;
     use crate::test_support::included_answer_test as ia_test;
     use std::path::Path;
