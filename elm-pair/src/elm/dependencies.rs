@@ -63,29 +63,43 @@ impl DataflowComputation {
             log::mk_err!("failed creating file watcher: {:?}", err)
         })?;
 
-        // TODO: Clean up, removing clone's, unwrap's.
+        // TODO: Clean up, removing clone's
         // TODO: Introduce ProjectId type to replace `project_root` in most places.
         // TODO: Introduce FileId type to replace PathBuf in most places.
-        // TODO: Wrap ElmModule in Rc for cheaper cloning.
         let probes = worker.dataflow(|scope| {
             let project_roots =
                 project_roots_input.to_collection(scope).distinct();
 
             let filepath_events = filepath_events_input.to_collection(scope);
 
-            let elm_jsons = project_roots.map(|project_root: PathBuf| {
-                let elm_json =
-                    load_elm_json(&elm_json_path(&project_root)).unwrap();
-                (project_root, elm_json)
+            let elm_jsons = project_roots.flat_map(|project_root: PathBuf| {
+                match load_elm_json(&elm_json_path(&project_root)) {
+                    Ok(elm_json) => Some((project_root, elm_json)),
+                    Err(err) => {
+                        log::error!("Failed to load elm_json: {:?}", err);
+                        None
+                    }
+                }
             });
 
             let source_directories_by_project = elm_jsons
                 .flat_map(|(project_root, elm_json)| {
-                    elm_json.source_directories.into_iter().map(move |dir| {
-                        let abs_dir =
-                            project_root.join(dir).canonicalize().unwrap();
-                        (project_root.clone(), abs_dir)
-                    })
+                    elm_json.source_directories.into_iter().flat_map(
+                        move |dir| match project_root.join(&dir).canonicalize()
+                        {
+                            Ok(abs_dir) => {
+                                Some((project_root.clone(), abs_dir))
+                            }
+                            Err(err) => {
+                                log::error!(
+                                    "Failed to canonicalize path {:?}: {:?}",
+                                    dir,
+                                    err
+                                );
+                                None
+                            }
+                        },
+                    )
                 })
                 .distinct();
 
@@ -99,11 +113,16 @@ impl DataflowComputation {
 
             let files_with_versions = files.count();
 
-            let parsed_modules = files_with_versions.map(
-                move |(path, _version): (PathBuf, isize)| {
-                    let module =
-                        parse_module(query_for_exports, &path).unwrap();
-                    (path, module)
+            let parsed_modules = files_with_versions.flat_map(
+                move |(path, _version): (PathBuf, isize)| match parse_module(
+                    query_for_exports,
+                    &path,
+                ) {
+                    Ok(module) => Some((path, module)),
+                    Err(err) => {
+                        log::error!("Failed parsing module: {:?}", err);
+                        None
+                    }
                 },
             );
 
@@ -124,14 +143,22 @@ impl DataflowComputation {
                 .join_map(
                     &parsed_modules,
                     |file_path, (project_root, src_dir), parsed_module| {
-                        let module_name =
-                            module_name_from_path(src_dir, file_path).unwrap();
-                        (
-                            project_root.clone(),
-                            (module_name, parsed_module.clone()),
-                        )
+                        match module_name_from_path(src_dir, file_path) {
+                            Ok(module_name) => Some((
+                                project_root.clone(),
+                                (module_name, parsed_module.clone()),
+                            )),
+                            Err(err) => {
+                                log::error!(
+                                    "Failed deriving module name: {:?}",
+                                    err
+                                );
+                                None
+                            }
+                        }
                     },
-                );
+                )
+                .flat_map(|opt| opt);
 
             let paths_to_watch = source_directories_by_project
                 .map(|(_project_root, path)| path)
@@ -169,10 +196,14 @@ impl DataflowComputation {
                     }
                 });
 
-            let project_idats = project_roots.map(|path| {
-                let modules = from_idat(&path).unwrap();
-                (path, modules)
-            });
+            let project_idats =
+                project_roots.flat_map(|path| match from_idat(&path) {
+                    Ok(modules) => Some((path, modules)),
+                    Err(err) => {
+                        log::error!("could not read i.dat file: {:?}", err);
+                        None
+                    }
+                });
 
             let project_infos = project_modules
                 .reduce(|_project_root, inputs, output| {
@@ -197,16 +228,33 @@ impl DataflowComputation {
                     match std::cmp::Ord::cmp(diff, &0) {
                         std::cmp::Ordering::Equal => {}
                         std::cmp::Ordering::Less => {
-                            projects_clone
-                                .write()
-                                .unwrap()
-                                .remove(project_root);
+                            match projects_clone.write() {
+                                Ok(mut projects_write) => {
+                                    projects_write.remove(project_root);
+                                }
+                                Err(err) => {
+                                    log::error!(
+                                        "no write lock on projects: {:?}",
+                                        err
+                                    );
+                                }
+                            }
                         }
                         std::cmp::Ordering::Greater => {
-                            projects_clone.write().unwrap().insert(
-                                project_root.clone(),
-                                project_info.clone(),
-                            );
+                            match projects_clone.write() {
+                                Ok(mut projects_write) => {
+                                    projects_write.insert(
+                                        project_root.clone(),
+                                        project_info.clone(),
+                                    );
+                                }
+                                Err(err) => {
+                                    log::error!(
+                                        "no write lock on projects: {:?}",
+                                        err
+                                    );
+                                }
+                            }
                         }
                     }
                 });
