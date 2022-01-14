@@ -136,14 +136,14 @@ impl Refactor {
 impl RefactorEngine {
     pub(crate) fn new() -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
-        let query_for_exports = Box::new(QueryForExports::init(language)?);
+        let query_for_exports = QueryForExports::init(language)?;
         let file_watcher_type: std::marker::PhantomData<
             notify::RecommendedWatcher,
         > = std::marker::PhantomData;
         let engine = RefactorEngine {
             buffers: HashMap::new(),
             dataflow_computation: DataflowComputation::new(
-                Box::leak(query_for_exports),
+                query_for_exports,
                 file_watcher_type,
             )?,
             query_for_imports: QueryForImports::init(language)?,

@@ -42,7 +42,7 @@ type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
 impl DataflowComputation {
     pub(crate) fn new<F: notify::Watcher + 'static>(
-        query_for_exports: &'static QueryForExports,
+        query_for_exports: QueryForExports,
         _file_watcher_type: std::marker::PhantomData<F>,
     ) -> Result<DataflowComputation, Error> {
         let alloc = timely::communication::allocator::thread::Thread::new();
@@ -221,7 +221,7 @@ struct ElmJson {
 
 fn dataflow_graph<W, G>(
     scope: &mut G,
-    query_for_exports: &'static QueryForExports,
+    query_for_exports: QueryForExports,
     project_roots_input: &mut DataflowInput<PathBuf>,
     filepath_events_input: &mut DataflowInput<PathBuf>,
     projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
@@ -279,7 +279,7 @@ where
 
     let parsed_modules = files_with_versions.flat_map(
         move |(path, _version): (PathBuf, isize)| match parse_module(
-            query_for_exports,
+            &query_for_exports,
             &path,
         ) {
             Ok(module) => Some((path, module)),
