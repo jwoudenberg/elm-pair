@@ -6,11 +6,30 @@
     utils.url = "github:numtide/flake-utils";
     naersk.url = "github:nix-community/naersk";
     naersk.inputs.nixpkgs.follows = "nixpkgs";
+    fenix.url = "github:nix-community/fenix";
+    fenix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, utils, naersk }:
+  outputs = { self, nixpkgs, utils, naersk, fenix }:
     utils.lib.eachDefaultSystem (system:
-      let pkgs = nixpkgs.legacyPackages.${system};
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+        system-fenix = fenix.packages.${system};
+        rust-toolchain = system-fenix.combine [
+          system-fenix.stable.rustc
+          system-fenix.stable.cargo
+          system-fenix.stable.rustfmt
+          system-fenix.stable.clippy
+          # Extra dependencies for `cargo build` on darwin.
+          (pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.libiconv
+            pkgs.darwin.apple_sdk.frameworks.CoreServices
+          ])
+        ];
+        system-naersk = naersk.lib."${system}".override {
+          cargo = rust-toolchain;
+          rustc = rust-toolchain;
+        };
       in rec {
         # Packages
         packages.neovim-plugin = pkgs.vimUtils.buildVimPlugin {
@@ -21,7 +40,7 @@
               --replace '"elm-pair"' '"${packages.elm-pair}/bin/elm-pair"'
           '';
         };
-        packages.elm-pair = naersk.lib."${system}".buildPackage {
+        packages.elm-pair = system-naersk.buildPackage {
           pname = "elm-pair";
           root = ./elm-pair;
           doCheck = true;
@@ -36,19 +55,13 @@
         # Development
         devShell = pkgs.mkShell {
           buildInputs = [
+            rust-toolchain
             pkgs.nodejs
-            pkgs.libiconv
             pkgs.luaformatter
             pkgs.lua53Packages.luacheck
-            pkgs.cargo
             pkgs.elmPackages.elm
             pkgs.elmPackages.elm-format
-            pkgs.rustc
-            pkgs.rustfmt
-            pkgs.clippy
           ];
-          RUST_SRC_PATH =
-            "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
       });
 }
