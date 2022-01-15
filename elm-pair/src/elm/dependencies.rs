@@ -67,7 +67,7 @@ trait ElmIO: Clone {
         &self,
         query_for_exports: &QueryForExports,
         path: &Path,
-    ) -> Result<ElmModule, Error>;
+    ) -> Result<Option<ElmModule>, Error>;
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
@@ -96,10 +96,20 @@ impl ElmIO for RealElmIO {
         &self,
         query_for_exports: &QueryForExports,
         path: &Path,
-    ) -> Result<ElmModule, Error> {
-        let mut file = std::fs::File::open(path).map_err(|err| {
-            log::mk_err!("failed to open module file: {:?}", err)
-        })?;
+    ) -> Result<Option<ElmModule>, Error> {
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) => {
+                if let std::io::ErrorKind::NotFound = err.kind() {
+                    return Ok(None);
+                } else {
+                    return Err(log::mk_err!(
+                        "failed to open module file: {:?}",
+                        err
+                    ));
+                };
+            }
+        };
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(|err| {
             log::mk_err!("failed to read module file: {:?}", err)
@@ -107,7 +117,7 @@ impl ElmIO for RealElmIO {
         let tree = crate::support::source_code::parse_bytes(&bytes)?;
         let exports = query_for_exports.run(&tree, &bytes)?;
         let elm_module = ElmModule { exports };
-        Ok(elm_module)
+        Ok(Some(elm_module))
     }
 
     fn parse_elm_stuff_idat(
@@ -391,15 +401,17 @@ where
         .flat_map(move |path| elm_io2.find_elm_files_recursively(&path))
         .concat(&filepath_events);
 
-    let parsed_modules = file_events.flat_map(move |path| {
-        match elm_io3.parse_elm_module(&query_for_exports, &path) {
-            Ok(module) => Some((path, module)),
+    let parsed_modules = file_events.map(|path| (path, ())).reduce(
+        move |path, _input, output| match elm_io3
+            .parse_elm_module(&query_for_exports, path)
+        {
+            Ok(Some(module)) => output.push((module, 1)),
+            Ok(None) => {}
             Err(err) => {
                 log::error!("Failed parsing module: {:?}", err);
-                None
             }
-        }
-    });
+        },
+    );
 
     let files = file_events.distinct();
 
@@ -569,18 +581,15 @@ mod dataflow_tests {
             &self,
             _query_for_exports: &QueryForExports,
             path: &Path,
-        ) -> Result<ElmModule, Error> {
+        ) -> Result<Option<ElmModule>, Error> {
             let mut elm_modules_parsed =
                 self.elm_modules_parsed.lock().unwrap();
-            *elm_modules_parsed += 1;
-            self.modules
-                .lock()
-                .unwrap()
-                .get(path)
-                .ok_or_else(|| {
-                    log::mk_err!("did not find elm module {:?}", path)
-                })
-                .map(ElmModule::clone)
+            let elm_module =
+                self.modules.lock().unwrap().get(path).map(ElmModule::clone);
+            if elm_module.is_some() {
+                *elm_modules_parsed += 1;
+            }
+            Ok(elm_module)
         }
 
         fn parse_elm_stuff_idat(
@@ -792,7 +801,41 @@ mod dataflow_tests {
 
     #[test]
     fn deleting_an_elm_file_removes_it_from_a_project() {
-        todo!()
+        // Given a project with some elm modules...
+        let project_root = PathBuf::from("/project");
+        let elm_io = FakeElmIO::new(
+            vec![mk_project(&project_root, vec!["src"])],
+            vec![
+                mk_module("/project/src/Animals/Bat.elm"),
+                mk_module("/project/src/Care/Soap.elm"),
+            ],
+        );
+        let mut computation =
+            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        computation.watch_project(project_root.clone());
+        computation.advance();
+        assert_modules(
+            &computation,
+            &project_root,
+            &["Animals.Bat", "Care.Soap"],
+        );
+        assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
+
+        // When we remove a the file...
+        elm_io
+            .modules
+            .lock()
+            .unwrap()
+            .remove(&PathBuf::from("/project/src/Animals/Bat.elm"));
+        computation
+            .filepath_events_input
+            .insert(PathBuf::from("/project/src/Animals/Bat.elm"));
+        computation.advance();
+
+        // Then the module is removed from the project...
+        assert_modules(&computation, &project_root, &["Care.Soap"]);
+        // And no additional parsing has taken place...
+        assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
 
     #[test]
@@ -1243,8 +1286,9 @@ mod tests {
     fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = QueryForExports::init(language)?;
-        let ElmModule { exports } =
-            RealElmIO().parse_elm_module(&query_for_exports, path)?;
+        let ElmModule { exports } = RealElmIO()
+            .parse_elm_module(&query_for_exports, path)?
+            .unwrap();
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))
