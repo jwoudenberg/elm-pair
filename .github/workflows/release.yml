@@ -31,7 +31,7 @@ jobs:
             --release
           tar czf \
             elm-pair_${{matrix.target}}.tar.gz \
-            target/${{matrix.target}}/release/elm-pair
+            elm-pair/target/${{matrix.target}}/release/elm-pair
       - uses: softprops/action-gh-release@v1
         with:
           files: elm-pair_${{matrix.target}}.tar.gz
