@@ -32,5 +32,4 @@ jobs:
       - uses: softprops/action-gh-release@v1
         with:
           files: elm-pair_${{matrix.target}}.tar.gz
-        env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          token: ${{secrets.GITHUB_TOKEN}}
