@@ -29,11 +29,10 @@ jobs:
             --manifest-path elm-pair/Cargo.toml \
             --target ${{matrix.target}} \
             --release
-          tar czf \
-            elm-pair_${{matrix.build}}.tar.gz \
-            elm-pair/target/${{matrix.target}}/release/elm-pair
+          cd elm-pair/target/${{matrix.target}}/release
+          tar czf elm-pair_${{matrix.build}}.tar.gz elm-pair
       - uses: softprops/action-gh-release@v1
         with:
           body: For changes, see the [Changelog](https://github.com/jwoudenberg/elm-pair/tree/main/CHANGELOG.md).
-          files: elm-pair_${{matrix.build}}.tar.gz
+          files: elm-pair/target/${{matrix.target}}/release/elm-pair_${{matrix.build}}.tar.gz
           token: ${{secrets.GITHUB_TOKEN}}
