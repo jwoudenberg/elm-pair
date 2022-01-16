@@ -26,8 +26,12 @@ jobs:
           toolchain: stable
           target: ${{matrix.target}}
           override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: cross
       - run: |
-          cargo build \
+          cross build \
             --manifest-path elm-pair/Cargo.toml \
             --target ${{matrix.target}} \
             --release
