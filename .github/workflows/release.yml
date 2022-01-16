@@ -25,7 +25,10 @@ jobs:
           target: ${{matrix.target}}
           override: true
       - run: |
-          cargo build --release --target ${{matrix.target}}
+          cargo build \
+            --manifest-path elm-pair/Cargo.toml \
+            --target ${{matrix.target}} \
+            --release
           tar czf \
             elm-pair_${{matrix.target}}.tar.gz \
             target/${{matrix.target}}/release/elm-pair
