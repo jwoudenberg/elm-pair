@@ -39,7 +39,7 @@ function download_binaries_for {
   ELM_PAIR_DOWNLOAD="elm-pair_$2.tar.gz"
 
   echo "Download Elm compiler $ELM_VERSION..."
-	curl --remote-name --location \
+  curl --remote-name --location \
     "https://github.com/elm/compiler/releases/download/$ELM_VERSION/$ELM_DOWNLOAD" \
     2> /dev/null
   gzip --decompress --stdout "$ELM_DOWNLOAD" > elm
@@ -47,7 +47,7 @@ function download_binaries_for {
   chmod +x elm
 
   echo "Download Elm-pair $ELM_PAIR_VERSION..."
-	curl --remote-name --location \
+  curl --remote-name --location \
     "https://github.com/jwoudenberg/elm-pair/releases/download/$ELM_PAIR_VERSION/$ELM_PAIR_DOWNLOAD" \
     2> /dev/null
   tar --extract --gzip --to-stdout --file "$ELM_PAIR_DOWNLOAD" > elm-pair
