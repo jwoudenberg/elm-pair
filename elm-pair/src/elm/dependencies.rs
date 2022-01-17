@@ -2,7 +2,6 @@ use crate::elm::compiler::Compiler;
 use crate::elm::file_parsing::QueryForExports;
 use crate::elm::idat;
 use crate::support::dir_walker::DirWalker;
-use crate::support::intersperse::Intersperse;
 use crate::support::log;
 use crate::support::log::Error;
 use abomonation_derive::Abomonation;
@@ -451,7 +450,7 @@ where
         .join_map(
             &parsed_modules,
             |file_path, (project_root, src_dir), parsed_module| {
-                match module_name_from_path(src_dir, file_path) {
+                match crate::elm::module_name::from_path(src_dir, file_path) {
                     Ok(module_name) => Some((
                         project_root.clone(),
                         (module_name, parsed_module.clone()),
@@ -565,38 +564,6 @@ fn elm_json_path(project_root: &Path) -> PathBuf {
 fn idat_path(project_root: &Path) -> PathBuf {
     project_root
         .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
-}
-
-fn module_name_from_path(
-    source_dir: &Path,
-    path: &Path,
-) -> Result<String, Error> {
-    path.with_extension("")
-        .strip_prefix(source_dir)
-        .map_err(|err| {
-            log::mk_err!(
-                "error stripping source directory {:?} from elm module path {:?}: {:?}",
-                path,
-                source_dir,
-                err
-            )
-        })?
-        .components()
-        .filter_map(|component| {
-            if let std::path::Component::Normal(os_str) = component {
-                Some(os_str.to_str().ok_or(os_str))
-            } else {
-                None
-            }
-        })
-        .my_intersperse(Ok("."))
-        .collect::<Result<String, &std::ffi::OsStr>>()
-        .map_err(|os_str| {
-            log::mk_err!(
-                "directory segment of Elm module used in module name is not valid UTF8: {:?}",
-                os_str
-            )
-        })
 }
 
 fn create_elm_stuff(

@@ -17,6 +17,7 @@ pub mod compiler;
 pub mod dependencies;
 pub mod file_parsing;
 pub mod idat;
+pub mod module_name;
 pub mod query;
 
 // These constants come from the tree-sitter-elm grammar. They might need to
