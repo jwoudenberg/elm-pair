@@ -61,7 +61,7 @@ type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 // to allow the dataflow logic to be tested in isolation.
 trait ElmIO: Clone {
     type FileWatcher: notify::Watcher + 'static;
-    type FilesInDir: IntoIterator<Item = PathBuf>; // TODO: remove this type.
+    type FilesInDir: IntoIterator<Item = PathBuf>;
 
     fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error>;
     fn parse_elm_module(
@@ -375,15 +375,24 @@ where
     let elm_io3 = elm_io.clone();
     let elm_io4 = elm_io.clone();
 
-    let elm_jsons = project_roots.flat_map(move |project_root: PathBuf| {
-        match elm_io.parse_elm_json(&elm_json_path(&project_root)) {
-            Ok(elm_json) => Some((project_root, elm_json)),
-            Err(err) => {
-                log::error!("Failed to load elm_json: {:?}", err);
-                None
-            }
-        }
+    let elm_json_files = project_roots.map(move |project_root: PathBuf| {
+        (elm_json_path(&project_root), project_root)
     });
+
+    let elm_json_file_events = elm_json_files
+        .semijoin(&filepath_events)
+        .concat(&elm_json_files);
+
+    let elm_jsons = elm_json_file_events
+        .map(|(elm_json_path, project_root)| (project_root, elm_json_path))
+        .reduce(move |_project_root, _input, output| {
+            match elm_io.parse_elm_json(_input[0].0) {
+                Ok(elm_json) => output.push((elm_json, 1)),
+                Err(err) => {
+                    log::error!("Failed to load elm_json: {:?}", err);
+                }
+            }
+        });
 
     let source_directories_by_project = elm_jsons
         .flat_map(|(project_root, elm_json)| {
@@ -402,6 +411,7 @@ where
     // A new entry should be added whenever we receive an event for a file,
     // like a modification or removal. Useful for logic that needs to rerun on
     // those occasions.
+    // TODO: narrow this down to Elm module events.
     let file_events = source_directories
         .flat_map(move |path| elm_io2.find_elm_files_recursively(&path))
         .concat(&filepath_events);
@@ -478,30 +488,33 @@ where
             }
         });
 
-    let project_idats = project_roots.flat_map(move |path| {
-        match elm_io4.parse_elm_stuff_idat(&path) {
-            Ok(modules) => Some((path, modules)),
-            Err(err) => {
-                log::error!("could not read i.dat file: {:?}", err);
-                None
+    let idat_modules = project_roots
+        .map(|project_root| (project_root, ()))
+        .reduce(move |project_root, input, output| {
+            if input.iter().map(|((), r)| r).sum::<isize>() > 0 {
+                match elm_io4.parse_elm_stuff_idat(project_root) {
+                    Ok(modules) => output
+                        .extend(modules.into_iter().map(|module| (module, 1))),
+                    Err(err) => {
+                        log::error!("could not read i.dat file: {:?}", err);
+                    }
+                }
             }
-        }
-    });
+        });
 
     let project_infos = project_modules
+        .concat(&idat_modules)
         .reduce(|_project_root, inputs, output| {
             let modules: Vec<(String, ElmModule)> = Vec::from_iter(
                 inputs.iter().map(|(module, _count)| (*module).clone()),
             );
             output.push((modules, 1));
         })
-        .join(&project_idats)
-        .map(move |(project_root, (local_modules, mut idat_modules))| {
-            idat_modules.extend(local_modules);
+        .map(move |(project_root, modules)| {
             (
                 project_root,
                 ProjectInfo {
-                    modules: idat_modules.into_iter().collect(),
+                    modules: modules.into_iter().collect(),
                 },
             )
         })
@@ -538,16 +551,22 @@ mod dataflow_tests {
 
     #[derive(Clone)]
     struct FakeElmIO {
-        projects: Rc<Mutex<HashMap<PathBuf, ElmJson>>>,
+        projects: Rc<Mutex<HashMap<PathBuf, FakeElmProject>>>,
         modules: Rc<Mutex<HashMap<PathBuf, ElmModule>>>,
         elm_jsons_parsed: Rc<Mutex<u64>>,
         elm_modules_parsed: Rc<Mutex<u64>>,
         elm_idats_parsed: Rc<Mutex<u64>>,
     }
 
+    #[derive(Clone)]
+    struct FakeElmProject {
+        elm_json: ElmJson,
+        dependencies: Vec<(String, ElmModule)>,
+    }
+
     impl FakeElmIO {
         fn new(
-            projects: Vec<(PathBuf, ElmJson)>,
+            projects: Vec<(PathBuf, FakeElmProject)>,
             modules: Vec<(PathBuf, ElmModule)>,
         ) -> FakeElmIO {
             FakeElmIO {
@@ -579,7 +598,7 @@ mod dataflow_tests {
                 .unwrap()
                 .get(path.parent().unwrap())
                 .ok_or_else(|| log::mk_err!("did not find project {:?}", path))
-                .map(ElmJson::clone)
+                .map(|project| project.elm_json.clone())
         }
 
         fn parse_elm_module(
@@ -599,11 +618,16 @@ mod dataflow_tests {
 
         fn parse_elm_stuff_idat(
             &self,
-            _project_root: &Path,
+            project_root: &Path,
         ) -> Result<Vec<(String, ElmModule)>, Error> {
+            let projects = self.projects.lock().unwrap();
+            let project = projects.get(project_root).ok_or_else(|| {
+                log::mk_err!("did not find project {:?}", project_root)
+            })?;
             let mut elm_idats_parsed = self.elm_idats_parsed.lock().unwrap();
             *elm_idats_parsed += 1;
-            Ok(Vec::new())
+            let dependencies = project.dependencies.clone();
+            Ok(dependencies)
         }
 
         fn find_elm_files_recursively(&self, dir: &Path) -> Self::FilesInDir {
@@ -617,13 +641,32 @@ mod dataflow_tests {
         }
     }
 
-    fn mk_project(root: &Path, src_dirs: Vec<&str>) -> (PathBuf, ElmJson) {
+    fn mk_project(
+        root: &Path,
+        src_dirs: Vec<&str>,
+        dep_mods: Vec<&str>,
+    ) -> (PathBuf, FakeElmProject) {
         (
             root.to_owned(),
-            ElmJson {
-                source_directories: src_dirs
+            FakeElmProject {
+                elm_json: ElmJson {
+                    source_directories: src_dirs
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect(),
+                },
+                dependencies: dep_mods
                     .into_iter()
-                    .map(PathBuf::from)
+                    .map(|name| {
+                        (
+                            name.to_string(),
+                            ElmModule {
+                                exports: vec![ExportedName::Value {
+                                    name: "ants".to_string(),
+                                }],
+                            },
+                        )
+                    })
                     .collect(),
             },
         )
@@ -664,7 +707,7 @@ mod dataflow_tests {
     fn project_elm_files_are_found() {
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
-            vec![mk_project(&project_root, vec!["src"])],
+            vec![mk_project(&project_root, vec!["src"], vec![])],
             vec![
                 mk_module("/project/src/Animals/Bat.elm"),
                 mk_module("/project/src/Care/Soap.elm"),
@@ -686,7 +729,7 @@ mod dataflow_tests {
         // Given a project with some modules
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
-            vec![mk_project(&project_root, vec!["src"])],
+            vec![mk_project(&project_root, vec!["src"], vec![])],
             vec![
                 mk_module("/project/src/Animals/Bat.elm"),
                 mk_module("/project/src/Care/Soap.elm"),
@@ -720,7 +763,7 @@ mod dataflow_tests {
         // Given a project with an existing module...
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
-            vec![mk_project(&project_root, vec!["src"])],
+            vec![mk_project(&project_root, vec!["src"], vec![])],
             vec![mk_module("/project/src/Animals/Bat.elm")],
         );
         let mut computation =
@@ -757,8 +800,8 @@ mod dataflow_tests {
         let project2_root = PathBuf::from("/project2");
         let elm_io = FakeElmIO::new(
             vec![
-                mk_project(&project_root, vec!["src"]),
-                mk_project(&project2_root, vec!["src"]),
+                mk_project(&project_root, vec!["src"], vec![]),
+                mk_project(&project2_root, vec!["src"], vec![]),
             ],
             vec![
                 mk_module("/project/src/Animals/Bat.elm"),
@@ -784,7 +827,7 @@ mod dataflow_tests {
         // Given a project with an existing module...
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
-            vec![mk_project(&project_root, vec!["src"])],
+            vec![mk_project(&project_root, vec!["src"], vec![])],
             vec![mk_module("/project/src/Animals/Bat.elm")],
         );
         let mut computation =
@@ -809,7 +852,7 @@ mod dataflow_tests {
         // Given a project with some elm modules...
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
-            vec![mk_project(&project_root, vec!["src"])],
+            vec![mk_project(&project_root, vec!["src"], vec![])],
             vec![
                 mk_module("/project/src/Animals/Bat.elm"),
                 mk_module("/project/src/Care/Soap.elm"),
@@ -845,7 +888,40 @@ mod dataflow_tests {
 
     #[test]
     fn elm_json_files_are_reparsed_if_we_send_an_event_for_them() {
-        todo!()
+        // Given a project with an existing module...
+        let project_root = PathBuf::from("/project");
+        let elm_io = FakeElmIO::new(
+            vec![mk_project(&project_root, vec!["src"], vec!["Json.Decode"])],
+            vec![mk_module("/project/src/Animals/Bat.elm")],
+        );
+        let mut computation =
+            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        computation.watch_project(project_root.clone());
+        computation.advance();
+        assert_modules(
+            &computation,
+            &project_root,
+            &["Json.Decode", "Animals.Bat"],
+        );
+        assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
+        assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 1);
+
+        // When we change the elm.json file and remove its source directories...
+        elm_io.projects.lock().unwrap().extend(vec![mk_project(
+            &project_root,
+            vec![],
+            vec![],
+        )]);
+        computation
+            .filepath_events_input
+            .insert(PathBuf::from("/project/elm.json"));
+        computation.advance();
+
+        // Then the elm.json is reparsed...
+        assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 2);
+        // And the project's listed as having no modules...
+        assert_modules(&computation, &project_root, &["Json.Decode"]);
+        assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
     }
 
     #[test]
