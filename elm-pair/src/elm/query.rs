@@ -1,3 +1,6 @@
+use crate::support::log;
+use crate::support::log::Error;
+use tree_sitter::Query;
 #[macro_export]
 macro_rules! query {
     ($name:ident, $test_mod_name:ident, $file:literal $(, $capture:ident )* $(,)? ) => {
@@ -22,11 +25,11 @@ macro_rules! query {
                         err
                     )
                 })?;
-                let imports_query = $name {
-                    $($capture: index_for_name(&query, stringify!($capture))?,)*
+                let query_struct = $name {
+                    $($capture: $crate::elm::query::index_for_name(&query, stringify!($capture))?,)*
                     query,
                 };
-                Ok(imports_query)
+                Ok(query_struct)
             }
         }
 
@@ -80,3 +83,13 @@ macro_rules! query {
     };
 }
 pub use query;
+
+pub(crate) fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
+    query.capture_index_for_name(name).ok_or_else(|| {
+        log::mk_err!(
+            "failed to find index {} in tree-sitter query: {:?}",
+            name,
+            query
+        )
+    })
+}

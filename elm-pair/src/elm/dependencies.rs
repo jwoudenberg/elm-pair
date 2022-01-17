@@ -1216,16 +1216,6 @@ fn code_slice<'a>(code: &'a [u8], node: &Node) -> Result<&'a str, Error> {
     })
 }
 
-pub(crate) fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
-    query.capture_index_for_name(name).ok_or_else(|| {
-        log::mk_err!(
-            "failed to find index {} in tree-sitter query: {:?}",
-            name,
-            query
-        )
-    })
-}
-
 fn create_elm_stuff(
     compiler: &Compiler,
     project_root: &Path,

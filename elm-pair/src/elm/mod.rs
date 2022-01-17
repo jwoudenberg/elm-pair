@@ -1,7 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::{
-    index_for_name, DataflowComputation, ElmModule, ExportedName, ProjectInfo,
+    DataflowComputation, ElmModule, ExportedName, ProjectInfo,
 };
 use crate::support::log;
 use crate::support::log::Error;
