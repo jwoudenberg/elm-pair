@@ -19,8 +19,8 @@
     <content type="html">
       <ul>
         <li>Nix is no longer a dependency for installing Elm-pair.</li>
-        <li>Don't reparse entire project when single Elm module changes.</li>
-        <li>Many bugfixes.</li>
+        <li>Elm-pair no longer reparses the entire project when a single Elm module changes.</li>
+        <li>Many bugs have been squashed.</li>
       </ul>
     </content>
   </entry>
