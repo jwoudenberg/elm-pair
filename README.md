@@ -8,7 +8,13 @@ The current version of this code is licensed under GPL. The plan is for a change
 
 ## Installation
 
-Currently elm-pair only has support for [Neovim][] running on Linux or MacOS, and installation using Nix.
+Currently elm-pair only has support for [Neovim][] running on Linux or MacOS.
+
+### Using a Neovim plugin manager
+
+There's a lot of Neovim plugin managers, too many to list them all here! You'll want to add the `neovim-plugin/` subdirectory of this repository as a plugin to your Neovim configuration. If you're running into trouble please create an issue on this repository, I'm happy to help!
+
+The Neovim plugin will perform some installation steps the first time you open a `.elm` file in Neovim with this plugin enabled.
 
 ### Using nix home-manager
 
@@ -35,74 +41,6 @@ If you're managing your Neovim configuration using [home-manager][] then you can
 
 Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
 
-### Using a Neovim plugin manager
-
-Follow the instructions of your plugin manager to add the plugin located in the `./neovim-plugin` directory of this repository. When installed this way the plugin will not include the elm-pair binary, and you will need to make sure it is available on your `$PATH`.
-
-#### Install as a user package using [home-manager][]
-
-Include elm-pair in your `home-manager.nix`:
-
-```nix
-{ pkgs, ... }: {
-  home.packages =
-    let
-      elm-pair = pkgs.fetchFromGitHub {
-        owner = "jwoudenberg";
-        repo = "elm-pair";
-        rev = "main";
-        sha256 = lib.fakeSha256;
-      };
-    in [ (import elm-pair).elm-pair ];
-}
-```
-
-Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
-
-#### Install as a system package using [nixos][] or [nix-darwin][]
-
-Include elm-pair in your `configuration.nix`:
-
-```nix
-{ pkgs, ... }: {
-  environment.systemPackages =
-    let
-      elm-pair = pkgs.fetchFromGitHub {
-        owner = "jwoudenberg";
-        repo = "elm-pair";
-        rev = "main";
-        sha256 = lib.fakeSha256;
-      };
-    in [ (import elm-pair).elm-pair ];
-}
-```
-
-Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
-
-#### Install as a project-dependency using [nix-shell][]
-
-Include elm-pair your project's `shell.nix`. Note: when set up this way the neovim plugin will only work when you start Neovim from the project shell provided by nix-shell.
-
-```nix
-{ pkgs, ...  }:
-  pkgs.mkShell {
-    buildInputs =
-      let
-        elm-pair = pkgs.fetchFromGitHub {
-          owner = "jwoudenberg";
-          repo = "elm-pair";
-          rev = "main";
-          sha256 = lib.fakeSha256;
-        };
-      in [ (import elm-pair).elm-pair ];
-}
-```
-
-Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
-
 [demo]: https://vimeo.com/662666351
 [home-manager]: https://github.com/nix-community/home-manager
 [neovim]: https://neovim.io/
-[nix-darwin]: https://github.com/LnL7/nix-darwin
-[nix-shell]: https://nix.dev/tutorials/ad-hoc-developer-environments
-[nixos]: https://nixos.org/
