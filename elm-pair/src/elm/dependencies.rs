@@ -554,8 +554,136 @@ where
     vec![paths_to_watch.probe(), project_infos.probe()]
 }
 
+fn is_elm_file(path: &Path) -> bool {
+    path.extension() == Some(std::ffi::OsStr::new("elm"))
+}
+
+fn elm_json_path(project_root: &Path) -> PathBuf {
+    project_root.join("elm.json")
+}
+
+fn idat_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
+}
+
+fn module_name_from_path(
+    source_dir: &Path,
+    path: &Path,
+) -> Result<String, Error> {
+    path.with_extension("")
+        .strip_prefix(source_dir)
+        .map_err(|err| {
+            log::mk_err!(
+                "error stripping source directory {:?} from elm module path {:?}: {:?}",
+                path,
+                source_dir,
+                err
+            )
+        })?
+        .components()
+        .filter_map(|component| {
+            if let std::path::Component::Normal(os_str) = component {
+                Some(os_str.to_str().ok_or(os_str))
+            } else {
+                None
+            }
+        })
+        .my_intersperse(Ok("."))
+        .collect::<Result<String, &std::ffi::OsStr>>()
+        .map_err(|os_str| {
+            log::mk_err!(
+                "directory segment of Elm module used in module name is not valid UTF8: {:?}",
+                os_str
+            )
+        })
+}
+
+fn create_elm_stuff(
+    compiler: &Compiler,
+    project_root: &Path,
+) -> Result<(), Error> {
+    log::info!(
+        "Running `elm make` to generate elm-stuff in project: {:?}",
+        project_root
+    );
+    // Running `elm make` will create elm-stuff. We'll pass it a valid module
+    // to compile or `elm make` will return an error. `elm make` would create
+    // `elm-stuff` before returning an error, but it'd be difficult to
+    // distinguish that expected error from other potential unexpected ones.
+    let temp_module = ropey::Rope::from_str(
+        "\
+        module Main exposing (..)\n\
+        val : Int\n\
+        val = 4\n\
+        ",
+    );
+    let output = compiler.make(project_root, &temp_module)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(log::mk_err!(
+            "failed running elm-make to generate elm-stuff:\n{:?}",
+            std::string::String::from_utf8(output.stderr)
+        ))
+    }
+}
+
+fn elm_module_from_interface(
+    dep_i: idat::DependencyInterface,
+) -> Option<ElmModule> {
+    if let idat::DependencyInterface::Public(interface) = dep_i {
+        // TODO: add binops
+        let values = interface.values.into_iter().map(elm_export_from_value);
+        let unions = interface.unions.into_iter().map(elm_export_from_union);
+        let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
+        let exports = Vec::from_iter(values.chain(unions).chain(aliases));
+        Some(ElmModule { exports })
+    } else {
+        None
+    }
+}
+
+fn elm_export_from_value(
+    (idat::Name(name), _): (idat::Name, idat::CanonicalAnnotation),
+) -> ExportedName {
+    ExportedName::Value { name }
+}
+
+fn elm_export_from_union(
+    (idat::Name(name), union): (idat::Name, idat::Union),
+) -> ExportedName {
+    let constructor_names = |canonical_union: idat::CanonicalUnion| {
+        let iter = canonical_union
+            .alts
+            .into_iter()
+            .map(|idat::Ctor(idat::Name(name), _, _, _)| name);
+        Vec::from_iter(iter)
+    };
+    let constructors = match union {
+        idat::Union::Open(canonical_union) => {
+            constructor_names(canonical_union)
+        }
+        // We're reading this information for use by other modules.
+        // These external modules can't see private constructors,
+        // so we don't need to return them here.
+        idat::Union::Closed(_) => Vec::new(),
+        idat::Union::Private(_) => Vec::new(),
+    };
+    ExportedName::Type { name, constructors }
+}
+
+fn elm_export_from_alias(
+    (idat::Name(name), _): (idat::Name, idat::Alias),
+) -> ExportedName {
+    ExportedName::Type {
+        name,
+        constructors: Vec::new(),
+    }
+}
+
 #[cfg(test)]
-mod dataflow_tests {
+mod tests {
     use super::*;
     use std::sync::Mutex;
 
@@ -999,133 +1127,5 @@ mod dataflow_tests {
 
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
-    }
-}
-
-fn is_elm_file(path: &Path) -> bool {
-    path.extension() == Some(std::ffi::OsStr::new("elm"))
-}
-
-fn elm_json_path(project_root: &Path) -> PathBuf {
-    project_root.join("elm.json")
-}
-
-fn idat_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
-}
-
-fn module_name_from_path(
-    source_dir: &Path,
-    path: &Path,
-) -> Result<String, Error> {
-    path.with_extension("")
-        .strip_prefix(source_dir)
-        .map_err(|err| {
-            log::mk_err!(
-                "error stripping source directory {:?} from elm module path {:?}: {:?}",
-                path,
-                source_dir,
-                err
-            )
-        })?
-        .components()
-        .filter_map(|component| {
-            if let std::path::Component::Normal(os_str) = component {
-                Some(os_str.to_str().ok_or(os_str))
-            } else {
-                None
-            }
-        })
-        .my_intersperse(Ok("."))
-        .collect::<Result<String, &std::ffi::OsStr>>()
-        .map_err(|os_str| {
-            log::mk_err!(
-                "directory segment of Elm module used in module name is not valid UTF8: {:?}",
-                os_str
-            )
-        })
-}
-
-fn create_elm_stuff(
-    compiler: &Compiler,
-    project_root: &Path,
-) -> Result<(), Error> {
-    log::info!(
-        "Running `elm make` to generate elm-stuff in project: {:?}",
-        project_root
-    );
-    // Running `elm make` will create elm-stuff. We'll pass it a valid module
-    // to compile or `elm make` will return an error. `elm make` would create
-    // `elm-stuff` before returning an error, but it'd be difficult to
-    // distinguish that expected error from other potential unexpected ones.
-    let temp_module = ropey::Rope::from_str(
-        "\
-        module Main exposing (..)\n\
-        val : Int\n\
-        val = 4\n\
-        ",
-    );
-    let output = compiler.make(project_root, &temp_module)?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(log::mk_err!(
-            "failed running elm-make to generate elm-stuff:\n{:?}",
-            std::string::String::from_utf8(output.stderr)
-        ))
-    }
-}
-
-fn elm_module_from_interface(
-    dep_i: idat::DependencyInterface,
-) -> Option<ElmModule> {
-    if let idat::DependencyInterface::Public(interface) = dep_i {
-        // TODO: add binops
-        let values = interface.values.into_iter().map(elm_export_from_value);
-        let unions = interface.unions.into_iter().map(elm_export_from_union);
-        let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
-        let exports = Vec::from_iter(values.chain(unions).chain(aliases));
-        Some(ElmModule { exports })
-    } else {
-        None
-    }
-}
-
-fn elm_export_from_value(
-    (idat::Name(name), _): (idat::Name, idat::CanonicalAnnotation),
-) -> ExportedName {
-    ExportedName::Value { name }
-}
-
-fn elm_export_from_union(
-    (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ExportedName {
-    let constructor_names = |canonical_union: idat::CanonicalUnion| {
-        let iter = canonical_union
-            .alts
-            .into_iter()
-            .map(|idat::Ctor(idat::Name(name), _, _, _)| name);
-        Vec::from_iter(iter)
-    };
-    let constructors = match union {
-        idat::Union::Open(canonical_union) => {
-            constructor_names(canonical_union)
-        }
-        // We're reading this information for use by other modules.
-        // These external modules can't see private constructors,
-        // so we don't need to return them here.
-        idat::Union::Closed(_) => Vec::new(),
-        idat::Union::Private(_) => Vec::new(),
-    };
-    ExportedName::Type { name, constructors }
-}
-
-fn elm_export_from_alias(
-    (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ExportedName {
-    ExportedName::Type {
-        name,
-        constructors: Vec::new(),
     }
 }
