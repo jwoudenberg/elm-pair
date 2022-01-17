@@ -41,3 +41,43 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_iterator() {
+        let empty: Vec<bool> = vec![];
+        assert_eq!(
+            empty
+                .clone()
+                .into_iter()
+                .my_intersperse(false)
+                .collect::<Vec<bool>>(),
+            empty,
+        );
+    }
+
+    #[test]
+    fn single_element_iterator() {
+        let singleton: Vec<bool> = vec![true];
+        assert_eq!(
+            singleton
+                .clone()
+                .into_iter()
+                .my_intersperse(false)
+                .collect::<Vec<bool>>(),
+            singleton,
+        );
+    }
+
+    #[test]
+    fn many_element_iterator() {
+        let vec: Vec<bool> = vec![true, true, true];
+        assert_eq!(
+            vec.into_iter().my_intersperse(false).collect::<Vec<bool>>(),
+            vec![true, false, true, false, true],
+        );
+    }
+}
