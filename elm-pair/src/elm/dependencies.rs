@@ -1,5 +1,6 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::idat;
+use crate::support::dir_walker::DirWalker;
 use crate::support::log;
 use crate::support::log::Error;
 use abomonation_derive::Abomonation;
@@ -1026,78 +1027,6 @@ fn elm_json_path(project_root: &Path) -> PathBuf {
 fn idat_path(project_root: &Path) -> PathBuf {
     project_root
         .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
-}
-
-// This iterator finds as many files as it can and so logs rather than fails
-// when it encounters an error.
-struct DirWalker {
-    directories: Vec<std::fs::ReadDir>,
-}
-
-impl DirWalker {
-    fn new(root: &Path) -> DirWalker {
-        let directories = match std::fs::read_dir(root) {
-            Ok(read_dir) => vec![read_dir],
-            Err(err) => {
-                log::error!(
-                    "error while reading contents of source directory {:?}: {:?}",
-                    root,
-                    err
-                );
-                Vec::new()
-            }
-        };
-        DirWalker { directories }
-    }
-}
-
-impl Iterator for DirWalker {
-    type Item = PathBuf;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some(read_dir) = self.directories.last_mut() {
-            match read_dir.next() {
-                None => {
-                    self.directories.pop();
-                }
-                Some(Err(err)) => {
-                    log::error!(
-                        "error while reading entry of source (sub)directory: {:?}",
-                        err
-                    );
-                }
-                Some(Ok(entry)) => match entry.file_type() {
-                    Err(err) => {
-                        log::error!(
-                            "error while reading file type of path {:?}: {:?}",
-                            entry.path(),
-                            err
-                        );
-                    }
-                    Ok(file_type) => {
-                        let path = entry.path();
-                        if file_type.is_dir() {
-                            match std::fs::read_dir(&path) {
-                                Ok(inner_read_dir) => {
-                                    self.directories.push(inner_read_dir)
-                                }
-                                Err(err) => {
-                                    log::error!(
-                                                    "error while reading contents of source directory {:?}: {:?}",
-                                                    path,
-                                                    err
-                                                );
-                                }
-                            }
-                        } else {
-                            return Some(path);
-                        }
-                    }
-                },
-            }
-        }
-        None
-    }
 }
 
 fn module_name_from_path(
