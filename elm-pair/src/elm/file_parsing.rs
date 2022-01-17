@@ -1,5 +1,4 @@
 use crate::elm::dependencies::{ElmModule, ExportedName};
-use crate::support::intersperse::Intersperse;
 use crate::support::log;
 use crate::support::log::Error;
 use std::collections::HashSet;
@@ -185,6 +184,7 @@ fn code_slice<'a>(code: &'a [u8], node: &Node) -> Result<&'a str, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::support::intersperse::Intersperse;
     use crate::test_support::included_answer_test as ia_test;
 
     macro_rules! exports_scanning_test {

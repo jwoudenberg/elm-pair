@@ -10,7 +10,6 @@ use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::io::BufReader;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
@@ -652,6 +651,7 @@ fn elm_export_from_alias(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
     #[derive(Clone)]
