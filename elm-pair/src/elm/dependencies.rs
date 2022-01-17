@@ -79,7 +79,7 @@ trait ElmIO: Clone {
         project_root: &Path,
         path: &Path,
     ) -> Result<Vec<(String, ElmModule)>, Error>;
-    fn find_elm_files_recursively(&self, path: &Path) -> Self::FilesInDir;
+    fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
 #[derive(Clone)]
@@ -175,7 +175,7 @@ impl ElmIO for RealElmIO {
         Ok(modules)
     }
 
-    fn find_elm_files_recursively(&self, path: &Path) -> Self::FilesInDir {
+    fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir {
         DirWalker::new(path)
     }
 }
@@ -431,7 +431,12 @@ where
     // like a modification or removal. Useful for logic that needs to rerun on
     // those occasions.
     let module_events = source_directories
-        .flat_map(move |path| elm_io2.find_elm_files_recursively(&path))
+        .flat_map(move |path| {
+            elm_io2
+                .find_files_recursively(&path)
+                .into_iter()
+                .filter(|path| is_elm_file(path))
+        })
         .concat(&filepath_events.filter(|path| is_elm_file(path)));
 
     let parsed_modules = module_events.map(|path| (path, ())).reduce(
@@ -659,7 +664,7 @@ mod dataflow_tests {
             Ok(dependencies)
         }
 
-        fn find_elm_files_recursively(&self, dir: &Path) -> Self::FilesInDir {
+        fn find_files_recursively(&self, dir: &Path) -> Self::FilesInDir {
             self.modules
                 .lock()
                 .unwrap()

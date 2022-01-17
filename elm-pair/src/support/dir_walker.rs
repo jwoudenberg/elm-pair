@@ -72,3 +72,32 @@ impl Iterator for DirWalker {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_files() {
+        let dir = std::env::temp_dir().join("elm-pair-dir-walker-test");
+        // Start the test with an empty directory.
+        // This might fail if the directory doesn't exist, which is fine.
+        std::fs::remove_dir_all(&dir).unwrap_or(());
+
+        let mut files = vec![
+            dir.join("top-level-path.txt"),
+            dir.join("some/path.ext"),
+            dir.join("some/nested/path"),
+        ];
+
+        for file in files.iter() {
+            std::fs::create_dir_all(&file.parent().unwrap()).unwrap();
+            std::fs::write(file, &[]).unwrap();
+        }
+
+        let mut actual_files = DirWalker::new(&dir).collect::<Vec<PathBuf>>();
+        actual_files.sort();
+        files.sort();
+        assert_eq!(actual_files, files,);
+    }
+}
