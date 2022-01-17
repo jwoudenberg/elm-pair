@@ -71,6 +71,7 @@ trait ElmIO: Clone {
     ) -> Result<Option<ElmModule>, Error>;
     fn parse_elm_stuff_idat(
         &self,
+        project_root: &Path,
         path: &Path,
     ) -> Result<Vec<(String, ElmModule)>, Error>;
     fn find_elm_files_recursively(&self, path: &Path) -> Self::FilesInDir;
@@ -126,8 +127,8 @@ impl ElmIO for RealElmIO {
     fn parse_elm_stuff_idat(
         &self,
         project_root: &Path,
+        path: &Path,
     ) -> Result<Vec<(String, ElmModule)>, Error> {
-        let path = &idat_path(project_root);
         let file = std::fs::File::open(path).or_else(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 create_elm_stuff(&self.compiler, project_root)?;
@@ -411,12 +412,11 @@ where
     // A new entry should be added whenever we receive an event for a file,
     // like a modification or removal. Useful for logic that needs to rerun on
     // those occasions.
-    // TODO: narrow this down to Elm module events.
-    let file_events = source_directories
+    let module_events = source_directories
         .flat_map(move |path| elm_io2.find_elm_files_recursively(&path))
-        .concat(&filepath_events);
+        .concat(&filepath_events.filter(|path| is_elm_file(path)));
 
-    let parsed_modules = file_events.map(|path| (path, ())).reduce(
+    let parsed_modules = module_events.map(|path| (path, ())).reduce(
         move |path, _input, output| match elm_io3
             .parse_elm_module(&query_for_exports, path)
         {
@@ -428,9 +428,9 @@ where
         },
     );
 
-    let files = file_events.distinct();
+    let module_paths = module_events.distinct();
 
-    let project_modules = files
+    let project_modules = module_paths
         // Join on `()`, i.e. create a record for every combination of
         // source path and source directory. Then later we can filter
         // that down to keep just the combinations where the path is
@@ -488,16 +488,22 @@ where
             }
         });
 
-    let idat_modules = project_roots
-        .map(|project_root| (project_root, ()))
+    let idat_files = project_roots
+        .map(|project_root| (idat_path(&project_root), project_root));
+
+    let idat_file_events =
+        idat_files.semijoin(&filepath_events).concat(&idat_files);
+
+    let idat_modules = idat_file_events
+        .map(|(idat_path, project_root)| (project_root, idat_path))
         .reduce(move |project_root, input, output| {
-            if input.iter().map(|((), r)| r).sum::<isize>() > 0 {
-                match elm_io4.parse_elm_stuff_idat(project_root) {
-                    Ok(modules) => output
-                        .extend(modules.into_iter().map(|module| (module, 1))),
-                    Err(err) => {
-                        log::error!("could not read i.dat file: {:?}", err);
-                    }
+            let idat_path = input[0].0;
+            match elm_io4.parse_elm_stuff_idat(project_root, idat_path) {
+                Ok(modules) => {
+                    output.extend(modules.into_iter().map(|module| (module, 1)))
+                }
+                Err(err) => {
+                    log::error!("could not read i.dat file: {:?}", err);
                 }
             }
         });
@@ -619,6 +625,7 @@ mod dataflow_tests {
         fn parse_elm_stuff_idat(
             &self,
             project_root: &Path,
+            _path: &Path,
         ) -> Result<Vec<(String, ElmModule)>, Error> {
             let projects = self.projects.lock().unwrap();
             let project = projects.get(project_root).ok_or_else(|| {
@@ -888,7 +895,7 @@ mod dataflow_tests {
 
     #[test]
     fn elm_json_files_are_reparsed_if_we_send_an_event_for_them() {
-        // Given a project with an existing module...
+        // Given a project with a module and a dependency...
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
             vec![mk_project(&project_root, vec!["src"], vec!["Json.Decode"])],
@@ -919,14 +926,41 @@ mod dataflow_tests {
 
         // Then the elm.json is reparsed...
         assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 2);
-        // And the project's listed as having no modules...
+        // And the project's only contains dependency modules...
         assert_modules(&computation, &project_root, &["Json.Decode"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
     }
 
     #[test]
     fn elm_idat_files_are_reparsed_if_we_send_an_event_for_them() {
-        todo!()
+        // Given a project with a dependency module...
+        let project_root = PathBuf::from("/project");
+        let elm_io = FakeElmIO::new(
+            vec![mk_project(&project_root, vec![], vec!["Json.Decode"])],
+            vec![],
+        );
+        let mut computation =
+            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        computation.watch_project(project_root.clone());
+        computation.advance();
+        assert_modules(&computation, &project_root, &["Json.Decode"]);
+        assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 1);
+
+        // When we change the i.dat file to list other dependencies...
+        elm_io.projects.lock().unwrap().extend(vec![mk_project(
+            &project_root,
+            vec![],
+            vec!["Time"],
+        )]);
+        computation
+            .filepath_events_input
+            .insert(PathBuf::from("/project/elm-stuff/0.19.1/i.dat"));
+        computation.advance();
+
+        // Then the i.dat file is reparsed...
+        assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 2);
+        // And the project's dependency modules have chanaged
+        assert_modules(&computation, &project_root, &["Time"]);
     }
 
     #[test]
