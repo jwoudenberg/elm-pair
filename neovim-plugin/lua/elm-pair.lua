@@ -29,21 +29,26 @@ local function connect_to_socket(socket_path)
     ]])
 end
 
+local function elm_pair_binary()
+    if vim.fn.executable("elm-pair") > 0 then
+        return "elm-pair"
+    else
+        local script_path = debug.getinfo(2, "S").source:sub(2):match("(.*/)")
+        return script_path .. "../elm-pair"
+    end
+end
+
 local function start()
     local stdout
-    local stderr
-    local job_id = vim.fn.jobstart({"elm-pair"}, {
+    local job_id = vim.fn.jobstart({elm_pair_binary()}, {
         stdout_buffered = true,
         on_stdout = function(_, data, _) stdout = vim.fn.join(data) end,
-        stderr_buffered = true,
-        on_stderr = function(_, data, _) stderr = vim.fn.join(data) end,
+        on_stderr = function(_, data, _) print(vim.fn.join(data)) end,
         on_exit = function(_, exit_code, _)
             if exit_code == 0 then
                 connect_to_socket(stdout)
             else
-                error(
-                    "`elm-pair` failed with exit code " .. exit_code .. ": " ..
-                        stderr)
+                error("`elm-pair` failed with exit code " .. exit_code)
             end
         end
     });
