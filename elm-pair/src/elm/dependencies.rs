@@ -868,8 +868,8 @@ fn elm_json_path(project_root: &Path) -> PathBuf {
 }
 
 fn idat_path(project_root: &Path) -> PathBuf {
-    // TODO: Remove harcoded Elm version.
-    project_root.join("elm-stuff/0.19.1/i.dat")
+    project_root
+        .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
 }
 
 // This iterator finds as many files as it can and so logs rather than fails

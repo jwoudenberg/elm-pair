@@ -29,7 +29,7 @@ function main {
 
   # Stop redirecting stdout to stderr and run elm-pair
   popd > /dev/null
-  echo "Starting Elm-pair for the first time..."
+  echo "Elm-pair installation complete!"
   exec 1>&3-
   exec "$0"
 }

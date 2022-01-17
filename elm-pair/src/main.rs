@@ -59,9 +59,6 @@ fn run() -> Result<(), Error> {
         return Ok(());
     }
 
-    // Find an Elm compiler for elm-pair to use.
-    let compiler = crate::elm::compiler::Compiler::new()?;
-
     // Start listening on the socket path. Remove an existing socket file if one
     // was left behind by a previous run (we're past the lock so we're the only
     // running process). We must start listening _before_ we daemonize and exit
@@ -76,6 +73,9 @@ fn run() -> Result<(), Error> {
     // the socket that can be used to communicate with the daemon.
     let log_file_path = elm_pair_dir.join("log");
     daemonize(log_file_path)?;
+
+    // Find an Elm compiler for elm-pair to use.
+    let compiler = crate::elm::compiler::Compiler::new()?;
 
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
