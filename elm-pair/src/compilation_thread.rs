@@ -1,4 +1,5 @@
 use crate::analysis_thread;
+use crate::elm::compiler::Compiler;
 use crate::elm::project_root_for_path;
 use crate::sized_stack::SizedStack;
 use crate::support::log;
@@ -16,6 +17,7 @@ pub(crate) enum Msg {
 pub(crate) fn run(
     compilation_receiver: Receiver<Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
+    compiler: Compiler,
 ) -> Result<(), Error> {
     CompilationLoop {
         analysis_sender,
@@ -23,6 +25,7 @@ pub(crate) fn run(
         compilation_candidates: SizedStack::with_capacity(
             crate::MAX_COMPILATION_CANDIDATES,
         ),
+        compiler,
     }
     .start(compilation_receiver)
 }
@@ -31,6 +34,7 @@ struct CompilationLoop {
     analysis_sender: Sender<analysis_thread::Msg>,
     buffer_info: HashMap<Buffer, BufferInfo>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
+    compiler: Compiler,
 }
 
 impl MsgLoop<Error> for CompilationLoop {
@@ -66,7 +70,9 @@ impl MsgLoop<Error> for CompilationLoop {
                 snapshot.revision,
                 snapshot.buffer
             );
-            if crate::elm::compiler::make(&buffer_info.root, &snapshot.bytes)?
+            if self
+                .compiler
+                .make(&buffer_info.root, &snapshot.bytes)?
                 .status
                 .success()
             {

@@ -402,6 +402,7 @@ pub struct CanonicalAnnotation(pub FreeVars, pub Type);
 
 type FreeVars = DataMap<Name, ()>;
 
+#[allow(clippy::enum_variant_names)]
 pub enum Type {
     Lambda(Box<Type>, Box<Type>),
     Var(Name),

@@ -59,6 +59,9 @@ fn run() -> Result<(), Error> {
         return Ok(());
     }
 
+    // Find an Elm compiler for elm-pair to use.
+    let compiler = crate::elm::compiler::Compiler::new()?;
+
     // Start listening on the socket path. Remove an existing socket file if one
     // was left behind by a previous run (we're past the lock so we're the only
     // running process). We must start listening _before_ we daemonize and exit
@@ -96,13 +99,18 @@ fn run() -> Result<(), Error> {
     });
 
     // Start compilation thread.
+    let compiler_for_compilation = compiler.clone();
     spawn_thread(analysis_sender.clone(), || {
-        compilation_thread::run(compilation_receiver, analysis_sender)
+        compilation_thread::run(
+            compilation_receiver,
+            analysis_sender,
+            compiler_for_compilation,
+        )
     });
 
     // Main thread continues as analysis thread.
     log::info!("elm-pair has started");
-    analysis_thread::run(&latest_code, analysis_receiver)?;
+    analysis_thread::run(&latest_code, analysis_receiver, compiler)?;
     log::info!("elm-pair exiting");
     Ok(())
 }
@@ -241,7 +249,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
 // TODO: remove debug helper when it's no longer needed.
 #[allow(dead_code)]
 fn debug_print_code(code: &SourceFileSnapshot) {
-    println!("CODE:\n{}", code.bytes.to_string());
+    println!("CODE:\n{}", code.bytes);
 }
 
 // TODO: remove debug helper when it's no longer needed.

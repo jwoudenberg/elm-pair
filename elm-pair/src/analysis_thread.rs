@@ -1,4 +1,5 @@
 use crate::elm;
+use crate::elm::compiler::Compiler;
 use crate::support::log;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
@@ -26,12 +27,13 @@ impl From<Error> for Msg {
 pub(crate) fn run(
     latest_code: &MVar<SourceFileSnapshot>,
     analysis_receiver: Receiver<Msg>,
+    compiler: Compiler,
 ) -> Result<(), Error> {
     AnalysisLoop {
         latest_code,
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
-        refactor_engine: elm::RefactorEngine::new()?,
+        refactor_engine: elm::RefactorEngine::new(compiler)?,
     }
     .start(analysis_receiver)
 }

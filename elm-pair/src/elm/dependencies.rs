@@ -1,3 +1,4 @@
+use crate::elm::compiler::Compiler;
 use crate::elm::idat;
 use crate::support::log;
 use crate::support::log::Error;
@@ -60,7 +61,7 @@ type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 // to allow the dataflow logic to be tested in isolation.
 trait ElmIO: Clone {
     type FileWatcher: notify::Watcher + 'static;
-    type FilesInDir: IntoIterator<Item = PathBuf>;
+    type FilesInDir: IntoIterator<Item = PathBuf>; // TODO: remove this type.
 
     fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error>;
     fn parse_elm_module(
@@ -75,8 +76,10 @@ trait ElmIO: Clone {
     fn find_elm_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
-#[derive(Copy, Clone)]
-struct RealElmIO();
+#[derive(Clone)]
+struct RealElmIO {
+    compiler: Compiler,
+}
 
 impl ElmIO for RealElmIO {
     type FileWatcher = notify::RecommendedWatcher;
@@ -127,7 +130,7 @@ impl ElmIO for RealElmIO {
         let path = &idat_path(project_root);
         let file = std::fs::File::open(path).or_else(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                create_elm_stuff(project_root)?;
+                create_elm_stuff(&self.compiler, project_root)?;
                 std::fs::File::open(path).map_err(|err| {
                     log::mk_err!(
                         "error opening elm-stuff/i.dat file: {:?}",
@@ -159,8 +162,10 @@ impl ElmIO for RealElmIO {
 }
 
 impl DataflowComputation {
-    pub(crate) fn new() -> Result<DataflowComputation, Error> {
-        Self::new_configurable(RealElmIO())
+    pub(crate) fn new(
+        compiler: Compiler,
+    ) -> Result<DataflowComputation, Error> {
+        Self::new_configurable(RealElmIO { compiler })
     }
 
     fn new_configurable<D>(elm_io: D) -> Result<DataflowComputation, Error>
@@ -1174,7 +1179,10 @@ where
     }
 }
 
-fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
+fn create_elm_stuff(
+    compiler: &Compiler,
+    project_root: &Path,
+) -> Result<(), Error> {
     log::info!(
         "Running `elm make` to generate elm-stuff in project: {:?}",
         project_root
@@ -1190,7 +1198,7 @@ fn create_elm_stuff(project_root: &Path) -> Result<(), Error> {
         val = 4\n\
         ",
     );
-    let output = crate::elm::compiler::make(project_root, &temp_module)?;
+    let output = compiler.make(project_root, &temp_module)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -1286,9 +1294,11 @@ mod tests {
     fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = QueryForExports::init(language)?;
-        let ElmModule { exports } = RealElmIO()
-            .parse_elm_module(&query_for_exports, path)?
-            .unwrap();
+        let elm_io = RealElmIO {
+            compiler: Compiler::new().unwrap(),
+        };
+        let ElmModule { exports } =
+            elm_io.parse_elm_module(&query_for_exports, path)?.unwrap();
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))
