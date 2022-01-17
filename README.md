@@ -41,6 +41,12 @@ If you're managing your Neovim configuration using [home-manager][] then you can
 
 Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
 
+## Acknowledgements
+
+This project is made possible by a couple of others. A big thank you to the [tree-sitter][] and [tree-sitter-elm][], that provide the fast parsing logic Elm-pair buils on top of.
+
 [demo]: https://vimeo.com/662666351
 [home-manager]: https://github.com/nix-community/home-manager
 [neovim]: https://neovim.io/
+[tree-sitter-elm]: https://github.com/elm-tooling/tree-sitter-elm
+[tree-sitter]: https://tree-sitter.github.io/tree-sitter/
