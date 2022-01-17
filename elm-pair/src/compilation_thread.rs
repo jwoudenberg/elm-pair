@@ -70,15 +70,18 @@ impl MsgLoop<Error> for CompilationLoop {
                 snapshot.revision,
                 snapshot.buffer
             );
-            if self
-                .compiler
-                .make(&buffer_info.root, &snapshot.bytes)?
-                .status
-                .success()
-            {
-                self.analysis_sender.send(
-                    analysis_thread::Msg::CompilationSucceeded(snapshot),
-                )?;
+            let opt_output =
+                self.compiler.make(&buffer_info.root, &snapshot.bytes);
+            match opt_output.map(|output| output.status.success()) {
+                Err(err) => {
+                    log::error!("Failure running `elm make`: {:?}", err)
+                }
+                Ok(false) => {}
+                Ok(true) => {
+                    self.analysis_sender.send(
+                        analysis_thread::Msg::CompilationSucceeded(snapshot),
+                    )?;
+                }
             }
         }
         Ok(())
