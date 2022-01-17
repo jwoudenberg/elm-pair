@@ -15,6 +15,7 @@ use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
 
 pub mod compiler;
 pub mod dependencies;
+pub mod file_parsing;
 pub mod idat;
 pub mod query;
 

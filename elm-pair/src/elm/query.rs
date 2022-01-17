@@ -1,16 +1,17 @@
 use crate::support::log;
 use crate::support::log::Error;
 use tree_sitter::Query;
+
 #[macro_export]
 macro_rules! query {
     ($name:ident, $test_mod_name:ident, $file:literal $(, $capture:ident )* $(,)? ) => {
-        struct $name {
+        pub(crate) struct $name {
             query: Query,
             $($capture: u32,)*
         }
 
         impl $name {
-            fn init(lang: Language) -> Result<$name, Error> {
+            pub(crate) fn init(lang: Language) -> Result<$name, Error> {
                 let query_file_contents = include_str!($file);
                 let separator = "=== test input below ===";
                 let query_str =
