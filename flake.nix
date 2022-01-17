@@ -27,7 +27,9 @@
           ])
         ];
         system-naersk = naersk.lib."${system}".override {
-          cargo = rust-toolchain;
+          # The fork of naersk we're on doesn't contain a fix using stable
+          # cargo. Untill we move off the fork we need this commented out.
+          # cargo = rust-toolchain;
           rustc = rust-toolchain;
         };
       in rec {
