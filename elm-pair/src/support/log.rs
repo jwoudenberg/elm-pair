@@ -37,6 +37,7 @@ macro_rules! error {
 }
 pub use error;
 
+#[derive(PartialEq, Eq)]
 pub struct Error(pub String);
 
 impl std::fmt::Debug for Error {

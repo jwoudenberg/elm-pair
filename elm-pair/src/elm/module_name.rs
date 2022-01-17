@@ -34,3 +34,39 @@ pub(crate) fn from_path(
             )
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_module() {
+        assert_eq!(
+            from_path(
+                Path::new("/project/src"),
+                Path::new("/project/src/TopLevel.elm"),
+            ),
+            Ok("TopLevel".to_string())
+        );
+    }
+
+    #[test]
+    fn nested_module() {
+        assert_eq!(
+            from_path(
+                Path::new("/project/src"),
+                Path::new("/project/src/Some/Nested/Module.elm"),
+            ),
+            Ok("Some.Nested.Module".to_string())
+        );
+    }
+
+    #[test]
+    fn path_not_in_src_module() {
+        assert!(from_path(
+            Path::new("/project/src"),
+            Path::new("/elsewhere/Some/Nested/Module.elm"),
+        )
+        .is_err(),);
+    }
+}
