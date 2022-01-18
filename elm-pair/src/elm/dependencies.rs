@@ -296,10 +296,7 @@ impl DataflowComputation {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProjectInfo {
-    pub modules: HashMap<String, ElmModule>,
-}
+pub(crate) type ProjectInfo = HashMap<String, ElmModule>;
 
 #[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ElmModule {
@@ -507,12 +504,7 @@ where
             output.push((modules, 1));
         })
         .map(move |(project_root, modules)| {
-            (
-                project_root,
-                ProjectInfo {
-                    modules: modules.into_iter().collect(),
-                },
-            )
+            (project_root, modules.into_iter().collect::<ProjectInfo>())
         })
         .inspect(move |((project_root, project_info), _, diff)| {
             match std::cmp::Ord::cmp(diff, &0) {
@@ -790,7 +782,6 @@ mod tests {
             .with_project(project_root, |project| {
                 assert_eq!(
                     project
-                        .modules
                         .keys()
                         .map(|key| key.as_str())
                         .collect::<HashSet<&str>>(),

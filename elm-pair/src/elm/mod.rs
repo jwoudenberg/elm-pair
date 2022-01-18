@@ -314,7 +314,7 @@ fn module_exports<'a>(
     project: &'a ProjectInfo,
     module: RopeSlice,
 ) -> Result<&'a Vec<ExportedName>, Error> {
-    match project.modules.get(&module.to_string()) {
+    match project.get(&module.to_string()) {
         None => Err(log::mk_err!("did not find module")),
         Some(ElmModule { exports }) => Ok(exports),
     }
@@ -362,7 +362,7 @@ fn on_unrecognized_change(
         {}
         let insert_at_byte = tree_cursor.node().start_byte();
         for new_import_name in new_import_names {
-            if project_info.modules.contains_key(&new_import_name)
+            if project_info.contains_key(&new_import_name)
                 && !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
             {
                 refactor.add_change(
@@ -422,7 +422,7 @@ fn get_elm_module<'a>(
     project_info: &'a ProjectInfo,
     name: &RopeSlice,
 ) -> Result<&'a ElmModule, Error> {
-    project_info.modules.get(&name.to_string()).ok_or_else(|| {
+    project_info.get(&name.to_string()).ok_or_else(|| {
         log::mk_err!("could not find module named {}", name.to_string())
     })
 }
