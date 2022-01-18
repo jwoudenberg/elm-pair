@@ -34,7 +34,7 @@ pub struct DataflowComputation {
     // Changes made to the dataflow inputs below will receive this timestamp.
     current_time: Timestamp,
     // An input representing projects we're currently tracking.
-    project_roots_input: DataflowInput<PathBuf>,
+    project_roots_input: DataflowInput<(ProjectId, PathBuf)>,
     // An input representing events happening to files. Whether it's file
     // creation, removal, or modification, we just push a path in here to let
     // it know something's changed.
@@ -45,7 +45,9 @@ pub struct DataflowComputation {
     // A trace containing information about all Elm modules in projects
     // currently tracked.
     // TODO: Try remove the Mutex here.
-    modules_by_project: DataflowTrace<PathBuf, (String, ElmModule)>,
+    modules_by_project: DataflowTrace<ProjectId, (String, ElmModule)>,
+    // Generated project id's indexed by the project's root path.
+    project_ids: HashMap<PathBuf, ProjectId>,
 }
 
 type Timestamp = u32;
@@ -75,6 +77,11 @@ type DataflowTrace<K, V> =
         >,
     >;
 
+#[derive(
+    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
+pub struct ProjectId(u8); // 256 Elm Project should be enough for everyone.
+
 // This trait exists to allow dependency injection of side-effecty functions
 // that read and write files into pure dataflow computation logic. The goal is
 // to allow the dataflow logic to be tested in isolation.
@@ -82,11 +89,7 @@ trait ElmIO: Clone {
     type FileWatcher: notify::Watcher + 'static;
     type FilesInDir: IntoIterator<Item = PathBuf>;
 
-    fn parse_elm_json(
-        &self,
-        project_root: &Path,
-        path: &Path,
-    ) -> Result<ElmJson, Error>;
+    fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error>;
     fn parse_elm_module(
         &self,
         query_for_exports: &QueryForExports,
@@ -94,7 +97,6 @@ trait ElmIO: Clone {
     ) -> Result<Option<ElmModule>, Error>;
     fn parse_elm_stuff_idat(
         &self,
-        project_root: &Path,
         path: &Path,
     ) -> Result<Vec<(String, ElmModule)>, Error>;
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
@@ -109,11 +111,7 @@ impl ElmIO for RealElmIO {
     type FileWatcher = notify::RecommendedWatcher;
     type FilesInDir = DirWalker;
 
-    fn parse_elm_json(
-        &self,
-        project_root: &Path,
-        path: &Path,
-    ) -> Result<ElmJson, Error> {
+    fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error> {
         let file = std::fs::File::open(path).map_err(|err| {
             log::mk_err!("error while reading elm.json: {:?}", err)
         })?;
@@ -122,6 +120,7 @@ impl ElmIO for RealElmIO {
             serde_json::from_reader(reader).map_err(|err| {
                 log::mk_err!("error while parsing elm.json: {:?}", err)
             })?;
+        let project_root = project_root_from_elm_json_path(path)?;
         for dir in elm_json.source_directories.as_mut_slice() {
             let abs_path = project_root.join(&dir);
             // If we cannot canonicalize the path, likely because it doesn't
@@ -142,11 +141,11 @@ impl ElmIO for RealElmIO {
 
     fn parse_elm_stuff_idat(
         &self,
-        project_root: &Path,
         path: &Path,
     ) -> Result<Vec<(String, ElmModule)>, Error> {
         let file = std::fs::File::open(path).or_else(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
+                let project_root = project_root_from_idat_path(path)?;
                 create_elm_stuff(&self.compiler, project_root)?;
                 std::fs::File::open(path).map_err(|err| {
                     log::mk_err!(
@@ -179,9 +178,7 @@ impl ElmIO for RealElmIO {
 }
 
 impl DataflowComputation {
-    pub fn new(
-        compiler: Compiler,
-    ) -> Result<DataflowComputation, Error> {
+    pub fn new(compiler: Compiler) -> Result<DataflowComputation, Error> {
         Self::new_configurable(RealElmIO { compiler })
     }
 
@@ -229,6 +226,7 @@ impl DataflowComputation {
             file_event_receiver,
             current_time: 0,
             modules_by_project,
+            project_ids: HashMap::new(),
         };
 
         computation.advance();
@@ -236,12 +234,29 @@ impl DataflowComputation {
         Ok(computation)
     }
 
-    pub fn watch_project(&mut self, project_root: PathBuf) {
-        self.project_roots_input.insert(project_root)
+    pub fn watch_project(&mut self, project_root: PathBuf) -> ProjectId {
+        let next_project_id = ProjectId(self.project_ids.len() as u8);
+        let project_id = *self
+            .project_ids
+            .entry(project_root.clone())
+            .or_insert(next_project_id);
+        self.project_roots_input.insert((project_id, project_root));
+        project_id
     }
 
-    pub fn _unwatch_project(&mut self, project_root: PathBuf) {
-        self.project_roots_input.remove(project_root)
+    pub fn _unwatch_project(&mut self, project_id: ProjectId) {
+        let opt_project_root =
+            self.project_ids.iter().find_map(|(root, id)| {
+                if *id == project_id {
+                    Some(root)
+                } else {
+                    None
+                }
+            });
+        if let Some(project_root) = opt_project_root {
+            self.project_roots_input
+                .remove((project_id, project_root.clone()))
+        }
     }
 
     pub fn advance(&mut self) {
@@ -254,6 +269,7 @@ impl DataflowComputation {
             current_time,
             file_event_receiver,
             modules_by_project,
+            project_ids: _,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -302,7 +318,7 @@ impl DataflowComputation {
 
     pub fn project_cursor(
         &mut self,
-    ) -> ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
+    ) -> ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>> {
         let (cursor, storage) = self.modules_by_project.cursor();
         ProjectCursor { cursor, storage }
     }
@@ -314,15 +330,15 @@ pub struct ProjectCursor<T: TraceReader> {
     storage: <T::Cursor as Cursor<T::Key, T::Val, T::Time, T::R>>::Storage,
 }
 
-impl ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
+impl ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>> {
     pub fn get_project(
         &mut self,
-        root: &Path,
+        project: &ProjectId,
     ) -> Result<ProjectInfo, Error> {
         let mut modules = HashMap::new();
         self.cursor.rewind_keys(&self.storage);
         self.cursor.rewind_vals(&self.storage);
-        self.cursor.seek_key(&self.storage, &root.to_path_buf());
+        self.cursor.seek_key(&self.storage, project);
         while let Some((module_name, module)) =
             self.cursor.get_val(&self.storage)
         {
@@ -335,8 +351,8 @@ impl ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
         }
         if modules.is_empty() {
             return Err(log::mk_err!(
-                "did not find project for path {:?}",
-                root
+                "did not find project with id {:?}",
+                project
             ));
         } else {
             Ok(modules)
@@ -389,11 +405,11 @@ fn dataflow_graph<W, G, D>(
     elm_io: D,
     scope: &mut G,
     query_for_exports: QueryForExports,
-    project_roots_input: &mut DataflowInput<PathBuf>,
+    project_roots_input: &mut DataflowInput<(ProjectId, PathBuf)>,
     filepath_events_input: &mut DataflowInput<PathBuf>,
     mut file_watcher: W,
 ) -> (
-    DataflowTrace<PathBuf, (String, ElmModule)>,
+    DataflowTrace<ProjectId, (String, ElmModule)>,
     Vec<DataflowProbe>,
 )
 where
@@ -410,25 +426,25 @@ where
     let elm_io3 = elm_io.clone();
     let elm_io4 = elm_io.clone();
 
-    let elm_json_files = project_roots.map(move |project_root: PathBuf| {
-        (elm_json_path(&project_root), project_root)
-    });
+    let elm_json_files =
+        project_roots.map(move |(project_id, project_root)| {
+            (elm_json_path(&project_root), project_id)
+        });
 
     let elm_json_file_events = elm_json_files
         .semijoin(&filepath_events)
         .concat(&elm_json_files);
 
     let source_directories_by_project = elm_json_file_events
-        .map(|(elm_json_path, project_root)| (project_root, elm_json_path))
-        .reduce(move |project_root, _input, output| {
-            let mut elm_json =
-                match elm_io.parse_elm_json(project_root, _input[0].0) {
-                    Ok(elm_json) => elm_json,
-                    Err(err) => {
-                        log::error!("Failed to load elm_json: {:?}", err);
-                        return;
-                    }
-                };
+        .map(|(elm_json_path, project_id)| (project_id, elm_json_path))
+        .reduce(move |_, _input, output| {
+            let mut elm_json = match elm_io.parse_elm_json(_input[0].0) {
+                Ok(elm_json) => elm_json,
+                Err(err) => {
+                    log::error!("Failed to load elm_json: {:?}", err);
+                    return;
+                }
+            };
             elm_json.source_directories.sort();
             elm_json.source_directories.dedup();
             for dir in elm_json.source_directories.into_iter() {
@@ -474,19 +490,19 @@ where
         // in the directory.
         .map(|path| ((), path))
         .join(&source_directories_by_project.map(|x| ((), x)))
-        .flat_map(|((), (file_path, (project_root, src_dir)))| {
+        .flat_map(|((), (file_path, (project_id, src_dir)))| {
             if file_path.starts_with(&src_dir) {
-                Some((file_path, (project_root, src_dir)))
+                Some((file_path, (project_id, src_dir)))
             } else {
                 None
             }
         })
         .join_map(
             &parsed_modules,
-            |file_path, (project_root, src_dir), parsed_module| {
+            |file_path, (project_id, src_dir), parsed_module| {
                 match crate::elm::module_name::from_path(src_dir, file_path) {
                     Ok(module_name) => Some((
-                        project_root.clone(),
+                        *project_id,
                         (module_name, parsed_module.clone()),
                     )),
                     Err(err) => {
@@ -499,9 +515,9 @@ where
         .flat_map(|opt| opt);
 
     let paths_to_watch = source_directories_by_project
-        .map(|(_project_root, path)| path)
-        .concat(&project_roots.map_in_place(|path| *path = elm_json_path(path)))
-        .concat(&project_roots.map_in_place(|path| *path = idat_path(path)))
+        .map(|(_, path)| path)
+        .concat(&project_roots.map(|(_, path)|  elm_json_path(&path)))
+        .concat(&project_roots.map(|(_, path)|  idat_path(&path)))
         .distinct()
         .inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
             std::cmp::Ordering::Equal => {}
@@ -525,17 +541,18 @@ where
             }
         });
 
-    let idat_files = project_roots
-        .map(|project_root| (idat_path(&project_root), project_root));
+    let idat_files = project_roots.map(|(project_id, project_root)| {
+        (idat_path(&project_root), project_id)
+    });
 
     let idat_file_events =
         idat_files.semijoin(&filepath_events).concat(&idat_files);
 
     let idat_modules = idat_file_events
-        .map(|(idat_path, project_root)| (project_root, idat_path))
-        .reduce(move |project_root, input, output| {
+        .map(|(idat_path, project)| (project, idat_path))
+        .reduce(move |_project_id, input, output| {
             let idat_path = input[0].0;
-            match elm_io4.parse_elm_stuff_idat(project_root, idat_path) {
+            match elm_io4.parse_elm_stuff_idat(idat_path) {
                 Ok(modules) => {
                     output.extend(modules.into_iter().map(|module| (module, 1)))
                 }
@@ -562,9 +579,28 @@ fn elm_json_path(project_root: &Path) -> PathBuf {
     project_root.join("elm.json")
 }
 
+fn project_root_from_elm_json_path(elm_json: &Path) -> Result<&Path, Error> {
+    elm_json.parent().ok_or_else(|| {
+        log::mk_err!(
+            "couldn't navigate from elm.json file to project root directory"
+        )
+    })
+}
+
 fn idat_path(project_root: &Path) -> PathBuf {
     project_root
         .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
+}
+
+fn project_root_from_idat_path(idat: &Path) -> Result<&Path, Error> {
+    idat.parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| {
+            log::mk_err!(
+                "couldn't navigate from i.dat file to project root directory"
+            )
+        })
 }
 
 fn create_elm_stuff(
@@ -694,15 +730,12 @@ mod tests {
         type FileWatcher = notify::NullWatcher;
         type FilesInDir = Vec<PathBuf>;
 
-        fn parse_elm_json(
-            &self,
-            project_root: &Path,
-            path: &Path,
-        ) -> Result<ElmJson, Error> {
+        fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error> {
             if path.file_name() != Some(std::ffi::OsStr::new("elm.json")) {
                 return Err(log::mk_err!("not an elm.json file: {:?}", path));
             }
             let mut elm_jsons_parsed = self.elm_jsons_parsed.lock().unwrap();
+            let project_root = project_root_from_elm_json_path(path)?;
             *elm_jsons_parsed += 1;
             self.projects
                 .lock()
@@ -729,10 +762,10 @@ mod tests {
 
         fn parse_elm_stuff_idat(
             &self,
-            project_root: &Path,
-            _path: &Path,
+            path: &Path,
         ) -> Result<Vec<(String, ElmModule)>, Error> {
             let projects = self.projects.lock().unwrap();
+            let project_root = project_root_from_idat_path(path)?;
             let project = projects.get(project_root).ok_or_else(|| {
                 log::mk_err!("did not find project {:?}", project_root)
             })?;
@@ -797,11 +830,11 @@ mod tests {
 
     fn assert_modules(
         computation: &mut DataflowComputation,
-        project_root: &Path,
+        project: &ProjectId,
         modules: &[&str],
     ) {
         let mut cursor = computation.project_cursor();
-        let project = cursor.get_project(project_root).unwrap();
+        let project = cursor.get_project(project).unwrap();
         assert_eq!(
             project.keys().copied().collect::<HashSet<&str>>(),
             modules.iter().copied().collect::<HashSet<&str>>(),
@@ -820,11 +853,11 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root);
         computation.advance();
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Animals.Bat", "Care.Soap"],
         );
     }
@@ -842,22 +875,22 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root);
         computation.advance();
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Animals.Bat", "Care.Soap"],
         );
 
         // When we unwatch it
-        computation._unwatch_project(project_root.clone());
+        computation._unwatch_project(project_id);
         computation.advance();
 
         // Then it is forgotten
         if computation
             .project_cursor()
-            .get_project(&project_root)
+            .get_project(&project_id)
             .is_ok()
         {
             panic!("Did not expect project to be found");
@@ -874,9 +907,9 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root);
         computation.advance();
-        assert_modules(&mut computation, &project_root, &["Animals.Bat"]);
+        assert_modules(&mut computation, &project_id, &["Animals.Bat"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
         // When we add an another module file...
@@ -893,7 +926,7 @@ mod tests {
         // Then the module file is picked up...
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Elements.Water", "Animals.Bat"],
         );
         // And we only parsed the new module...
@@ -917,15 +950,15 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io).unwrap();
-        computation.watch_project(project_root.clone());
-        computation.watch_project(project2_root.clone());
+        let project_id = computation.watch_project(project_root);
+        let project2_id = computation.watch_project(project2_root);
         computation.advance();
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Animals.Bat", "Care.Soap"],
         );
-        assert_modules(&mut computation, &project2_root, &["Care.Shampoo"]);
+        assert_modules(&mut computation, &project2_id, &["Care.Shampoo"]);
     }
 
     #[test]
@@ -938,9 +971,9 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root);
         computation.advance();
-        assert_modules(&mut computation, &project_root, &["Animals.Bat"]);
+        assert_modules(&mut computation, &project_id, &["Animals.Bat"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
         // When we send an event for the file...
@@ -966,11 +999,11 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root);
         computation.advance();
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Animals.Bat", "Care.Soap"],
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
@@ -987,7 +1020,7 @@ mod tests {
         computation.advance();
 
         // Then the module is removed from the project...
-        assert_modules(&mut computation, &project_root, &["Care.Soap"]);
+        assert_modules(&mut computation, &project_id, &["Care.Soap"]);
         // And no additional parsing has taken place...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
@@ -1006,11 +1039,11 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Json.Decode", "Animals.Bat"],
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
@@ -1030,7 +1063,7 @@ mod tests {
         // Then the elm.json is reparsed...
         assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 2);
         // And the project's only contains dependency modules...
-        assert_modules(&mut computation, &project_root, &["Json.Decode"]);
+        assert_modules(&mut computation, &project_id, &["Json.Decode"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
     }
 
@@ -1044,9 +1077,9 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root.clone());
         computation.advance();
-        assert_modules(&mut computation, &project_root, &["Json.Decode"]);
+        assert_modules(&mut computation, &project_id, &["Json.Decode"]);
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 1);
 
         // When we change the i.dat file to list other dependencies...
@@ -1063,7 +1096,7 @@ mod tests {
         // Then the i.dat file is reparsed...
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 2);
         // And the project's dependency modules have chanaged
-        assert_modules(&mut computation, &project_root, &["Time"]);
+        assert_modules(&mut computation, &project_id, &["Time"]);
     }
 
     #[test]
@@ -1080,13 +1113,13 @@ mod tests {
         );
         let mut computation =
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
-        computation.watch_project(project_root.clone());
-        computation.watch_project(project2_root.clone());
+        let project_id = computation.watch_project(project_root);
+        let project2_id = computation.watch_project(project2_root);
         computation.advance();
 
         // Then both projects list the modules in the shared source directory...
-        assert_modules(&mut computation, &project_root, &["Care.Soap"]);
-        assert_modules(&mut computation, &project2_root, &["Care.Soap"]);
+        assert_modules(&mut computation, &project_id, &["Care.Soap"]);
+        assert_modules(&mut computation, &project2_id, &["Care.Soap"]);
 
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
@@ -1111,13 +1144,13 @@ mod tests {
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
 
         // When we parse the elm.json...
-        computation.watch_project(project_root.clone());
+        let project_id = computation.watch_project(project_root);
         computation.advance();
 
         // Then the resulting project contains the expected modules...
         assert_modules(
             &mut computation,
-            &project_root,
+            &project_id,
             &["Animals.Bat", "Care.Soap"],
         );
         // And each module has only been parsed once...

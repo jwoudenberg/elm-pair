@@ -1,7 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::{
-    DataflowComputation, ElmModule, ExportedName, ProjectInfo,
+    DataflowComputation, ElmModule, ExportedName, ProjectId, ProjectInfo,
 };
 use crate::support::log;
 use crate::support::log::Error;
@@ -96,7 +96,7 @@ pub struct Queries {
 }
 
 pub struct BufferInfo {
-    pub project_root: PathBuf,
+    pub project_id: ProjectId,
     pub path: PathBuf,
 }
 
@@ -183,7 +183,7 @@ impl RefactorEngine {
             log::mk_err!("no project on file for buffer {:?}", diff.new.buffer)
         })?;
         let mut cursor = dataflow_computation.project_cursor();
-        let project_info = cursor.get_project(&buffer_info.project_root)?;
+        let project_info = cursor.get_project(&buffer_info.project_id)?;
 
         match (before.as_slice(), after.as_slice()) {
             (
@@ -306,10 +306,9 @@ impl RefactorEngine {
         path: PathBuf,
     ) -> Result<(), Error> {
         let project_root = project_root_for_path(&path)?.to_owned();
-        self.dataflow_computation
-            .watch_project(project_root.to_owned());
+        let project_id = self.dataflow_computation.watch_project(project_root);
         self.dataflow_computation.advance();
-        let buffer_info = BufferInfo { path, project_root };
+        let buffer_info = BufferInfo { path, project_id };
         self.buffers.insert(buffer, buffer_info);
         Ok(())
     }
