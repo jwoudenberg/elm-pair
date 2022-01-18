@@ -301,16 +301,12 @@ pub struct ProjectInfo {
     pub modules: HashMap<String, ElmModule>,
 }
 
-#[derive(
-    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
-)]
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ElmModule {
     pub exports: Vec<ExportedName>,
 }
 
-#[derive(
-    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
-)]
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExportedName {
     Value {
         name: String,
@@ -337,9 +333,7 @@ pub enum ExportedName {
     },
 }
 
-#[derive(
-    Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize,
-)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct ElmJson {
     #[serde(rename = "source-directories")]
@@ -381,25 +375,23 @@ where
         .semijoin(&filepath_events)
         .concat(&elm_json_files);
 
-    let elm_jsons = elm_json_file_events
+    let source_directories_by_project = elm_json_file_events
         .map(|(elm_json_path, project_root)| (project_root, elm_json_path))
         .reduce(move |project_root, _input, output| {
-            match elm_io.parse_elm_json(project_root, _input[0].0) {
-                Ok(elm_json) => output.push((elm_json, 1)),
-                Err(err) => {
-                    log::error!("Failed to load elm_json: {:?}", err);
-                }
+            let mut elm_json =
+                match elm_io.parse_elm_json(project_root, _input[0].0) {
+                    Ok(elm_json) => elm_json,
+                    Err(err) => {
+                        log::error!("Failed to load elm_json: {:?}", err);
+                        return;
+                    }
+                };
+            elm_json.source_directories.sort();
+            elm_json.source_directories.dedup();
+            for dir in elm_json.source_directories.into_iter() {
+                output.push((dir, 1));
             }
         });
-
-    let source_directories_by_project = elm_jsons
-        .flat_map(|(project_root, elm_json)| {
-            elm_json
-                .source_directories
-                .into_iter()
-                .map(move |dir| (project_root.clone(), dir))
-        })
-        .distinct();
 
     let source_directories = source_directories_by_project
         .map(|(_, path)| path)
@@ -1094,5 +1086,37 @@ mod tests {
 
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn duplicate_source_directories_dont_cause_extra_parses() {
+        // Given an elm.json that lists the same source directory twice...
+        let project_root = PathBuf::from("/project");
+        let elm_io = FakeElmIO::new(
+            vec![mk_project(
+                &project_root,
+                vec!["/project/src", "/project/src"],
+                vec![],
+            )],
+            vec![
+                mk_module("/project/src/Animals/Bat.elm"),
+                mk_module("/project/src/Care/Soap.elm"),
+            ],
+        );
+        let mut computation =
+            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+
+        // When we parse the elm.json...
+        computation.watch_project(project_root.clone());
+        computation.advance();
+
+        // Then the resulting project contains the expected modules...
+        assert_modules(
+            &computation,
+            &project_root,
+            &["Animals.Bat", "Care.Soap"],
+        );
+        // And each module has only been parsed once...
+        assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
 }
