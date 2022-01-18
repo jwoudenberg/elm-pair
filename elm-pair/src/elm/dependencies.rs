@@ -53,8 +53,19 @@ type Timestamp = u32;
 
 type Diff = isize;
 
+type Allocator = timely::communication::allocator::Thread;
+
 type DataflowInput<A> =
     differential_dataflow::input::InputSession<Timestamp, A, Diff>;
+
+type DataflowCollection<'a, A> =
+    differential_dataflow::collection::Collection<DataflowScope<'a>, A, Diff>;
+
+type DataflowScope<'a> = timely::dataflow::scopes::child::Child<
+    'a,
+    timely::worker::Worker<Allocator>,
+    Timestamp,
+>;
 
 type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
@@ -207,12 +218,13 @@ impl DataflowComputation {
         })?;
 
         let (modules_by_project, probes) = worker.dataflow(|scope| {
+            let project_roots = project_roots_input.to_collection(scope);
+            let filepath_events = filepath_events_input.to_collection(scope);
             dataflow_graph(
                 elm_io,
-                scope,
                 query_for_exports,
-                &mut project_roots_input,
-                &mut filepath_events_input,
+                project_roots,
+                filepath_events,
                 file_watcher,
             )
         });
@@ -400,12 +412,11 @@ struct ElmJson {
     source_directories: Vec<PathBuf>,
 }
 
-fn dataflow_graph<W, G, D>(
+fn dataflow_graph<'a, W, D>(
     elm_io: D,
-    scope: &mut G,
     query_for_exports: QueryForExports,
-    project_roots_input: &mut DataflowInput<(ProjectId, PathBuf)>,
-    filepath_events_input: &mut DataflowInput<PathBuf>,
+    project_roots: DataflowCollection<'a, (ProjectId, PathBuf)>,
+    filepath_events: DataflowCollection<'a, PathBuf>,
     mut file_watcher: W,
 ) -> (
     DataflowTrace<ProjectId, (String, ElmModule)>,
@@ -413,17 +424,13 @@ fn dataflow_graph<W, G, D>(
 )
 where
     W: notify::Watcher + 'static,
-    G: timely::dataflow::scopes::ScopeParent<Timestamp = Timestamp>
-        + timely::dataflow::scopes::Scope,
     D: ElmIO + 'static,
 {
-    let project_roots = project_roots_input.to_collection(scope).distinct();
-
-    let filepath_events = filepath_events_input.to_collection(scope);
-
     let elm_io2 = elm_io.clone();
     let elm_io3 = elm_io.clone();
     let elm_io4 = elm_io.clone();
+
+    let project_roots = project_roots.distinct();
 
     let elm_json_files =
         project_roots.map(move |(project_id, project_root)| {

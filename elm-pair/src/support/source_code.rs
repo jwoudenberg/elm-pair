@@ -1,5 +1,6 @@
 use crate::support::log;
 use crate::support::log::Error;
+use abomonation_derive::Abomonation;
 use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use tree_sitter::{InputEdit, Node, Tree};
@@ -7,13 +8,13 @@ use tree_sitter::{InputEdit, Node, Tree};
 // A unique identifier for a buffer that elm-pair is tracking in any connected
 // editor. First 32 bits uniquely identify the connected editor, while the last
 // 32 bits identify one of the buffers openen in that particular editor.
-#[derive(Copy, Clone, Debug, Hash, PartialEq)]
+#[derive(
+    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub struct Buffer {
     pub editor_id: u32,
     pub buffer_id: u32,
 }
-
-impl Eq for Buffer {}
 
 #[derive(Clone)]
 pub struct SourceFileSnapshot {
