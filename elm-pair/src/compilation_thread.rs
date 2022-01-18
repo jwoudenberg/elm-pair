@@ -1,6 +1,5 @@
 use crate::analysis_thread;
 use crate::elm::compiler::Compiler;
-use crate::elm::project_root_for_path;
 use crate::sized_stack::SizedStack;
 use crate::support::log;
 use crate::support::source_code::{Buffer, SourceFileSnapshot};
@@ -112,7 +111,7 @@ impl BufferInfo {
     fn new(path: &Path) -> Result<BufferInfo, Error> {
         let info = BufferInfo {
             last_checked_revision: None,
-            root: project_root_for_path(path)?.to_owned(),
+            root: crate::elm::project_directory::root(path)?.to_owned(),
         };
         Ok(info)
     }

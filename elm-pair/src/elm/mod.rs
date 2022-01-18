@@ -18,6 +18,7 @@ pub mod dependencies;
 pub mod file_parsing;
 pub mod idat;
 pub mod module_name;
+pub mod project_directory;
 pub mod query;
 
 // These constants come from the tree-sitter-elm grammar. They might need to
@@ -304,7 +305,8 @@ impl RefactorEngine {
         buffer: Buffer,
         path: &Path,
     ) -> Result<(), Error> {
-        let project_root = project_root_for_path(path)?.to_owned();
+        let project_root =
+            crate::elm::project_directory::root(path)?.to_owned();
         let project_id = self.dataflow_computation.watch_project(project_root);
         self.dataflow_computation.advance();
         let buffer_info = BufferInfo { project_id };
@@ -2018,26 +2020,6 @@ struct ExposedType<'a> {
 enum ExposedConstructors<'a> {
     FromTypeAlias(&'a String),
     FromCustomType(&'a Vec<String>),
-}
-
-pub fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
-    let mut maybe_root = path;
-    loop {
-        if maybe_root.join("elm.json").exists() {
-            return Ok(maybe_root);
-        } else {
-            match maybe_root.parent() {
-                None => {
-                    return Err(log::mk_err!(
-                        "Did not find elm.json file in any ancestor directory of module path"
-                    ));
-                }
-                Some(parent) => {
-                    maybe_root = parent;
-                }
-            }
-        }
-    }
 }
 
 fn parse_import_node<'a>(

@@ -79,10 +79,7 @@ mod tests {
 
     #[test]
     fn finds_files() {
-        let dir = std::env::temp_dir().join("elm-pair-dir-walker-test");
-        // Start the test with an empty directory.
-        // This might fail if the directory doesn't exist, which is fine.
-        std::fs::remove_dir_all(&dir).unwrap_or(());
+        let dir = tempdir::TempDir::new("elm-pair-tests").unwrap().into_path();
 
         let mut files = vec![
             dir.join("top-level-path.txt"),
