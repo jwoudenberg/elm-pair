@@ -44,7 +44,6 @@ pub struct DataflowComputation {
     file_event_receiver: Receiver<notify::DebouncedEvent>,
     // A trace containing information about all Elm modules in projects
     // currently tracked.
-    // TODO: Try remove the Mutex here.
     modules_by_project: DataflowTrace<ProjectId, (String, ElmModule)>,
     // Generated project id's indexed by the project's root path.
     project_ids: HashMap<PathBuf, ProjectId>,
