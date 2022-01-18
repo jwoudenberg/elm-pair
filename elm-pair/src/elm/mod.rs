@@ -86,6 +86,10 @@ const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
 pub(crate) struct RefactorEngine {
     buffers: HashMap<Buffer, BufferInfo>,
     dataflow_computation: DataflowComputation,
+    queries: Queries,
+}
+
+pub(crate) struct Queries {
     query_for_imports: QueryForImports,
     query_for_unqualified_values: QueryForUnqualifiedValues,
     query_for_qualified_values: QueryForQualifiedValues,
@@ -141,13 +145,15 @@ impl RefactorEngine {
         let engine = RefactorEngine {
             buffers: HashMap::new(),
             dataflow_computation: DataflowComputation::new(compiler)?,
-            query_for_imports: QueryForImports::init(language)?,
-            query_for_unqualified_values: QueryForUnqualifiedValues::init(
-                language,
-            )?,
-            query_for_qualified_values: QueryForQualifiedValues::init(
-                language,
-            )?,
+            queries: Queries {
+                query_for_imports: QueryForImports::init(language)?,
+                query_for_unqualified_values: QueryForUnqualifiedValues::init(
+                    language,
+                )?,
+                query_for_qualified_values: QueryForQualifiedValues::init(
+                    language,
+                )?,
+            },
         };
 
         Ok(engine)
@@ -156,10 +162,15 @@ impl RefactorEngine {
     // TODO: try to return an Iterator instead of a Vector.
     // TODO: Try remove Vector from TreeChanges type.
     pub(crate) fn respond_to_change<'a>(
-        &self,
+        &mut self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Refactor, Error> {
+        let RefactorEngine {
+            buffers,
+            dataflow_computation,
+            queries,
+        } = self;
         // debug_print_tree_changes(diff, &changes);
         if changes.old_removed.is_empty() && changes.new_added.is_empty() {
             return Ok(Refactor::new());
@@ -167,132 +178,126 @@ impl RefactorEngine {
         let before = attach_kinds(&changes.old_removed);
         let after = attach_kinds(&changes.new_added);
         let mut refactor = Refactor::new();
-        self.buffer_project(diff.new.buffer, |project_info| {
-            match (before.as_slice(), after.as_slice()) {
-                (
-                    [EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                    | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                    | [DOUBLE_DOT]
-                    | [],
-                    [EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                    | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                    | [DOUBLE_DOT]
-                    | [],
-                ) => on_changed_values_in_exposing_list(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                ),
-                (
-                    [TYPE_IDENTIFIER],
-                    [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
-                )
-                | (
-                    [CONSTRUCTOR_IDENTIFIER],
-                    [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
-                )
-                | (
-                    [LOWER_CASE_IDENTIFIER],
-                    [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-                ) => on_added_module_qualifier_to_value(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                ),
-                (
-                    [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
-                    [TYPE_IDENTIFIER],
-                )
-                | (
-                    [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
-                    [CONSTRUCTOR_IDENTIFIER],
-                )
-                | (
-                    [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-                    [LOWER_CASE_IDENTIFIER],
-                ) => on_removed_module_qualifier_from_value(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                ),
-                ([], [EXPOSING_LIST]) => on_added_exposing_list_to_import(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    &diff.new,
-                    changes.new_parent,
-                ),
-                ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                ),
-                ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
-                    on_added_constructors_to_exposing_list(
-                        self,
-                        project_info,
-                        &mut refactor,
-                        diff,
-                        changes.new_parent,
-                    )
-                }
-                ([EXPOSED_UNION_CONSTRUCTORS], []) => {
-                    on_removed_constructors_from_exposing_list(
-                        self,
-                        project_info,
-                        &mut refactor,
-                        diff,
-                        changes.old_parent,
-                    )
-                }
-                ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
-                    self,
-                    &mut refactor,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                ),
-                ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => {
-                    on_changed_module_name(
-                        self,
-                        &mut refactor,
-                        diff,
-                        changes.old_parent,
-                        changes.new_parent,
-                    )
-                }
-                _ => on_unrecognized_change(
-                    self,
-                    project_info,
-                    &mut refactor,
-                    &diff.new,
-                    changes.new_parent,
-                ),
-            }
-        })?;
-        Ok(refactor)
-    }
 
-    fn buffer_project<F, R>(&self, buffer: Buffer, f: F) -> Result<R, Error>
-    where
-        F: FnOnce(&ProjectInfo) -> Result<R, Error>,
-    {
-        let buffer_info = self.buffers.get(&buffer).ok_or_else(|| {
-            log::mk_err!("no project on file for buffer {:?}", buffer)
+        let buffer_info = buffers.get(&diff.new.buffer).ok_or_else(|| {
+            log::mk_err!("no project on file for buffer {:?}", diff.new.buffer)
         })?;
-        self.dataflow_computation
-            .with_project(&buffer_info.project_root, f)
+        let mut cursor = dataflow_computation.project_cursor();
+        let project_info = cursor.get_project(&buffer_info.project_root)?;
+
+        match (before.as_slice(), after.as_slice()) {
+            (
+                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [DOUBLE_DOT]
+                | [],
+                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                | [DOUBLE_DOT]
+                | [],
+            ) => on_changed_values_in_exposing_list(
+                queries,
+                &project_info,
+                &mut refactor,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
+            (
+                [TYPE_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+            )
+            | (
+                [CONSTRUCTOR_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
+            )
+            | (
+                [LOWER_CASE_IDENTIFIER],
+                [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
+            ) => on_added_module_qualifier_to_value(
+                queries,
+                &project_info,
+                &mut refactor,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
+            (
+                [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+                [TYPE_IDENTIFIER],
+            )
+            | (
+                [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
+                [CONSTRUCTOR_IDENTIFIER],
+            )
+            | (
+                [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
+                [LOWER_CASE_IDENTIFIER],
+            ) => on_removed_module_qualifier_from_value(
+                queries,
+                &project_info,
+                &mut refactor,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
+            ([], [EXPOSING_LIST]) => on_added_exposing_list_to_import(
+                queries,
+                &project_info,
+                &mut refactor,
+                &diff.new,
+                changes.new_parent,
+            )?,
+            ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
+                queries,
+                &project_info,
+                &mut refactor,
+                diff,
+                changes.old_parent,
+            )?,
+            ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
+                on_added_constructors_to_exposing_list(
+                    queries,
+                    &project_info,
+                    &mut refactor,
+                    diff,
+                    changes.new_parent,
+                )?
+            }
+            ([EXPOSED_UNION_CONSTRUCTORS], []) => {
+                on_removed_constructors_from_exposing_list(
+                    queries,
+                    &project_info,
+                    &mut refactor,
+                    diff,
+                    changes.old_parent,
+                )?
+            }
+            ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
+                queries,
+                &mut refactor,
+                diff,
+                changes.old_parent,
+                changes.new_parent,
+            )?,
+            ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => {
+                on_changed_module_name(
+                    queries,
+                    &mut refactor,
+                    diff,
+                    changes.old_parent,
+                    changes.new_parent,
+                )?
+            }
+            _ => on_unrecognized_change(
+                queries,
+                &project_info,
+                &mut refactor,
+                &diff.new,
+                changes.new_parent,
+            )?,
+        }
+        Ok(refactor)
     }
 
     pub(crate) fn init_buffer(
@@ -314,7 +319,7 @@ fn module_exports<'a>(
     project: &'a ProjectInfo,
     module: RopeSlice,
 ) -> Result<&'a Vec<ExportedName>, Error> {
-    match project.get(&module.to_string()) {
+    match project.get(&module.to_string().as_str()) {
         None => Err(log::mk_err!("did not find module")),
         Some(ElmModule { exports }) => Ok(exports),
     }
@@ -326,7 +331,7 @@ fn _is_elm_file(path: &Path) -> bool {
 
 #[allow(clippy::needless_collect)]
 fn on_unrecognized_change(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
@@ -362,7 +367,7 @@ fn on_unrecognized_change(
         {}
         let insert_at_byte = tree_cursor.node().start_byte();
         for new_import_name in new_import_names {
-            if project_info.contains_key(&new_import_name)
+            if project_info.contains_key(&new_import_name.as_str())
                 && !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
             {
                 refactor.add_change(
@@ -376,7 +381,7 @@ fn on_unrecognized_change(
 }
 
 fn on_added_constructors_to_exposing_list(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
@@ -422,13 +427,16 @@ fn get_elm_module<'a>(
     project_info: &'a ProjectInfo,
     name: &RopeSlice,
 ) -> Result<&'a ElmModule, Error> {
-    project_info.get(&name.to_string()).ok_or_else(|| {
-        log::mk_err!("could not find module named {}", name.to_string())
-    })
+    project_info
+        .get(name.to_string().as_str())
+        .ok_or_else(|| {
+            log::mk_err!("could not find module named {}", name.to_string())
+        })
+        .map(|module| *module)
 }
 
 fn on_changed_module_name(
-    engine: &RefactorEngine,
+    engine: &Queries,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent_node: Node,
@@ -467,7 +475,7 @@ fn on_changed_module_name(
 }
 
 fn on_changed_module_qualifier(
-    engine: &RefactorEngine,
+    engine: &Queries,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent_node: Node,
@@ -539,7 +547,7 @@ fn on_changed_module_qualifier(
 }
 
 fn on_changed_as_clause(
-    engine: &RefactorEngine,
+    engine: &Queries,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_import_node: Node,
@@ -553,7 +561,7 @@ fn on_changed_as_clause(
 }
 
 fn change_qualifier(
-    engine: &RefactorEngine,
+    engine: &Queries,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_aliased_name: RopeSlice,
@@ -577,7 +585,7 @@ fn change_qualifier(
 }
 
 fn on_removed_constructors_from_exposing_list(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
@@ -634,7 +642,7 @@ fn on_removed_constructors_from_exposing_list(
 }
 
 fn on_changed_values_in_exposing_list(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
@@ -703,7 +711,7 @@ fn on_changed_values_in_exposing_list(
 }
 
 fn on_removed_module_qualifier_from_value(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
@@ -807,7 +815,7 @@ fn on_removed_module_qualifier_from_value(
 }
 
 fn remove_qualifier_from_references(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
@@ -948,7 +956,7 @@ mod names_with_digit {
 }
 
 fn rename(
-    engine: &RefactorEngine,
+    engine: &Queries,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     node_stripped_of_qualifier: Option<Node>,
@@ -1053,7 +1061,7 @@ fn add_to_exposing_list(
 }
 
 fn on_added_module_qualifier_to_value(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
@@ -1098,7 +1106,7 @@ fn on_added_module_qualifier_to_value(
 }
 
 fn qualify_value(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
@@ -1375,7 +1383,7 @@ fn qualify_value(
 }
 
 fn on_added_exposing_list_to_import(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
@@ -1403,7 +1411,7 @@ fn on_added_exposing_list_to_import(
 }
 
 fn on_removed_exposing_list_from_import(
-    engine: &RefactorEngine,
+    engine: &Queries,
     project_info: &ProjectInfo,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
@@ -1442,7 +1450,7 @@ fn remove_exposing_list(refactor: &mut Refactor, import: &Import) {
 }
 
 fn get_import_by_aliased_name<'a>(
-    engine: &RefactorEngine,
+    engine: &Queries,
     code: &'a SourceFileSnapshot,
     qualifier: &RopeSlice,
 ) -> Result<Import<'a>, Error> {
@@ -1492,7 +1500,7 @@ fn remove_from_exposing_list(
 }
 
 fn add_qualifier_to_references(
-    engine: &RefactorEngine,
+    engine: &Queries,
     refactor: &mut Refactor,
     cursor: &mut QueryCursor,
     code: &SourceFileSnapshot,
@@ -2043,7 +2051,7 @@ pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
 }
 
 fn parse_import_node<'a>(
-    engine: &'a RefactorEngine,
+    engine: &'a Queries,
     code: &'a SourceFileSnapshot,
     node: Node<'a>,
 ) -> Result<Import<'a>, Error> {

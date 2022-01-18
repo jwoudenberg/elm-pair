@@ -5,9 +5,11 @@ use crate::support::dir_walker::DirWalker;
 use crate::support::log;
 use crate::support::log::Error;
 use abomonation_derive::Abomonation;
+use differential_dataflow::operators::arrange::ArrangeByKey;
 use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
+use differential_dataflow::trace::{Cursor, TraceReader};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -15,7 +17,8 @@ use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::RwLock;
+use timely::dataflow::operators::Probe;
+use timely::progress::frontier::AntichainRef;
 
 pub struct DataflowComputation {
     // The dataflow worker contains state managed by the differential-dataflow
@@ -39,22 +42,38 @@ pub struct DataflowComputation {
     // A channel receiver that will receive events for changes to files in Elm
     // projects being tracked.
     file_event_receiver: Receiver<notify::DebouncedEvent>,
-    // A map containing all parsed informations for all projects currently being
-    // tracked.
-    //
-    // TODO: remove this field with something better.
-    // This structure needs to be rebuilt anytype any code in any Elm project
-    // changes. Given no code needs all this information in one place together
-    // it's wasteful to construct it.
-    projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
+    // A trace containing information about all Elm modules in projects
+    // currently tracked.
+    // TODO: Try remove the Mutex here.
+    modules_by_project: DataflowTrace<PathBuf, (String, ElmModule)>,
 }
 
 type Timestamp = u32;
 
+type Diff = isize;
+
 type DataflowInput<A> =
-    differential_dataflow::input::InputSession<Timestamp, A, isize>;
+    differential_dataflow::input::InputSession<Timestamp, A, Diff>;
 
 type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
+
+type DataflowTrace<K, V> =
+    differential_dataflow::operators::arrange::TraceAgent<
+        differential_dataflow::trace::implementations::spine_fueled::Spine<
+            K,
+            V,
+            Timestamp,
+            Diff,
+            std::rc::Rc<
+                differential_dataflow::trace::implementations::ord::OrdValBatch<
+                    K,
+                    V,
+                    Timestamp,
+                    Diff,
+                >,
+            >,
+        >,
+    >;
 
 // This trait exists to allow dependency injection of side-effecty functions
 // that read and write files into pure dataflow computation logic. The goal is
@@ -174,7 +193,6 @@ impl DataflowComputation {
         let query_for_exports = QueryForExports::init(language)?;
 
         let alloc = timely::communication::allocator::thread::Thread::new();
-        let projects = Rc::new(RwLock::new(HashMap::new()));
         let mut worker =
             timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
@@ -192,14 +210,13 @@ impl DataflowComputation {
             log::mk_err!("failed creating file watcher: {:?}", err)
         })?;
 
-        let probes = worker.dataflow(|scope| {
+        let (modules_by_project, probes) = worker.dataflow(|scope| {
             dataflow_graph(
                 elm_io,
                 scope,
                 query_for_exports,
                 &mut project_roots_input,
                 &mut filepath_events_input,
-                projects.clone(),
                 file_watcher,
             )
         });
@@ -209,9 +226,9 @@ impl DataflowComputation {
             probes,
             project_roots_input,
             filepath_events_input,
-            projects,
             file_event_receiver,
             current_time: 0,
+            modules_by_project,
         };
 
         computation.advance();
@@ -228,6 +245,7 @@ impl DataflowComputation {
     }
 
     pub(crate) fn advance(&mut self) {
+        self.current_time += 1;
         let DataflowComputation {
             worker,
             project_roots_input,
@@ -235,7 +253,7 @@ impl DataflowComputation {
             probes,
             current_time,
             file_event_receiver,
-            projects: _projects,
+            modules_by_project,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -272,31 +290,61 @@ impl DataflowComputation {
         filepath_events_input.advance_to(*current_time);
         filepath_events_input.flush();
 
+        modules_by_project
+            .set_logical_compaction(AntichainRef::new(&[*current_time]));
+        modules_by_project
+            .set_physical_compaction(AntichainRef::new(&[*current_time]));
+
         worker.step_while(|| {
             probes.iter().any(|probe| probe.less_than(current_time))
         });
-        self.current_time += 1;
     }
 
-    pub(crate) fn with_project<F, R>(
-        &self,
-        root: &Path,
-        f: F,
-    ) -> Result<R, Error>
-    where
-        F: FnOnce(&ProjectInfo) -> Result<R, Error>,
-    {
-        let projects = self.projects.read().map_err(|err| {
-            log::mk_err!("failed to obtain read lock for projects: {:?}", err)
-        })?;
-        let project = projects.get(root).ok_or_else(|| {
-            log::mk_err!("did not find project for path {:?}", root)
-        })?;
-        f(project)
+    pub(crate) fn project_cursor(
+        &mut self,
+    ) -> ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
+        let (cursor, storage) = self.modules_by_project.cursor();
+        ProjectCursor { cursor, storage }
     }
 }
 
-pub(crate) type ProjectInfo = HashMap<String, ElmModule>;
+#[allow(clippy::type_complexity)]
+pub(crate) struct ProjectCursor<T: TraceReader> {
+    cursor: T::Cursor,
+    storage: <T::Cursor as Cursor<T::Key, T::Val, T::Time, T::R>>::Storage,
+}
+
+impl ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
+    pub(crate) fn get_project(
+        &mut self,
+        root: &Path,
+    ) -> Result<ProjectInfo, Error> {
+        let mut modules = HashMap::new();
+        self.cursor.rewind_keys(&self.storage);
+        self.cursor.rewind_vals(&self.storage);
+        self.cursor.seek_key(&self.storage, &root.to_path_buf());
+        while let Some((module_name, module)) =
+            self.cursor.get_val(&self.storage)
+        {
+            let mut times = 0;
+            self.cursor.map_times(&self.storage, |_, r| times += r);
+            if times > 0 {
+                modules.insert(module_name.as_str(), module);
+            }
+            self.cursor.step_val(&self.storage);
+        }
+        if modules.is_empty() {
+            return Err(log::mk_err!(
+                "did not find project for path {:?}",
+                root
+            ));
+        } else {
+            Ok(modules)
+        }
+    }
+}
+
+pub(crate) type ProjectInfo<'a> = HashMap<&'a str, &'a ElmModule>;
 
 #[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ElmModule {
@@ -343,9 +391,11 @@ fn dataflow_graph<W, G, D>(
     query_for_exports: QueryForExports,
     project_roots_input: &mut DataflowInput<PathBuf>,
     filepath_events_input: &mut DataflowInput<PathBuf>,
-    projects: Rc<RwLock<HashMap<PathBuf, ProjectInfo>>>,
     mut file_watcher: W,
-) -> Vec<DataflowProbe>
+) -> (
+    DataflowTrace<PathBuf, (String, ElmModule)>,
+    Vec<DataflowProbe>,
+)
 where
     W: notify::Watcher + 'static,
     G: timely::dataflow::scopes::ScopeParent<Timestamp = Timestamp>
@@ -495,41 +545,13 @@ where
             }
         });
 
-    let project_infos = project_modules
-        .concat(&idat_modules)
-        .reduce(|_project_root, inputs, output| {
-            let modules: Vec<(String, ElmModule)> = Vec::from_iter(
-                inputs.iter().map(|(module, _count)| (*module).clone()),
-            );
-            output.push((modules, 1));
-        })
-        .map(move |(project_root, modules)| {
-            (project_root, modules.into_iter().collect::<ProjectInfo>())
-        })
-        .inspect(move |((project_root, project_info), _, diff)| {
-            match std::cmp::Ord::cmp(diff, &0) {
-                std::cmp::Ordering::Equal => {}
-                std::cmp::Ordering::Less => match projects.write() {
-                    Ok(mut projects_write) => {
-                        projects_write.remove(project_root);
-                    }
-                    Err(err) => {
-                        log::error!("no write lock on projects: {:?}", err);
-                    }
-                },
-                std::cmp::Ordering::Greater => match projects.write() {
-                    Ok(mut projects_write) => {
-                        projects_write
-                            .insert(project_root.clone(), project_info.clone());
-                    }
-                    Err(err) => {
-                        log::error!("no write lock on projects: {:?}", err);
-                    }
-                },
-            }
-        });
+    let modules_by_project =
+        project_modules.concat(&idat_modules).arrange_by_key();
 
-    vec![paths_to_watch.probe(), project_infos.probe()]
+    (
+        modules_by_project.trace,
+        vec![paths_to_watch.probe(), modules_by_project.stream.probe()],
+    )
 }
 
 fn is_elm_file(path: &Path) -> bool {
@@ -774,22 +796,16 @@ mod tests {
     }
 
     fn assert_modules(
-        computation: &DataflowComputation,
+        computation: &mut DataflowComputation,
         project_root: &Path,
         modules: &[&str],
     ) {
-        computation
-            .with_project(project_root, |project| {
-                assert_eq!(
-                    project
-                        .keys()
-                        .map(|key| key.as_str())
-                        .collect::<HashSet<&str>>(),
-                    modules.iter().copied().collect::<HashSet<&str>>(),
-                );
-                Ok(())
-            })
-            .unwrap();
+        let mut cursor = computation.project_cursor();
+        let project = cursor.get_project(project_root).unwrap();
+        assert_eq!(
+            project.keys().copied().collect::<HashSet<&str>>(),
+            modules.iter().copied().collect::<HashSet<&str>>(),
+        );
     }
 
     #[test]
@@ -807,7 +823,7 @@ mod tests {
         computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Animals.Bat", "Care.Soap"],
         );
@@ -829,7 +845,7 @@ mod tests {
         computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Animals.Bat", "Care.Soap"],
         );
@@ -840,7 +856,8 @@ mod tests {
 
         // Then it is forgotten
         if computation
-            .with_project(&project_root, |_project| Ok(()))
+            .project_cursor()
+            .get_project(&project_root)
             .is_ok()
         {
             panic!("Did not expect project to be found");
@@ -859,7 +876,7 @@ mod tests {
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         computation.watch_project(project_root.clone());
         computation.advance();
-        assert_modules(&computation, &project_root, &["Animals.Bat"]);
+        assert_modules(&mut computation, &project_root, &["Animals.Bat"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
         // When we add an another module file...
@@ -875,7 +892,7 @@ mod tests {
 
         // Then the module file is picked up...
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Elements.Water", "Animals.Bat"],
         );
@@ -904,11 +921,11 @@ mod tests {
         computation.watch_project(project2_root.clone());
         computation.advance();
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Animals.Bat", "Care.Soap"],
         );
-        assert_modules(&computation, &project2_root, &["Care.Shampoo"]);
+        assert_modules(&mut computation, &project2_root, &["Care.Shampoo"]);
     }
 
     #[test]
@@ -923,7 +940,7 @@ mod tests {
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         computation.watch_project(project_root.clone());
         computation.advance();
-        assert_modules(&computation, &project_root, &["Animals.Bat"]);
+        assert_modules(&mut computation, &project_root, &["Animals.Bat"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
         // When we send an event for the file...
@@ -952,7 +969,7 @@ mod tests {
         computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Animals.Bat", "Care.Soap"],
         );
@@ -970,7 +987,7 @@ mod tests {
         computation.advance();
 
         // Then the module is removed from the project...
-        assert_modules(&computation, &project_root, &["Care.Soap"]);
+        assert_modules(&mut computation, &project_root, &["Care.Soap"]);
         // And no additional parsing has taken place...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
@@ -992,7 +1009,7 @@ mod tests {
         computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Json.Decode", "Animals.Bat"],
         );
@@ -1013,7 +1030,7 @@ mod tests {
         // Then the elm.json is reparsed...
         assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 2);
         // And the project's only contains dependency modules...
-        assert_modules(&computation, &project_root, &["Json.Decode"]);
+        assert_modules(&mut computation, &project_root, &["Json.Decode"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
     }
 
@@ -1029,7 +1046,7 @@ mod tests {
             DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         computation.watch_project(project_root.clone());
         computation.advance();
-        assert_modules(&computation, &project_root, &["Json.Decode"]);
+        assert_modules(&mut computation, &project_root, &["Json.Decode"]);
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 1);
 
         // When we change the i.dat file to list other dependencies...
@@ -1046,7 +1063,7 @@ mod tests {
         // Then the i.dat file is reparsed...
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 2);
         // And the project's dependency modules have chanaged
-        assert_modules(&computation, &project_root, &["Time"]);
+        assert_modules(&mut computation, &project_root, &["Time"]);
     }
 
     #[test]
@@ -1068,8 +1085,8 @@ mod tests {
         computation.advance();
 
         // Then both projects list the modules in the shared source directory...
-        assert_modules(&computation, &project_root, &["Care.Soap"]);
-        assert_modules(&computation, &project2_root, &["Care.Soap"]);
+        assert_modules(&mut computation, &project_root, &["Care.Soap"]);
+        assert_modules(&mut computation, &project2_root, &["Care.Soap"]);
 
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
@@ -1099,7 +1116,7 @@ mod tests {
 
         // Then the resulting project contains the expected modules...
         assert_modules(
-            &computation,
+            &mut computation,
             &project_root,
             &["Animals.Bat", "Care.Soap"],
         );
