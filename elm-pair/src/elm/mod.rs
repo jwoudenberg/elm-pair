@@ -10,7 +10,7 @@ use core::ops::Range;
 use ropey::{Rope, RopeSlice};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
 
 pub mod compiler;
@@ -97,7 +97,6 @@ pub struct Queries {
 
 pub struct BufferInfo {
     pub project_id: ProjectId,
-    pub path: PathBuf,
 }
 
 pub struct Refactor {
@@ -303,12 +302,12 @@ impl RefactorEngine {
     pub fn init_buffer(
         &mut self,
         buffer: Buffer,
-        path: PathBuf,
+        path: &Path,
     ) -> Result<(), Error> {
-        let project_root = project_root_for_path(&path)?.to_owned();
+        let project_root = project_root_for_path(path)?.to_owned();
         let project_id = self.dataflow_computation.watch_project(project_root);
         self.dataflow_computation.advance();
-        let buffer_info = BufferInfo { path, project_id };
+        let buffer_info = BufferInfo { project_id };
         self.buffers.insert(buffer, buffer_info);
         Ok(())
     }
@@ -2127,7 +2126,7 @@ mod simulations {
         let mut refactor_engine = RefactorEngine::new(compiler)?;
         refactor_engine.init_buffer(
             buffer,
-            path.canonicalize().map_err(|err| {
+            &path.canonicalize().map_err(|err| {
                 log::mk_err!("failed to canonicalize path: {:?}", err)
             })?,
         )?;

@@ -131,7 +131,7 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 } = self;
                 // TODO: We error here if elm-stuff/i.dat is missing. Figure out
                 // something that won't bring the application down in this case.
-                refactor_engine.init_buffer(buffer, path)?;
+                refactor_engine.init_buffer(buffer, &path)?;
             }
             Msg::CompilationSucceeded(snapshot) => {
                 // Replace 'last compiling version' with a newer revision only.
