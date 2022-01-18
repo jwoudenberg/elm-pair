@@ -179,7 +179,7 @@ impl ElmIO for RealElmIO {
 }
 
 impl DataflowComputation {
-    pub(crate) fn new(
+    pub fn new(
         compiler: Compiler,
     ) -> Result<DataflowComputation, Error> {
         Self::new_configurable(RealElmIO { compiler })
@@ -236,15 +236,15 @@ impl DataflowComputation {
         Ok(computation)
     }
 
-    pub(crate) fn watch_project(&mut self, project_root: PathBuf) {
+    pub fn watch_project(&mut self, project_root: PathBuf) {
         self.project_roots_input.insert(project_root)
     }
 
-    pub(crate) fn _unwatch_project(&mut self, project_root: PathBuf) {
+    pub fn _unwatch_project(&mut self, project_root: PathBuf) {
         self.project_roots_input.remove(project_root)
     }
 
-    pub(crate) fn advance(&mut self) {
+    pub fn advance(&mut self) {
         self.current_time += 1;
         let DataflowComputation {
             worker,
@@ -300,7 +300,7 @@ impl DataflowComputation {
         });
     }
 
-    pub(crate) fn project_cursor(
+    pub fn project_cursor(
         &mut self,
     ) -> ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
         let (cursor, storage) = self.modules_by_project.cursor();
@@ -309,13 +309,13 @@ impl DataflowComputation {
 }
 
 #[allow(clippy::type_complexity)]
-pub(crate) struct ProjectCursor<T: TraceReader> {
+pub struct ProjectCursor<T: TraceReader> {
     cursor: T::Cursor,
     storage: <T::Cursor as Cursor<T::Key, T::Val, T::Time, T::R>>::Storage,
 }
 
 impl ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
-    pub(crate) fn get_project(
+    pub fn get_project(
         &mut self,
         root: &Path,
     ) -> Result<ProjectInfo, Error> {
@@ -344,7 +344,7 @@ impl ProjectCursor<DataflowTrace<PathBuf, (String, ElmModule)>> {
     }
 }
 
-pub(crate) type ProjectInfo<'a> = HashMap<&'a str, &'a ElmModule>;
+pub type ProjectInfo<'a> = HashMap<&'a str, &'a ElmModule>;
 
 #[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ElmModule {

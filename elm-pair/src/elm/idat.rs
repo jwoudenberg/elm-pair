@@ -5,7 +5,7 @@ use crate::support::log::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Read;
 
-pub(crate) fn parse<R: Read>(
+pub fn parse<R: Read>(
     reader: R,
 ) -> Result<DataMap<CanonicalModuleName, DependencyInterface>, Error> {
     let mut parser = IdatParser { reader };

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
 
-pub(crate) enum Msg {
+pub enum Msg {
     SourceCodeModified,
     ThreadFailed(Error),
     EditorConnected(u32, Box<dyn EditorDriver>),
@@ -24,7 +24,7 @@ impl From<Error> for Msg {
     }
 }
 
-pub(crate) fn run(
+pub fn run(
     latest_code: &MVar<SourceFileSnapshot>,
     analysis_receiver: Receiver<Msg>,
     compiler: Compiler,
@@ -171,23 +171,23 @@ impl<'a> AnalysisLoop<'a> {
 
 // An API for sending commands to an editor. This is defined as a trait to
 // support different kinds of editors.
-pub(crate) trait EditorDriver: 'static + Send {
+pub trait EditorDriver: 'static + Send {
     fn apply_edits(&self, edits: Vec<Edit>) -> bool;
 }
 
-pub(crate) struct SourceFileDiff {
+pub struct SourceFileDiff {
     pub old: SourceFileSnapshot,
     pub new: SourceFileSnapshot,
 }
 
-pub(crate) struct TreeChanges<'a> {
+pub struct TreeChanges<'a> {
     pub old_removed: Vec<Node<'a>>,
     pub old_parent: Node<'a>,
     pub new_added: Vec<Node<'a>>,
     pub new_parent: Node<'a>,
 }
 
-pub(crate) fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
+pub fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let old_code = &diff.old;
     let new_code = &diff.new;
     let mut old = diff.old.tree.walk();

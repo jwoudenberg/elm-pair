@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 
 // This iterator finds as many files as it can and so logs rather than fails
 // when it encounters an error.
-pub(crate) struct DirWalker {
+pub struct DirWalker {
     directories: Vec<std::fs::ReadDir>,
 }
 
 impl DirWalker {
-    pub(crate) fn new(root: &Path) -> DirWalker {
+    pub fn new(root: &Path) -> DirWalker {
         let directories = match std::fs::read_dir(root) {
             Ok(read_dir) => vec![read_dir],
             Err(err) => {

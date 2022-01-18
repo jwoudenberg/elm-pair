@@ -3,7 +3,7 @@ use crate::support::log;
 use crate::support::log::Error;
 use std::path::Path;
 
-pub(crate) fn from_path(
+pub fn from_path(
     source_dir: &Path,
     path: &Path,
 ) -> Result<String, Error> {

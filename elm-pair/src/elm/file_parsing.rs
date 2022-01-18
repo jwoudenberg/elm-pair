@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::Path;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
-pub(crate) fn parse(
+pub fn parse(
     query_for_exports: &QueryForExports,
     path: &Path,
 ) -> Result<Option<ElmModule>, Error> {

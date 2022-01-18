@@ -5,13 +5,13 @@ use tree_sitter::Query;
 #[macro_export]
 macro_rules! query {
     ($name:ident, $test_mod_name:ident, $file:literal $(, $capture:ident )* $(,)? ) => {
-        pub(crate) struct $name {
+        pub struct $name {
             query: Query,
             $($capture: u32,)*
         }
 
         impl $name {
-            pub(crate) fn init(lang: Language) -> Result<$name, Error> {
+            pub fn init(lang: Language) -> Result<$name, Error> {
                 let query_file_contents = include_str!($file);
                 let separator = "=== test input below ===";
                 let query_str =
@@ -85,7 +85,7 @@ macro_rules! query {
 }
 pub use query;
 
-pub(crate) fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
+pub fn index_for_name(query: &Query, name: &str) -> Result<u32, Error> {
     query.capture_index_for_name(name).ok_or_else(|| {
         log::mk_err!(
             "failed to find index {} in tree-sitter query: {:?}",

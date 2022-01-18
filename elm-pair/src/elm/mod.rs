@@ -83,13 +83,13 @@ const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
     "Sub", "Tuple",
 ];
 
-pub(crate) struct RefactorEngine {
+pub struct RefactorEngine {
     buffers: HashMap<Buffer, BufferInfo>,
     dataflow_computation: DataflowComputation,
     queries: Queries,
 }
 
-pub(crate) struct Queries {
+pub struct Queries {
     query_for_imports: QueryForImports,
     query_for_unqualified_values: QueryForUnqualifiedValues,
     query_for_qualified_values: QueryForQualifiedValues,
@@ -100,7 +100,7 @@ pub struct BufferInfo {
     pub path: PathBuf,
 }
 
-pub(crate) struct Refactor {
+pub struct Refactor {
     replacements: Vec<(Range<usize>, String)>,
 }
 
@@ -140,7 +140,7 @@ impl Refactor {
 }
 
 impl RefactorEngine {
-    pub(crate) fn new(compiler: Compiler) -> Result<RefactorEngine, Error> {
+    pub fn new(compiler: Compiler) -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
         let engine = RefactorEngine {
             buffers: HashMap::new(),
@@ -161,7 +161,7 @@ impl RefactorEngine {
 
     // TODO: try to return an Iterator instead of a Vector.
     // TODO: Try remove Vector from TreeChanges type.
-    pub(crate) fn respond_to_change<'a>(
+    pub fn respond_to_change<'a>(
         &mut self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
@@ -300,7 +300,7 @@ impl RefactorEngine {
         Ok(refactor)
     }
 
-    pub(crate) fn init_buffer(
+    pub fn init_buffer(
         &mut self,
         buffer: Buffer,
         path: PathBuf,
@@ -2030,7 +2030,7 @@ enum ExposedConstructors<'a> {
     FromCustomType(&'a Vec<String>),
 }
 
-pub(crate) fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
+pub fn project_root_for_path(path: &Path) -> Result<&Path, Error> {
     let mut maybe_root = path;
     loop {
         if maybe_root.join("elm.json").exists() {

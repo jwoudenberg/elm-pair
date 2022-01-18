@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tree_sitter::InputEdit;
 
-pub(crate) struct Neovim<R, W> {
+pub struct Neovim<R, W> {
     editor_id: u32,
     read: R,
     write: Arc<Mutex<W>>,
@@ -253,7 +253,7 @@ where
         Ok(())
     }
 }
-pub(crate) struct NeovimEvent<R> {
+pub struct NeovimEvent<R> {
     editor_id: u32,
     read: R,
     paths_for_new_buffers: HashMap<Buffer, PathBuf>,
@@ -559,7 +559,7 @@ where
     Ok(buf as u32)
 }
 
-pub(crate) struct NeovimDriver<W> {
+pub struct NeovimDriver<W> {
     write: Arc<Mutex<W>>,
 }
 

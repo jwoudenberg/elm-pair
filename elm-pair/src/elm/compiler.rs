@@ -14,7 +14,7 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    pub(crate) fn new() -> Result<Compiler, Error> {
+    pub fn new() -> Result<Compiler, Error> {
         let elm_binary_path = NIX_ELM_BINARY_PATH
             .map(PathBuf::from)
             .and_then(valid_elm_binary)
@@ -31,7 +31,7 @@ impl Compiler {
         Ok(compiler)
     }
 
-    pub(crate) fn make(
+    pub fn make(
         &self,
         project_root: &Path,
         code: &ropey::Rope,

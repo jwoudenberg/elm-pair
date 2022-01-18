@@ -28,14 +28,14 @@ where
     }
 }
 
-pub(crate) struct Simulation {
-    pub(crate) start_bytes: Rope,
-    pub(crate) end_bytes: Rope,
-    pub(crate) _edits: Vec<Edit>,
+pub struct Simulation {
+    pub start_bytes: Rope,
+    pub end_bytes: Rope,
+    pub _edits: Vec<Edit>,
 }
 
 impl Simulation {
-    pub(crate) fn from_file(path: &Path) -> Result<Simulation, Error> {
+    pub fn from_file(path: &Path) -> Result<Simulation, Error> {
         let file =
             std::fs::File::open(path).map_err(Error::FromFileOpenFailed)?;
         let mut lines = std::io::BufReader::new(file)
@@ -160,7 +160,7 @@ impl SimulationBuilder {
 }
 
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     FromFileFailedNoStartSimulationFound,
     CannotParseSimulationLine(String),
     CannotParseLineNumber(String),

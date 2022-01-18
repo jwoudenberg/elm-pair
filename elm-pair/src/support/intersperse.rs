@@ -1,6 +1,6 @@
 // Tust nightlies already contain a `intersperse` iterator. Once that lands
 // in stable we should switch over.
-pub(crate) trait Intersperse: Iterator {
+pub trait Intersperse: Iterator {
     fn my_intersperse(self, separator: Self::Item) -> IntersperseState<Self>
     where
         Self::Item: Clone,
@@ -17,7 +17,7 @@ impl<I: Iterator> Intersperse for I {
     }
 }
 
-pub(crate) struct IntersperseState<I: Iterator> {
+pub struct IntersperseState<I: Iterator> {
     iterator: std::iter::Peekable<I>,
     separator: I::Item,
     separator_is_next: bool,

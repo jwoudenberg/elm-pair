@@ -19,7 +19,7 @@ struct EditorListenerLoop {
     analysis_sender: Sender<analysis_thread::Msg>,
 }
 
-pub(crate) fn run(
+pub fn run(
     listener: UnixListener,
     active_buffer: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
@@ -43,7 +43,7 @@ pub(crate) fn run(
     Ok(())
 }
 
-pub(crate) fn spawn_editor_thread(
+pub fn spawn_editor_thread(
     active_buffer: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
@@ -159,7 +159,7 @@ impl EditorListenerLoop {
 }
 
 // An API for communicatating with an editor.
-pub(crate) trait Editor {
+pub trait Editor {
     type Driver: analysis_thread::EditorDriver;
     type Event: EditorEvent;
 
@@ -178,14 +178,14 @@ pub(crate) trait Editor {
 // pass the existing source code for this file to `apply_to_buffer`. This allows
 // the editor integration to copy new source code directly into the existing
 // code.
-pub(crate) trait EditorEvent {
+pub trait EditorEvent {
     fn apply_to_buffer(
         &mut self,
         code: Option<SourceFileSnapshot>,
     ) -> Result<BufferChange, Error>;
 }
 
-pub(crate) enum BufferChange {
+pub enum BufferChange {
     NoChanges,
     OpenedNewBuffer {
         buffer: Buffer,

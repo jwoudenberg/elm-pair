@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 
-pub(crate) enum Msg {
+pub enum Msg {
     CompilationRequested(SourceFileSnapshot),
     OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
 }
 
-pub(crate) fn run(
+pub fn run(
     compilation_receiver: Receiver<Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
     compiler: Compiler,

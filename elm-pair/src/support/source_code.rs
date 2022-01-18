@@ -8,35 +8,35 @@ use tree_sitter::{InputEdit, Node, Tree};
 // editor. First 32 bits uniquely identify the connected editor, while the last
 // 32 bits identify one of the buffers openen in that particular editor.
 #[derive(Copy, Clone, Debug, Hash, PartialEq)]
-pub(crate) struct Buffer {
-    pub(crate) editor_id: u32,
-    pub(crate) buffer_id: u32,
+pub struct Buffer {
+    pub editor_id: u32,
+    pub buffer_id: u32,
 }
 
 impl Eq for Buffer {}
 
 #[derive(Clone)]
-pub(crate) struct SourceFileSnapshot {
+pub struct SourceFileSnapshot {
     // A unique index identifying a source file open in an editor. We're not
     // using the file path for a couple of reasons:
     // - It's possible for the same file to be open in multiple editors with
     //   different unsaved changes each.
     // - A file path is stringy, so more expensive to copy.
-    pub(crate) buffer: Buffer,
+    pub buffer: Buffer,
     // The full contents of the file, stored in a Rope datastructure. This
     // datastructure offers cheap modifications in random locations, and cheap
     // cloning (both of which we'll do a lot).
-    pub(crate) bytes: Rope,
+    pub bytes: Rope,
     // The tree-sitter concrete syntax tree representing the code in `bytes`.
     // This tree by itself is not enough to recover the source code, which is
     // why we also keep the original source code in `bytes`.
-    pub(crate) tree: Tree,
+    pub tree: Tree,
     // A number that gets incremented for each change to this snapshot.
-    pub(crate) revision: usize,
+    pub revision: usize,
 }
 
 impl SourceFileSnapshot {
-    pub(crate) fn new(
+    pub fn new(
         buffer: Buffer,
         bytes: Rope,
     ) -> Result<SourceFileSnapshot, Error> {
@@ -49,7 +49,7 @@ impl SourceFileSnapshot {
         Ok(snapshot)
     }
 
-    pub(crate) fn apply_edit(&mut self, edit: InputEdit) -> Result<(), Error> {
+    pub fn apply_edit(&mut self, edit: InputEdit) -> Result<(), Error> {
         // Increment the revision by 2. Given a first revision of 0, this will
         // ensure we only get even revision numbers by default. Refactor code
         // will manually set odd revisions, to help keep revisions from the
@@ -61,7 +61,7 @@ impl SourceFileSnapshot {
         Ok(())
     }
 
-    pub(crate) fn slice(&self, range: &Range<usize>) -> RopeSlice {
+    pub fn slice(&self, range: &Range<usize>) -> RopeSlice {
         let start = self.bytes.byte_to_char(range.start);
         let end = self.bytes.byte_to_char(range.end);
         self.bytes.slice(start..end)
@@ -90,7 +90,7 @@ fn parse_rope(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
 }
 
 // TODO: reuse parser.
-pub(crate) fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Tree, Error> {
+pub fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
@@ -115,7 +115,7 @@ impl<'a> tree_sitter::TextProvider<'a> for &'a SourceFileSnapshot {
     }
 }
 
-pub(crate) struct Chunks<'a> {
+pub struct Chunks<'a> {
     chunks: ropey::iter::Chunks<'a>,
 }
 
@@ -129,18 +129,18 @@ impl<'a> Iterator for Chunks<'a> {
 
 // A change made by the user reported by the editor.
 #[derive(Debug)]
-pub(crate) struct Edit {
+pub struct Edit {
     // The buffer that was changed.
-    pub(crate) buffer: Buffer,
+    pub buffer: Buffer,
     // A tree-sitter InputEdit value, describing what part of the file was changed.
-    pub(crate) input_edit: InputEdit,
+    pub input_edit: InputEdit,
     // Bytes representing the new contents of the file at the location described
     // by `input_edit`.
-    pub(crate) new_bytes: String,
+    pub new_bytes: String,
 }
 
 impl Edit {
-    pub(crate) fn new(
+    pub fn new(
         buffer: Buffer,
         bytes: &mut Rope,
         range: &Range<usize>,
@@ -178,7 +178,7 @@ fn apply_edit_helper(
     bytes.insert(start_char, new_bytes);
 }
 
-pub(crate) fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
+pub fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
     let row = code.byte_to_line(byte);
     tree_sitter::Point {
         row,
