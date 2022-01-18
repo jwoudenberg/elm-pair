@@ -340,10 +340,6 @@ struct ElmJson {
     source_directories: Vec<PathBuf>,
 }
 
-// TODO: Clean up, removing clone's
-// TODO: Introduce ProjectId type to replace `project_root` in most places.
-// TODO: Introduce FileId type to replace PathBuf in most places.
-// TODO: Ensure new paths are canonicalized before they're used.
 fn dataflow_graph<W, G, D>(
     elm_io: D,
     scope: &mut G,
