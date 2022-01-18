@@ -314,16 +314,6 @@ impl RefactorEngine {
     }
 }
 
-fn module_exports<'a>(
-    project: &'a ProjectInfo,
-    module: RopeSlice,
-) -> Result<&'a Vec<ExportedName>, Error> {
-    match project.get(&module.to_string().as_str()) {
-        None => Err(log::mk_err!("did not find module")),
-        Some(ElmModule { exports }) => Ok(exports),
-    }
-}
-
 fn _is_elm_file(path: &Path) -> bool {
     path.extension() == Some(std::ffi::OsStr::new("elm"))
 }
@@ -1219,7 +1209,7 @@ fn qualify_value(
                 if remove_expose_all_if_necessary {
                     let mut exposed_names: HashMap<Name, &ExportedName> =
                         HashMap::new();
-                    module_exports(project_info, import.unaliased_name())
+                    get_elm_module(project_info, &import.unaliased_name())
                         .map_err(|err| {
                             log::mk_err!(
                                 "failed to read exports of {}: {:?}",
@@ -1227,6 +1217,7 @@ fn qualify_value(
                                 err
                             )
                         })?
+                        .exports
                         .iter()
                         .for_each(|export| match export {
                             ExportedName::Value { name } => {
@@ -1327,11 +1318,11 @@ fn qualify_value(
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let exports = match module_exports(
+                        let exports = match get_elm_module(
                             project_info,
-                            import.unaliased_name(),
+                            &import.unaliased_name(),
                         ) {
-                            Ok(exports_) => exports_,
+                            Ok(module) => &module.exports,
                             Err(err) => {
                                 log::error!(
                                     "failed to read exports of {}: {:?}",
@@ -1837,10 +1828,11 @@ impl Import<'_> {
         project_info: &'a ProjectInfo,
         type_: &ExposedType,
     ) -> Result<ExposedConstructors, Error> {
-        for export in module_exports(
+        let module = get_elm_module(
             project_info,
-            self.code.slice(&self.name_node.byte_range()),
-        )? {
+            &self.code.slice(&self.name_node.byte_range()),
+        )?;
+        for export in module.exports.iter() {
             match export {
                 ExportedName::Value { .. } => {}
                 ExportedName::RecordTypeAlias { name } => {
