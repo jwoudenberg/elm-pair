@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::io::BufReader;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
 use timely::dataflow::operators::Probe;
 use timely::progress::frontier::AntichainRef;
@@ -24,9 +23,7 @@ pub struct DataflowComputation {
     // The dataflow worker contains state managed by the differential-dataflow
     // library. Differential-dataflow supports having multiple workers share
     // work, but we don't make use of that.
-    worker: timely::worker::Worker<
-        timely::communication::allocator::thread::Thread,
-    >,
+    worker: timely::worker::Worker<timely::communication::allocator::thread::Thread>,
     // These probes let us check whether the dataflow computation has processed
     // all changes made to the inputs below, i.e. whether the outputs will show
     // up-to-date information.
@@ -55,41 +52,29 @@ type Diff = isize;
 
 type Allocator = timely::communication::allocator::Thread;
 
-type DataflowInput<A> =
-    differential_dataflow::input::InputSession<Timestamp, A, Diff>;
+type DataflowInput<A> = differential_dataflow::input::InputSession<Timestamp, A, Diff>;
 
 type DataflowCollection<'a, A> =
     differential_dataflow::collection::Collection<DataflowScope<'a>, A, Diff>;
 
-type DataflowScope<'a> = timely::dataflow::scopes::child::Child<
-    'a,
-    timely::worker::Worker<Allocator>,
-    Timestamp,
->;
+type DataflowScope<'a> =
+    timely::dataflow::scopes::child::Child<'a, timely::worker::Worker<Allocator>, Timestamp>;
 
 type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
-type DataflowTrace<K, V> =
-    differential_dataflow::operators::arrange::TraceAgent<
-        differential_dataflow::trace::implementations::spine_fueled::Spine<
-            K,
-            V,
-            Timestamp,
-            Diff,
-            std::rc::Rc<
-                differential_dataflow::trace::implementations::ord::OrdValBatch<
-                    K,
-                    V,
-                    Timestamp,
-                    Diff,
-                >,
-            >,
+type DataflowTrace<K, V> = differential_dataflow::operators::arrange::TraceAgent<
+    differential_dataflow::trace::implementations::spine_fueled::Spine<
+        K,
+        V,
+        Timestamp,
+        Diff,
+        std::rc::Rc<
+            differential_dataflow::trace::implementations::ord::OrdValBatch<K, V, Timestamp, Diff>,
         >,
-    >;
+    >,
+>;
 
-#[derive(
-    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
+#[derive(Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProjectId(u8); // 256 Elm Project should be enough for everyone.
 
 // This trait exists to allow dependency injection of side-effecty functions
@@ -105,10 +90,7 @@ trait ElmIO: Clone {
         query_for_exports: &QueryForExports,
         path: &Path,
     ) -> Result<Option<ElmModule>, Error>;
-    fn parse_elm_stuff_idat(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<(String, ElmModule)>, Error>;
+    fn parse_elm_stuff_idat(&self, path: &Path) -> Result<Vec<(String, ElmModule)>, Error>;
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
@@ -122,14 +104,11 @@ impl ElmIO for RealElmIO {
     type FilesInDir = DirWalker;
 
     fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error> {
-        let file = std::fs::File::open(path).map_err(|err| {
-            log::mk_err!("error while reading elm.json: {:?}", err)
-        })?;
+        let file = std::fs::File::open(path)
+            .map_err(|err| log::mk_err!("error while reading elm.json: {:?}", err))?;
         let reader = BufReader::new(file);
-        let mut elm_json: ElmJson =
-            serde_json::from_reader(reader).map_err(|err| {
-                log::mk_err!("error while parsing elm.json: {:?}", err)
-            })?;
+        let mut elm_json: ElmJson = serde_json::from_reader(reader)
+            .map_err(|err| log::mk_err!("error while parsing elm.json: {:?}", err))?;
         let project_root = project_root_from_elm_json_path(path)?;
         for dir in elm_json.source_directories.as_mut_slice() {
             let abs_path = project_root.join(&dir);
@@ -149,20 +128,13 @@ impl ElmIO for RealElmIO {
         crate::elm::file_parsing::parse(query_for_exports, path)
     }
 
-    fn parse_elm_stuff_idat(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<(String, ElmModule)>, Error> {
+    fn parse_elm_stuff_idat(&self, path: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
         let file = std::fs::File::open(path).or_else(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 let project_root = project_root_from_idat_path(path)?;
                 create_elm_stuff(&self.compiler, project_root)?;
-                std::fs::File::open(path).map_err(|err| {
-                    log::mk_err!(
-                        "error opening elm-stuff/i.dat file: {:?}",
-                        err
-                    )
-                })
+                std::fs::File::open(path)
+                    .map_err(|err| log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err))
             } else {
                 Err(log::mk_err!(
                     "error opening elm-stuff/i.dat file: {:?}",
@@ -200,22 +172,15 @@ impl DataflowComputation {
         let query_for_exports = QueryForExports::init(language)?;
 
         let alloc = timely::communication::allocator::thread::Thread::new();
-        let mut worker =
-            timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
+        let mut worker = timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
-        let mut project_roots_input =
-            differential_dataflow::input::InputSession::new();
-        let mut filepath_events_input =
-            differential_dataflow::input::InputSession::new();
+        let mut project_roots_input = differential_dataflow::input::InputSession::new();
+        let mut filepath_events_input = differential_dataflow::input::InputSession::new();
 
         let (file_event_sender, file_event_receiver) = channel();
-        let file_watcher: D::FileWatcher = notify::Watcher::new(
-            file_event_sender,
-            core::time::Duration::from_millis(100),
-        )
-        .map_err(|err| {
-            log::mk_err!("failed creating file watcher: {:?}", err)
-        })?;
+        let file_watcher: D::FileWatcher =
+            notify::Watcher::new(file_event_sender, core::time::Duration::from_millis(100))
+                .map_err(|err| log::mk_err!("failed creating file watcher: {:?}", err))?;
 
         let (modules_by_project, probes) = worker.dataflow(|scope| {
             let project_roots = project_roots_input.to_collection(scope);
@@ -257,13 +222,15 @@ impl DataflowComputation {
 
     pub fn _unwatch_project(&mut self, project_id: ProjectId) {
         let opt_project_root =
-            self.project_ids.iter().find_map(|(root, id)| {
-                if *id == project_id {
-                    Some(root)
-                } else {
-                    None
-                }
-            });
+            self.project_ids.iter().find_map(
+                |(root, id)| {
+                    if *id == project_id {
+                        Some(root)
+                    } else {
+                        None
+                    }
+                },
+            );
         if let Some(project_root) = opt_project_root {
             self.project_roots_input
                 .remove((project_id, project_root.clone()))
@@ -317,14 +284,10 @@ impl DataflowComputation {
         filepath_events_input.advance_to(*current_time);
         filepath_events_input.flush();
 
-        modules_by_project
-            .set_logical_compaction(AntichainRef::new(&[*current_time]));
-        modules_by_project
-            .set_physical_compaction(AntichainRef::new(&[*current_time]));
+        modules_by_project.set_logical_compaction(AntichainRef::new(&[*current_time]));
+        modules_by_project.set_physical_compaction(AntichainRef::new(&[*current_time]));
 
-        worker.step_while(|| {
-            probes.iter().any(|probe| probe.less_than(current_time))
-        });
+        worker.step_while(|| probes.iter().any(|probe| probe.less_than(current_time)));
     }
 
     pub fn project_cursor(
@@ -342,17 +305,12 @@ pub struct ProjectCursor<T: TraceReader> {
 }
 
 impl ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>> {
-    pub fn get_project(
-        &mut self,
-        project: &ProjectId,
-    ) -> Result<ProjectInfo, Error> {
+    pub fn get_project(&mut self, project: &ProjectId) -> Result<ProjectInfo, Error> {
         let mut modules = HashMap::new();
         self.cursor.rewind_keys(&self.storage);
         self.cursor.rewind_vals(&self.storage);
         self.cursor.seek_key(&self.storage, project);
-        while let Some((module_name, module)) =
-            self.cursor.get_val(&self.storage)
-        {
+        while let Some((module_name, module)) = self.cursor.get_val(&self.storage) {
             let mut times = 0;
             self.cursor.map_times(&self.storage, |_, r| times += r);
             if times > 0 {
@@ -361,10 +319,7 @@ impl ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>> {
             self.cursor.step_val(&self.storage);
         }
         if modules.is_empty() {
-            return Err(log::mk_err!(
-                "did not find project with id {:?}",
-                project
-            ));
+            return Err(log::mk_err!("did not find project with id {:?}", project));
         } else {
             Ok(modules)
         }
@@ -432,10 +387,8 @@ where
 
     let project_roots = project_roots.distinct();
 
-    let elm_json_files =
-        project_roots.map(move |(project_id, project_root)| {
-            (elm_json_path(&project_root), project_id)
-        });
+    let elm_json_files = project_roots
+        .map(move |(project_id, project_root)| (elm_json_path(&project_root), project_id));
 
     let elm_json_file_events = elm_json_files
         .semijoin(&filepath_events)
@@ -475,17 +428,18 @@ where
         })
         .concat(&filepath_events.filter(|path| is_elm_file(path)));
 
-    let parsed_modules = module_events.map(|path| (path, ())).reduce(
-        move |path, _input, output| match elm_io3
-            .parse_elm_module(&query_for_exports, path)
-        {
-            Ok(Some(module)) => output.push((module, 1)),
-            Ok(None) => {}
-            Err(err) => {
-                log::error!("Failed parsing module: {:?}", err);
-            }
-        },
-    );
+    let parsed_modules =
+        module_events
+            .map(|path| (path, ()))
+            .reduce(move |path, _input, output| {
+                match elm_io3.parse_elm_module(&query_for_exports, path) {
+                    Ok(Some(module)) => output.push((module, 1)),
+                    Ok(None) => {}
+                    Err(err) => {
+                        log::error!("Failed parsing module: {:?}", err);
+                    }
+                }
+            });
 
     let module_paths = module_events.distinct();
 
@@ -507,10 +461,7 @@ where
             &parsed_modules,
             |file_path, (project_id, src_dir), parsed_module| {
                 match crate::elm::module_name::from_path(src_dir, file_path) {
-                    Ok(module_name) => Some((
-                        *project_id,
-                        (module_name, parsed_module.clone()),
-                    )),
+                    Ok(module_name) => Some((*project_id, (module_name, parsed_module.clone()))),
                     Err(err) => {
                         log::error!("Failed deriving module name: {:?}", err);
                         None
@@ -522,8 +473,8 @@ where
 
     let paths_to_watch = source_directories_by_project
         .map(|(_, path)| path)
-        .concat(&project_roots.map(|(_, path)|  elm_json_path(&path)))
-        .concat(&project_roots.map(|(_, path)|  idat_path(&path)))
+        .concat(&project_roots.map(|(_, path)| elm_json_path(&path)))
+        .concat(&project_roots.map(|(_, path)| idat_path(&path)))
         .distinct()
         .inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
             std::cmp::Ordering::Equal => {}
@@ -547,29 +498,24 @@ where
             }
         });
 
-    let idat_files = project_roots.map(|(project_id, project_root)| {
-        (idat_path(&project_root), project_id)
-    });
+    let idat_files =
+        project_roots.map(|(project_id, project_root)| (idat_path(&project_root), project_id));
 
-    let idat_file_events =
-        idat_files.semijoin(&filepath_events).concat(&idat_files);
+    let idat_file_events = idat_files.semijoin(&filepath_events).concat(&idat_files);
 
     let idat_modules = idat_file_events
         .map(|(idat_path, project)| (project, idat_path))
         .reduce(move |_project_id, input, output| {
             let idat_path = input[0].0;
             match elm_io4.parse_elm_stuff_idat(idat_path) {
-                Ok(modules) => {
-                    output.extend(modules.into_iter().map(|module| (module, 1)))
-                }
+                Ok(modules) => output.extend(modules.into_iter().map(|module| (module, 1))),
                 Err(err) => {
                     log::error!("could not read i.dat file: {:?}", err);
                 }
             }
         });
 
-    let modules_by_project =
-        project_modules.concat(&idat_modules).arrange_by_key();
+    let modules_by_project = project_modules.concat(&idat_modules).arrange_by_key();
 
     (
         modules_by_project.trace,
@@ -587,32 +533,22 @@ fn elm_json_path(project_root: &Path) -> PathBuf {
 
 fn project_root_from_elm_json_path(elm_json: &Path) -> Result<&Path, Error> {
     elm_json.parent().ok_or_else(|| {
-        log::mk_err!(
-            "couldn't navigate from elm.json file to project root directory"
-        )
+        log::mk_err!("couldn't navigate from elm.json file to project root directory")
     })
 }
 
 fn idat_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
+    project_root.join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
 }
 
 fn project_root_from_idat_path(idat: &Path) -> Result<&Path, Error> {
     idat.parent()
         .and_then(|p| p.parent())
         .and_then(|p| p.parent())
-        .ok_or_else(|| {
-            log::mk_err!(
-                "couldn't navigate from i.dat file to project root directory"
-            )
-        })
+        .ok_or_else(|| log::mk_err!("couldn't navigate from i.dat file to project root directory"))
 }
 
-fn create_elm_stuff(
-    compiler: &Compiler,
-    project_root: &Path,
-) -> Result<(), Error> {
+fn create_elm_stuff(compiler: &Compiler, project_root: &Path) -> Result<(), Error> {
     log::info!(
         "Running `elm make` to generate elm-stuff in project: {:?}",
         project_root
@@ -639,9 +575,7 @@ fn create_elm_stuff(
     }
 }
 
-fn elm_module_from_interface(
-    dep_i: idat::DependencyInterface,
-) -> Option<ElmModule> {
+fn elm_module_from_interface(dep_i: idat::DependencyInterface) -> Option<ElmModule> {
     if let idat::DependencyInterface::Public(interface) = dep_i {
         // TODO: add binops
         let values = interface.values.into_iter().map(elm_export_from_value);
@@ -660,9 +594,7 @@ fn elm_export_from_value(
     ExportedName::Value { name }
 }
 
-fn elm_export_from_union(
-    (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ExportedName {
+fn elm_export_from_union((idat::Name(name), union): (idat::Name, idat::Union)) -> ExportedName {
     let constructor_names = |canonical_union: idat::CanonicalUnion| {
         let iter = canonical_union
             .alts
@@ -671,9 +603,7 @@ fn elm_export_from_union(
         Vec::from_iter(iter)
     };
     let constructors = match union {
-        idat::Union::Open(canonical_union) => {
-            constructor_names(canonical_union)
-        }
+        idat::Union::Open(canonical_union) => constructor_names(canonical_union),
         // We're reading this information for use by other modules.
         // These external modules can't see private constructors,
         // so we don't need to return them here.
@@ -683,9 +613,7 @@ fn elm_export_from_union(
     ExportedName::Type { name, constructors }
 }
 
-fn elm_export_from_alias(
-    (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ExportedName {
+fn elm_export_from_alias((idat::Name(name), _): (idat::Name, idat::Alias)) -> ExportedName {
     ExportedName::Type {
         name,
         constructors: Vec::new(),
@@ -696,6 +624,7 @@ fn elm_export_from_alias(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use std::rc::Rc;
     use std::sync::Mutex;
 
     #[derive(Clone)]
@@ -719,12 +648,8 @@ mod tests {
             modules: Vec<(PathBuf, ElmModule)>,
         ) -> FakeElmIO {
             FakeElmIO {
-                projects: Rc::new(Mutex::new(HashMap::from_iter(
-                    projects.into_iter(),
-                ))),
-                modules: Rc::new(Mutex::new(HashMap::from_iter(
-                    modules.into_iter(),
-                ))),
+                projects: Rc::new(Mutex::new(HashMap::from_iter(projects.into_iter()))),
+                modules: Rc::new(Mutex::new(HashMap::from_iter(modules.into_iter()))),
                 elm_jsons_parsed: Rc::new(Mutex::new(0)),
                 elm_modules_parsed: Rc::new(Mutex::new(0)),
                 elm_idats_parsed: Rc::new(Mutex::new(0)),
@@ -756,25 +681,20 @@ mod tests {
             _query_for_exports: &QueryForExports,
             path: &Path,
         ) -> Result<Option<ElmModule>, Error> {
-            let mut elm_modules_parsed =
-                self.elm_modules_parsed.lock().unwrap();
-            let elm_module =
-                self.modules.lock().unwrap().get(path).map(ElmModule::clone);
+            let mut elm_modules_parsed = self.elm_modules_parsed.lock().unwrap();
+            let elm_module = self.modules.lock().unwrap().get(path).map(ElmModule::clone);
             if elm_module.is_some() {
                 *elm_modules_parsed += 1;
             }
             Ok(elm_module)
         }
 
-        fn parse_elm_stuff_idat(
-            &self,
-            path: &Path,
-        ) -> Result<Vec<(String, ElmModule)>, Error> {
+        fn parse_elm_stuff_idat(&self, path: &Path) -> Result<Vec<(String, ElmModule)>, Error> {
             let projects = self.projects.lock().unwrap();
             let project_root = project_root_from_idat_path(path)?;
-            let project = projects.get(project_root).ok_or_else(|| {
-                log::mk_err!("did not find project {:?}", project_root)
-            })?;
+            let project = projects
+                .get(project_root)
+                .ok_or_else(|| log::mk_err!("did not find project {:?}", project_root))?;
             let mut elm_idats_parsed = self.elm_idats_parsed.lock().unwrap();
             *elm_idats_parsed += 1;
             let dependencies = project.dependencies.clone();
@@ -801,10 +721,7 @@ mod tests {
             root.to_owned(),
             FakeElmProject {
                 elm_json: ElmJson {
-                    source_directories: src_dirs
-                        .into_iter()
-                        .map(PathBuf::from)
-                        .collect(),
+                    source_directories: src_dirs.into_iter().map(PathBuf::from).collect(),
                 },
                 dependencies: dep_mods
                     .into_iter()
@@ -857,15 +774,10 @@ mod tests {
                 mk_module("/project/src/Care/Soap.elm"),
             ],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io).unwrap();
         let project_id = computation.watch_project(project_root);
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
-        );
+        assert_modules(&mut computation, &project_id, &["Animals.Bat", "Care.Soap"]);
     }
 
     #[test]
@@ -879,15 +791,10 @@ mod tests {
                 mk_module("/project/src/Care/Soap.elm"),
             ],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io).unwrap();
         let project_id = computation.watch_project(project_root);
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
-        );
+        assert_modules(&mut computation, &project_id, &["Animals.Bat", "Care.Soap"]);
 
         // When we unwatch it
         computation._unwatch_project(project_id);
@@ -911,8 +818,7 @@ mod tests {
             vec![mk_project(&project_root, vec!["/project/src"], vec![])],
             vec![mk_module("/project/src/Animals/Bat.elm")],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         let project_id = computation.watch_project(project_root);
         computation.advance();
         assert_modules(&mut computation, &project_id, &["Animals.Bat"]);
@@ -954,16 +860,11 @@ mod tests {
                 mk_module("/project2/src/Care/Shampoo.elm"),
             ],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io).unwrap();
         let project_id = computation.watch_project(project_root);
         let project2_id = computation.watch_project(project2_root);
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
-        );
+        assert_modules(&mut computation, &project_id, &["Animals.Bat", "Care.Soap"]);
         assert_modules(&mut computation, &project2_id, &["Care.Shampoo"]);
     }
 
@@ -975,8 +876,7 @@ mod tests {
             vec![mk_project(&project_root, vec!["/project/src"], vec![])],
             vec![mk_module("/project/src/Animals/Bat.elm")],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         let project_id = computation.watch_project(project_root);
         computation.advance();
         assert_modules(&mut computation, &project_id, &["Animals.Bat"]);
@@ -1003,15 +903,10 @@ mod tests {
                 mk_module("/project/src/Care/Soap.elm"),
             ],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         let project_id = computation.watch_project(project_root);
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
-        );
+        assert_modules(&mut computation, &project_id, &["Animals.Bat", "Care.Soap"]);
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
 
         // When we remove a the file...
@@ -1043,8 +938,7 @@ mod tests {
             )],
             vec![mk_module("/project/src/Animals/Bat.elm")],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         let project_id = computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(
@@ -1056,11 +950,11 @@ mod tests {
         assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 1);
 
         // When we change the elm.json file and remove its source directories...
-        elm_io.projects.lock().unwrap().extend(vec![mk_project(
-            &project_root,
-            vec![],
-            vec![],
-        )]);
+        elm_io
+            .projects
+            .lock()
+            .unwrap()
+            .extend(vec![mk_project(&project_root, vec![], vec![])]);
         computation
             .filepath_events_input
             .insert(PathBuf::from("/project/elm.json"));
@@ -1081,8 +975,7 @@ mod tests {
             vec![mk_project(&project_root, vec![], vec!["Json.Decode"])],
             vec![],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         let project_id = computation.watch_project(project_root.clone());
         computation.advance();
         assert_modules(&mut computation, &project_id, &["Json.Decode"]);
@@ -1117,8 +1010,7 @@ mod tests {
             ],
             vec![mk_module("/shared/src/Care/Soap.elm")],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
         let project_id = computation.watch_project(project_root);
         let project2_id = computation.watch_project(project2_root);
         computation.advance();
@@ -1146,19 +1038,14 @@ mod tests {
                 mk_module("/project/src/Care/Soap.elm"),
             ],
         );
-        let mut computation =
-            DataflowComputation::new_configurable(elm_io.clone()).unwrap();
+        let mut computation = DataflowComputation::new_configurable(elm_io.clone()).unwrap();
 
         // When we parse the elm.json...
         let project_id = computation.watch_project(project_root);
         computation.advance();
 
         // Then the resulting project contains the expected modules...
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
-        );
+        assert_modules(&mut computation, &project_id, &["Animals.Bat", "Care.Soap"]);
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
