@@ -11,6 +11,7 @@ use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
 use differential_dataflow::trace::{Cursor, TraceReader};
+use notify::Watcher;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -158,7 +159,7 @@ impl DataflowComputation {
             differential_dataflow::input::InputSession::new();
 
         let (file_event_sender, file_event_receiver) = channel();
-        let file_watcher = notify::watcher(
+        let mut file_watcher = notify::watcher(
             file_event_sender,
             core::time::Duration::from_millis(100),
         )
@@ -169,12 +170,38 @@ impl DataflowComputation {
         let (modules_by_project, probes) = worker.dataflow(|scope| {
             let project_roots = project_roots_input.to_collection(scope);
             let filepath_events = filepath_events_input.to_collection(scope);
-            dataflow_graph(
+            let (modules, paths_to_watch) = dataflow_graph(
                 elm_io,
                 query_for_exports,
                 project_roots,
                 filepath_events,
-                file_watcher,
+            );
+                let watched_paths = paths_to_watch
+                    .inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
+                        std::cmp::Ordering::Equal => {}
+                        std::cmp::Ordering::Less => {
+                            if let Err(err) = file_watcher.unwatch(path) {
+                                log::error!(
+                                    "failed while remove path {:?} to watch for changes: {:?}",
+                                    path,
+                                    err
+                                )
+                            }
+                        }
+                        std::cmp::Ordering::Greater => {
+                            if let Err(err) = file_watcher.watch(path, notify::RecursiveMode::Recursive) {
+                                log::error!(
+                                    "failed while adding path {:?} to watch for changes: {:?}",
+                                    path,
+                                    err
+                                )
+                            }
+                        }
+                    });
+            let modules_by_project = modules.arrange_by_key();
+            (
+                modules_by_project.trace,
+                vec![watched_paths.probe(), modules_by_project.stream.probe()],
             )
         });
 
@@ -346,18 +373,17 @@ struct ElmJson {
     source_directories: Vec<PathBuf>,
 }
 
-fn dataflow_graph<'a, W, D>(
+#[allow(clippy::type_complexity)]
+fn dataflow_graph<'a, D>(
     elm_io: D,
     query_for_exports: QueryForExports,
     project_roots: dataflow::Collection<'a, (ProjectId, PathBuf)>,
     filepath_events: dataflow::Collection<'a, PathBuf>,
-    mut file_watcher: W,
 ) -> (
-    dataflow::Trace<ProjectId, (String, ElmModule)>,
-    Vec<dataflow::Probe>,
+    dataflow::Collection<'a, (ProjectId, (String, ElmModule))>,
+    dataflow::Collection<'a, PathBuf>,
 )
 where
-    W: notify::Watcher + 'static,
     D: ElmIO + 'static,
 {
     let elm_io2 = elm_io.clone();
@@ -458,28 +484,7 @@ where
         .map(|(_, path)| path)
         .concat(&project_roots.map(|(_, path)| elm_json_path(&path)))
         .concat(&project_roots.map(|(_, path)| idat_path(&path)))
-        .distinct()
-        .inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
-            std::cmp::Ordering::Equal => {}
-            std::cmp::Ordering::Less => {
-                if let Err(err) = file_watcher.unwatch(path) {
-                    log::error!(
-                        "failed while remove path {:?} to watch for changes: {:?}",
-                        path,
-                        err
-                    )
-                }
-            }
-            std::cmp::Ordering::Greater => {
-                if let Err(err) = file_watcher.watch(path, notify::RecursiveMode::Recursive) {
-                    log::error!(
-                        "failed while adding path {:?} to watch for changes: {:?}",
-                        path,
-                        err
-                    )
-                }
-            }
-        });
+        .distinct();
 
     let idat_files = project_roots.map(|(project_id, project_root)| {
         (idat_path(&project_root), project_id)
@@ -502,13 +507,7 @@ where
             }
         });
 
-    let modules_by_project =
-        project_modules.concat(&idat_modules).arrange_by_key();
-
-    (
-        modules_by_project.trace,
-        vec![paths_to_watch.probe(), modules_by_project.stream.probe()],
-    )
+    (project_modules.concat(&idat_modules), paths_to_watch)
 }
 
 fn is_elm_file(path: &Path) -> bool {
@@ -657,18 +656,25 @@ mod tests {
             let mut filepath_events_input =
                 differential_dataflow::input::InputSession::new();
 
-            let file_watcher = notify::null::NullWatcher;
-
             let (modules_by_project, probes) = worker.dataflow(|scope| {
                 let project_roots = project_roots_input.to_collection(scope);
                 let filepath_events =
                     filepath_events_input.to_collection(scope);
-                dataflow_graph(
+                let (modules, paths_to_watch) = dataflow_graph(
                     elm_io.clone(),
                     query_for_exports,
                     project_roots,
                     filepath_events,
-                    file_watcher,
+                );
+
+                let modules_by_project = modules.arrange_by_key();
+
+                (
+                    modules_by_project.trace,
+                    vec![
+                        paths_to_watch.probe(),
+                        modules_by_project.stream.probe(),
+                    ],
                 )
             });
 
