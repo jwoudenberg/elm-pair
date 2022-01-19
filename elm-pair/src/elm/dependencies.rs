@@ -1,6 +1,7 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::file_parsing::QueryForExports;
 use crate::elm::idat;
+use crate::support::dataflow;
 use crate::support::dir_walker::DirWalker;
 use crate::support::log;
 use crate::support::log::Error;
@@ -17,73 +18,31 @@ use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use timely::dataflow::operators::Probe;
-use timely::progress::frontier::AntichainRef;
 
 pub struct DataflowComputation {
     // The dataflow worker contains state managed by the differential-dataflow
     // library. Differential-dataflow supports having multiple workers share
     // work, but we don't make use of that.
-    worker: DataflowWorker,
+    worker: dataflow::Worker,
     // These probes let us check whether the dataflow computation has processed
     // all changes made to the inputs below, i.e. whether the outputs will show
     // up-to-date information.
-    probes: Vec<DataflowProbe>,
+    probes: Vec<dataflow::Probe>,
     // An input representing projects we're currently tracking.
-    project_roots_input: DataflowInput<(ProjectId, PathBuf)>,
+    project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
     // An input representing events happening to files. Whether it's file
     // creation, removal, or modification, we just push a path in here to let
     // it know something's changed.
-    filepath_events_input: DataflowInput<PathBuf>,
+    filepath_events_input: dataflow::Input<PathBuf>,
     // A channel receiver that will receive events for changes to files in Elm
     // projects being tracked.
     file_event_receiver: Receiver<notify::DebouncedEvent>,
     // A trace containing information about all Elm modules in projects
     // currently tracked.
-    modules_by_project: DataflowTrace<ProjectId, (String, ElmModule)>,
+    modules_by_project: dataflow::Trace<ProjectId, (String, ElmModule)>,
     // Generated project id's indexed by the project's root path.
     project_ids: HashMap<PathBuf, ProjectId>,
 }
-
-type Timestamp = u32;
-
-type Diff = isize;
-
-type Allocator = timely::communication::allocator::Thread;
-
-type DataflowWorker =
-    timely::worker::Worker<timely::communication::allocator::thread::Thread>;
-
-type DataflowInput<A> =
-    differential_dataflow::input::InputSession<Timestamp, A, Diff>;
-
-type DataflowCollection<'a, A> =
-    differential_dataflow::collection::Collection<DataflowScope<'a>, A, Diff>;
-
-type DataflowScope<'a> = timely::dataflow::scopes::child::Child<
-    'a,
-    timely::worker::Worker<Allocator>,
-    Timestamp,
->;
-
-type DataflowProbe = timely::dataflow::operators::probe::Handle<Timestamp>;
-
-type DataflowTrace<K, V> =
-    differential_dataflow::operators::arrange::TraceAgent<
-        differential_dataflow::trace::implementations::spine_fueled::Spine<
-            K,
-            V,
-            Timestamp,
-            Diff,
-            std::rc::Rc<
-                differential_dataflow::trace::implementations::ord::OrdValBatch<
-                    K,
-                    V,
-                    Timestamp,
-                    Diff,
-                >,
-            >,
-        >,
-    >;
 
 #[derive(
     Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
@@ -297,7 +256,7 @@ impl DataflowComputation {
             }
         }
 
-        DataflowAdvancable::advance(
+        dataflow::Advancable::advance(
             &mut (
                 project_roots_input,
                 filepath_events_input,
@@ -310,130 +269,13 @@ impl DataflowComputation {
 
     pub fn project_cursor(
         &mut self,
-    ) -> ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>> {
+    ) -> dataflow::Cursor<dataflow::Trace<ProjectId, (String, ElmModule)>> {
         let (cursor, storage) = self.modules_by_project.cursor();
-        ProjectCursor { cursor, storage }
+        dataflow::Cursor { cursor, storage }
     }
 }
 
-trait DataflowAdvancable {
-    fn advance_self(&mut self, time: Timestamp);
-
-    fn get_time(&self) -> Option<Timestamp>;
-
-    fn not_caught_up(&self, time: Timestamp) -> bool;
-
-    fn advance(&mut self, worker: &mut DataflowWorker) {
-        // This `.unwrap()` will trigger if there's no probes in the mix. That
-        // will only happen at development time and be very visible.
-        let next_time = 1 + self.get_time().unwrap();
-        self.advance_self(next_time);
-        worker.step_while(|| self.not_caught_up(next_time));
-    }
-}
-
-impl<A: differential_dataflow::Data> DataflowAdvancable for DataflowInput<A> {
-    fn advance_self(&mut self, time: Timestamp) {
-        self.advance_to(time);
-        self.flush();
-    }
-
-    fn get_time(&self) -> Option<Timestamp> {
-        Some(*self.time())
-    }
-
-    fn not_caught_up(&self, _: Timestamp) -> bool {
-        false
-    }
-}
-
-impl<K: Ord + Clone, V: Ord + Clone> DataflowAdvancable
-    for DataflowTrace<K, V>
-{
-    fn advance_self(&mut self, time: Timestamp) {
-        self.set_logical_compaction(AntichainRef::new(&[time]));
-        self.set_physical_compaction(AntichainRef::new(&[time]));
-    }
-
-    fn get_time(&self) -> Option<Timestamp> {
-        None
-    }
-
-    fn not_caught_up(&self, _: Timestamp) -> bool {
-        false
-    }
-}
-
-impl DataflowAdvancable for DataflowProbe {
-    fn advance_self(&mut self, _: Timestamp) {}
-
-    fn get_time(&self) -> Option<Timestamp> {
-        None
-    }
-
-    fn not_caught_up(&self, time: Timestamp) -> bool {
-        self.less_than(&time)
-    }
-}
-
-impl<A: DataflowAdvancable> DataflowAdvancable for Vec<A> {
-    fn advance_self(&mut self, time: Timestamp) {
-        self.iter_mut().for_each(|a| a.advance_self(time))
-    }
-
-    fn get_time(&self) -> Option<Timestamp> {
-        self.iter().filter_map(|a| a.get_time()).max()
-    }
-
-    fn not_caught_up(&self, time: Timestamp) -> bool {
-        self.iter().map(|a| a.not_caught_up(time)).any(|b| b)
-    }
-}
-
-macro_rules! advancable_tuple {
-    (@not_caught_up $time:expr, $head:ident, $( $tail:ident,)* ) => {
-        $head.not_caught_up($time)
-            $(|| $tail.not_caught_up($time))*
-    };
-
-    (( $( $name:ident),+ )) => {
-        #[allow(non_snake_case)]
-        impl<$($name: DataflowAdvancable,)+> DataflowAdvancable for ($(&mut $name,)+) {
-            fn advance_self(&mut self, time: Timestamp) {
-                let ($($name,)+) = self;
-                $($name.advance_self(time);)+
-            }
-
-            fn get_time(&self) -> Option<Timestamp> {
-                let ($($name,)+) = self;
-                [$($name.get_time(),)+].iter().flatten().max().copied()
-            }
-
-            fn not_caught_up(&self, time: Timestamp) -> bool {
-                let ($($name,)+) = self;
-                advancable_tuple!(@not_caught_up time, $($name,)+)
-            }
-        }
-    };
-}
-
-advancable_tuple!((A, B));
-advancable_tuple!((A, B, C));
-advancable_tuple!((A, B, C, D));
-advancable_tuple!((A, B, C, D, E));
-advancable_tuple!((A, B, C, D, E, F));
-advancable_tuple!((A, B, C, D, E, F, G));
-advancable_tuple!((A, B, C, D, E, F, G, H));
-advancable_tuple!((A, B, C, D, E, F, G, H, I));
-advancable_tuple!((A, B, C, D, E, F, G, H, I, J));
-
-#[allow(clippy::type_complexity)]
-pub struct ProjectCursor<T: TraceReader> {
-    cursor: T::Cursor,
-    storage: <T::Cursor as Cursor<T::Key, T::Val, T::Time, T::R>>::Storage,
-}
-
-impl ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>> {
+impl dataflow::Cursor<dataflow::Trace<ProjectId, (String, ElmModule)>> {
     pub fn get_project(
         &mut self,
         project: &ProjectId,
@@ -507,12 +349,12 @@ struct ElmJson {
 fn dataflow_graph<'a, W, D>(
     elm_io: D,
     query_for_exports: QueryForExports,
-    project_roots: DataflowCollection<'a, (ProjectId, PathBuf)>,
-    filepath_events: DataflowCollection<'a, PathBuf>,
+    project_roots: dataflow::Collection<'a, (ProjectId, PathBuf)>,
+    filepath_events: dataflow::Collection<'a, PathBuf>,
     mut file_watcher: W,
 ) -> (
-    DataflowTrace<ProjectId, (String, ElmModule)>,
-    Vec<DataflowProbe>,
+    dataflow::Trace<ProjectId, (String, ElmModule)>,
+    Vec<dataflow::Probe>,
 )
 where
     W: notify::Watcher + 'static,
@@ -792,11 +634,11 @@ mod tests {
     use std::sync::Mutex;
 
     struct DependenciesCalculation {
-        worker: DataflowWorker,
-        probes: Vec<DataflowProbe>,
-        project_roots_input: DataflowInput<(ProjectId, PathBuf)>,
-        filepath_events_input: DataflowInput<PathBuf>,
-        modules_by_project: DataflowTrace<ProjectId, (String, ElmModule)>,
+        worker: dataflow::Worker,
+        probes: Vec<dataflow::Probe>,
+        project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
+        filepath_events_input: dataflow::Input<PathBuf>,
+        modules_by_project: dataflow::Trace<ProjectId, (String, ElmModule)>,
     }
 
     impl DependenciesCalculation {
@@ -840,7 +682,7 @@ mod tests {
         }
 
         fn advance(&mut self) {
-            DataflowAdvancable::advance(
+            dataflow::Advancable::advance(
                 &mut (
                     &mut self.project_roots_input,
                     &mut self.filepath_events_input,
@@ -853,10 +695,10 @@ mod tests {
 
         pub fn project_cursor(
             &mut self,
-        ) -> ProjectCursor<DataflowTrace<ProjectId, (String, ElmModule)>>
+        ) -> dataflow::Cursor<dataflow::Trace<ProjectId, (String, ElmModule)>>
         {
             let (cursor, storage) = self.modules_by_project.cursor();
-            ProjectCursor { cursor, storage }
+            dataflow::Cursor { cursor, storage }
         }
     }
 

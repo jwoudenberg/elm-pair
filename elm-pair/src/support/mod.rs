@@ -1,3 +1,4 @@
+pub mod dataflow;
 pub mod dir_walker;
 pub mod intersperse;
 pub mod log;
