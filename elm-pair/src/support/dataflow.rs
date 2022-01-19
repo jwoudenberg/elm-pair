@@ -28,7 +28,7 @@ pub type Scope<'a> = timely::dataflow::scopes::child::Child<
 
 pub type Probe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
-pub type Trace<K, V> = differential_dataflow::operators::arrange::TraceAgent<
+pub type KeyTrace<K, V> = differential_dataflow::operators::arrange::TraceAgent<
     differential_dataflow::trace::implementations::spine_fueled::Spine<
         K,
         V,
@@ -38,6 +38,22 @@ pub type Trace<K, V> = differential_dataflow::operators::arrange::TraceAgent<
             differential_dataflow::trace::implementations::ord::OrdValBatch<
                 K,
                 V,
+                Timestamp,
+                Diff,
+            >,
+        >,
+    >,
+>;
+
+pub type SelfTrace<K> = differential_dataflow::operators::arrange::TraceAgent<
+    differential_dataflow::trace::implementations::spine_fueled::Spine<
+        K,
+        (),
+        Timestamp,
+        Diff,
+        std::rc::Rc<
+            differential_dataflow::trace::implementations::ord::OrdKeyBatch<
+                K,
                 Timestamp,
                 Diff,
             >,
@@ -101,7 +117,9 @@ impl<A: differential_dataflow::Data> Advancable for Input<A> {
     }
 }
 
-impl<K: Ord + Clone, V: Ord + Clone> Advancable for Trace<K, V> {
+impl<Tr: TraceReader<Time = Timestamp, R = Diff>> Advancable
+    for differential_dataflow::operators::arrange::agent::TraceAgent<Tr>
+{
     fn advance_self(&mut self, time: Timestamp) {
         self.set_logical_compaction(AntichainRef::new(&[time]));
         self.set_physical_compaction(AntichainRef::new(&[time]));

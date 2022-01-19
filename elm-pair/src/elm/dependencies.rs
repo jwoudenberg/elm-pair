@@ -7,9 +7,11 @@ use crate::support::log;
 use crate::support::log::Error;
 use abomonation_derive::Abomonation;
 use differential_dataflow::operators::arrange::ArrangeByKey;
+use differential_dataflow::operators::arrange::ArrangeBySelf;
 use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
+use differential_dataflow::trace::cursor::CursorDebug;
 use differential_dataflow::trace::{Cursor, TraceReader};
 use notify::Watcher;
 use serde::Deserialize;
@@ -40,7 +42,7 @@ pub struct DataflowComputation {
     file_event_receiver: Receiver<notify::DebouncedEvent>,
     // A trace containing information about all Elm modules in projects
     // currently tracked.
-    modules_by_project: dataflow::Trace<ProjectId, (String, ElmModule)>,
+    modules_by_project: dataflow::KeyTrace<ProjectId, (String, ElmModule)>,
     // Generated project id's indexed by the project's root path.
     project_ids: HashMap<PathBuf, ProjectId>,
 }
@@ -296,13 +298,14 @@ impl DataflowComputation {
 
     pub fn project_cursor(
         &mut self,
-    ) -> dataflow::Cursor<dataflow::Trace<ProjectId, (String, ElmModule)>> {
+    ) -> dataflow::Cursor<dataflow::KeyTrace<ProjectId, (String, ElmModule)>>
+    {
         let (cursor, storage) = self.modules_by_project.cursor();
         dataflow::Cursor { cursor, storage }
     }
 }
 
-impl dataflow::Cursor<dataflow::Trace<ProjectId, (String, ElmModule)>> {
+impl dataflow::Cursor<dataflow::KeyTrace<ProjectId, (String, ElmModule)>> {
     pub fn get_project(
         &mut self,
         project: &ProjectId,
@@ -637,7 +640,8 @@ mod tests {
         probes: Vec<dataflow::Probe>,
         project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
         filepath_events_input: dataflow::Input<PathBuf>,
-        modules_by_project: dataflow::Trace<ProjectId, (String, ElmModule)>,
+        modules_by_project: dataflow::KeyTrace<ProjectId, (String, ElmModule)>,
+        watched_paths: dataflow::SelfTrace<PathBuf>,
     }
 
     impl DependenciesCalculation {
@@ -656,27 +660,32 @@ mod tests {
             let mut filepath_events_input =
                 differential_dataflow::input::InputSession::new();
 
-            let (modules_by_project, probes) = worker.dataflow(|scope| {
-                let project_roots = project_roots_input.to_collection(scope);
-                let filepath_events =
-                    filepath_events_input.to_collection(scope);
-                let (modules, paths_to_watch) = dataflow_graph(
-                    elm_io.clone(),
-                    query_for_exports,
-                    project_roots,
-                    filepath_events,
-                );
+            let (modules_by_project, watched_paths, probes) =
+                worker.dataflow(|scope| {
+                    let project_roots =
+                        project_roots_input.to_collection(scope);
+                    let filepath_events =
+                        filepath_events_input.to_collection(scope);
+                    let (modules, paths_to_watch) = dataflow_graph(
+                        elm_io.clone(),
+                        query_for_exports,
+                        project_roots,
+                        filepath_events,
+                    );
 
-                let modules_by_project = modules.arrange_by_key();
+                    let modules_by_project = modules.arrange_by_key();
 
-                (
-                    modules_by_project.trace,
-                    vec![
-                        paths_to_watch.probe(),
-                        modules_by_project.stream.probe(),
-                    ],
-                )
-            });
+                    let watched_paths = paths_to_watch.arrange_by_self();
+
+                    (
+                        modules_by_project.trace,
+                        watched_paths.trace,
+                        vec![
+                            watched_paths.stream.probe(),
+                            modules_by_project.stream.probe(),
+                        ],
+                    )
+                });
 
             DependenciesCalculation {
                 worker,
@@ -684,6 +693,7 @@ mod tests {
                 project_roots_input,
                 filepath_events_input,
                 modules_by_project,
+                watched_paths,
             }
         }
 
@@ -699,9 +709,26 @@ mod tests {
             );
         }
 
-        pub fn project_cursor(
+        pub fn watched_paths(&mut self) -> HashSet<PathBuf> {
+            let (mut cursor, storage) = self.watched_paths.cursor();
+            cursor
+                .to_vec(&storage)
+                .into_iter()
+                .filter_map(|((path, _), counts)| {
+                    let total: isize =
+                        counts.into_iter().map(|(_, count)| count).sum();
+                    if total > 0 {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+
+        fn project_cursor(
             &mut self,
-        ) -> dataflow::Cursor<dataflow::Trace<ProjectId, (String, ElmModule)>>
+        ) -> dataflow::Cursor<dataflow::KeyTrace<ProjectId, (String, ElmModule)>>
         {
             let (cursor, storage) = self.modules_by_project.cursor();
             dataflow::Cursor { cursor, storage }
@@ -858,6 +885,7 @@ mod tests {
 
     #[test]
     fn project_elm_files_are_found() {
+        // Given an Elm project with some files...
         let project_id = ProjectId(0);
         let project_root = PathBuf::from("/project");
         let elm_io = FakeElmIO::new(
@@ -868,14 +896,27 @@ mod tests {
             ],
         );
         let mut computation = DependenciesCalculation::new(&elm_io);
+
+        // When we start tracking the project...
         computation
             .project_roots_input
             .insert((project_id, project_root));
         computation.advance();
+
+        // Then all its modules are discovered...
         assert_modules(
             &mut computation,
             &project_id,
             &["Animals.Bat", "Care.Soap"],
+        );
+        // And the right paths are tracked...
+        assert_eq!(
+            computation.watched_paths(),
+            HashSet::from_iter([
+                PathBuf::from("/project/elm.json"),
+                PathBuf::from("/project/elm-stuff/0.19.1/i.dat"),
+                PathBuf::from("/project/src"),
+            ]),
         );
     }
 
@@ -901,6 +942,15 @@ mod tests {
             &project_id,
             &["Animals.Bat", "Care.Soap"],
         );
+        // And the right paths are tracked...
+        assert_eq!(
+            computation.watched_paths(),
+            HashSet::from_iter([
+                PathBuf::from("/project/elm.json"),
+                PathBuf::from("/project/elm-stuff/0.19.1/i.dat"),
+                PathBuf::from("/project/src"),
+            ]),
+        );
 
         // When we unwatch it
         computation
@@ -916,6 +966,8 @@ mod tests {
         {
             panic!("Did not expect project to be found");
         }
+        // And the projects paths are no longer tracked...
+        assert_eq!(computation.watched_paths(), HashSet::new(),);
     }
 
     #[test]
