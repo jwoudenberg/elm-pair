@@ -1,8 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
-use crate::elm::dependencies::{
-    DataflowComputation, ElmModule, ExportedName, ProjectInfo,
-};
+use crate::elm::dependencies::{DataflowComputation, ElmModule, ExportedName};
+use crate::support::dataflow;
 use crate::support::log;
 use crate::support::log::Error;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
@@ -160,10 +159,6 @@ impl RefactorEngine {
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Refactor, Error> {
-        let RefactorEngine {
-            dataflow_computation,
-            queries,
-        } = self;
         // debug_print_tree_changes(diff, &changes);
         if changes.old_removed.is_empty() && changes.new_added.is_empty() {
             return Ok(Refactor::new());
@@ -171,9 +166,6 @@ impl RefactorEngine {
         let before = attach_kinds(&changes.old_removed);
         let after = attach_kinds(&changes.new_added);
         let mut refactor = Refactor::new();
-
-        let mut cursor = dataflow_computation.project_cursor(diff.new.buffer);
-        let project_info = cursor.get_project()?;
 
         match (before.as_slice(), after.as_slice()) {
             (
@@ -186,8 +178,8 @@ impl RefactorEngine {
                 | [DOUBLE_DOT]
                 | [],
             ) => on_changed_values_in_exposing_list(
-                queries,
-                &project_info,
+                &self.queries,
+                &mut self.dataflow_computation,
                 &mut refactor,
                 diff,
                 changes.old_parent,
@@ -205,8 +197,8 @@ impl RefactorEngine {
                 [LOWER_CASE_IDENTIFIER],
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
             ) => on_added_module_qualifier_to_value(
-                queries,
-                &project_info,
+                &self.queries,
+                &mut self.dataflow_computation,
                 &mut refactor,
                 diff,
                 changes.old_parent,
@@ -224,31 +216,31 @@ impl RefactorEngine {
                 [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
                 [LOWER_CASE_IDENTIFIER],
             ) => on_removed_module_qualifier_from_value(
-                queries,
-                &project_info,
+                &self.queries,
+                &mut self.dataflow_computation,
                 &mut refactor,
                 diff,
                 changes.old_parent,
                 changes.new_parent,
             )?,
             ([], [EXPOSING_LIST]) => on_added_exposing_list_to_import(
-                queries,
-                &project_info,
+                &self.queries,
+                &mut self.dataflow_computation,
                 &mut refactor,
                 &diff.new,
                 changes.new_parent,
             )?,
             ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
-                queries,
-                &project_info,
+                &self.queries,
+                &mut self.dataflow_computation,
                 &mut refactor,
                 diff,
                 changes.old_parent,
             )?,
             ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
                 on_added_constructors_to_exposing_list(
-                    queries,
-                    &project_info,
+                    &self.queries,
+                    &mut self.dataflow_computation,
                     &mut refactor,
                     diff,
                     changes.new_parent,
@@ -256,15 +248,15 @@ impl RefactorEngine {
             }
             ([EXPOSED_UNION_CONSTRUCTORS], []) => {
                 on_removed_constructors_from_exposing_list(
-                    queries,
-                    &project_info,
+                    &self.queries,
+                    &mut self.dataflow_computation,
                     &mut refactor,
                     diff,
                     changes.old_parent,
                 )?
             }
             ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
-                queries,
+                &self.queries,
                 &mut refactor,
                 diff,
                 changes.old_parent,
@@ -272,7 +264,7 @@ impl RefactorEngine {
             )?,
             ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => {
                 on_changed_module_name(
-                    queries,
+                    &self.queries,
                     &mut refactor,
                     diff,
                     changes.old_parent,
@@ -280,8 +272,8 @@ impl RefactorEngine {
                 )?
             }
             _ => on_unrecognized_change(
-                queries,
-                &project_info,
+                &self.queries,
+                &mut self.dataflow_computation,
                 &mut refactor,
                 &diff.new,
                 changes.new_parent,
@@ -309,7 +301,7 @@ fn _is_elm_file(path: &Path) -> bool {
 #[allow(clippy::needless_collect)]
 fn on_unrecognized_change(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     parent: Node,
@@ -344,7 +336,12 @@ fn on_unrecognized_change(
         {}
         let insert_at_byte = tree_cursor.node().start_byte();
         for new_import_name in new_import_names {
-            if project_info.contains_key(&new_import_name.as_str())
+            let mut cursor = computation.project_cursor(code.buffer);
+            if get_elm_module(
+                &mut cursor,
+                &Rope::from_str(&new_import_name).slice(..),
+            )
+            .is_ok()
                 && !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
             {
                 refactor.add_change(
@@ -359,7 +356,7 @@ fn on_unrecognized_change(
 
 fn on_added_constructors_to_exposing_list(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     parent: Node,
@@ -373,7 +370,8 @@ fn on_added_constructors_to_exposing_list(
             log::mk_err!("did not find parent import of exposed constructor")
         })?;
     let import = parse_import_node(engine, &diff.new, import_node)?;
-    let module = get_elm_module(project_info, &import.unaliased_name())?;
+    let mut cursor = computation.project_cursor(diff.new.buffer);
+    let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
@@ -390,7 +388,7 @@ fn on_added_constructors_to_exposing_list(
     }
     remove_qualifier_from_references(
         engine,
-        project_info,
+        computation,
         refactor,
         &diff.new,
         &import.aliased_name(),
@@ -401,9 +399,10 @@ fn on_added_constructors_to_exposing_list(
 }
 
 fn get_elm_module<'a>(
-    project_info: &'a ProjectInfo,
+    cursor: &'a mut dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>>,
     name: &RopeSlice,
 ) -> Result<&'a ElmModule, Error> {
+    let project_info = cursor.get_project()?;
     project_info
         .get(name.to_string().as_str())
         .ok_or_else(|| {
@@ -563,7 +562,7 @@ fn change_qualifier(
 
 fn on_removed_constructors_from_exposing_list(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
@@ -586,7 +585,8 @@ fn on_removed_constructors_from_exposing_list(
         let (_, exposed) = result?;
         if let ExposedName::Type(type_) = exposed {
             if type_.name == type_name {
-                match old_import.constructors_of_type(project_info, &type_)? {
+                let mut cursor = computation.project_cursor(diff.new.buffer);
+                match old_import.constructors_of_type(&mut cursor, &type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         references_to_qualify.insert(Name {
                             name: Rope::from_str(ctor),
@@ -620,7 +620,7 @@ fn on_removed_constructors_from_exposing_list(
 
 fn on_changed_values_in_exposing_list(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
@@ -630,7 +630,8 @@ fn on_changed_values_in_exposing_list(
         log::mk_err!("could not find parent import node of exposing list")
     })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
-    let module = get_elm_module(project_info, &old_import.unaliased_name())?;
+    let mut cursor = computation.project_cursor(diff.new.buffer);
+    let module = get_elm_module(&mut cursor, &old_import.unaliased_name())?;
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
@@ -676,7 +677,7 @@ fn on_changed_values_in_exposing_list(
 
     remove_qualifier_from_references(
         engine,
-        project_info,
+        computation,
         refactor,
         &diff.new,
         &new_import.aliased_name(),
@@ -689,7 +690,7 @@ fn on_changed_values_in_exposing_list(
 
 fn on_removed_module_qualifier_from_value(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
@@ -724,7 +725,8 @@ fn on_removed_module_qualifier_from_value(
         get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if unqualified_name.kind == NameKind::Constructor {
-        let module = get_elm_module(project_info, &import.unaliased_name())?;
+        let mut cursor = computation.project_cursor(diff.new.buffer);
+        let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
         for export in module.exports.iter() {
             match export {
                 ExportedName::Value { .. } => {}
@@ -781,7 +783,7 @@ fn on_removed_module_qualifier_from_value(
     };
     remove_qualifier_from_references(
         engine,
-        project_info,
+        computation,
         refactor,
         &diff.new,
         &qualifier.slice(..),
@@ -793,7 +795,7 @@ fn on_removed_module_qualifier_from_value(
 
 fn remove_qualifier_from_references(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     qualifier: &RopeSlice,
@@ -821,8 +823,9 @@ fn remove_qualifier_from_references(
         } else {
             for res in import.exposing_list() {
                 let (_, exposed) = res?;
+                let mut cursor = computation.project_cursor(code.buffer);
                 let module =
-                    get_elm_module(project_info, &import.unaliased_name())?;
+                    get_elm_module(&mut cursor, &import.unaliased_name())?;
                 exposed.for_each_name(module, |reference| {
                     names_from_other_modules
                         .insert(reference, import.aliased_name().into());
@@ -836,7 +839,7 @@ fn remove_qualifier_from_references(
         if let Some(other_qualifier) = names_from_other_modules.get(reference) {
             qualify_value(
                 engine,
-                project_info,
+                computation,
                 refactor,
                 code,
                 node_stripped_of_qualifier,
@@ -1039,7 +1042,7 @@ fn add_to_exposing_list(
 
 fn on_added_module_qualifier_to_value(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
@@ -1069,7 +1072,7 @@ fn on_added_module_qualifier_to_value(
     if old_reference.name == unqualified_name.name {
         qualify_value(
             engine,
-            project_info,
+            computation,
             refactor,
             &diff.new,
             None,
@@ -1084,7 +1087,7 @@ fn on_added_module_qualifier_to_value(
 
 fn qualify_value(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     node_to_skip: Option<Node>,
@@ -1128,7 +1131,8 @@ fn qualify_value(
                     });
                 }
 
-                match import.constructors_of_type(project_info, type_)? {
+                let mut cursor = computation.project_cursor(code.buffer);
+                match import.constructors_of_type(&mut cursor, type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         if ctor == &reference.name {
                             // Ensure we don't remove the item from the exposing
@@ -1197,7 +1201,8 @@ fn qualify_value(
                 if remove_expose_all_if_necessary {
                     let mut exposed_names: HashMap<Name, &ExportedName> =
                         HashMap::new();
-                    get_elm_module(project_info, &import.unaliased_name())
+                    let mut cursor = computation.project_cursor(code.buffer);
+                    get_elm_module(&mut cursor, &import.unaliased_name())
                         .map_err(|err| {
                             log::mk_err!(
                                 "failed to read exports of {}: {:?}",
@@ -1306,8 +1311,10 @@ fn qualify_value(
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
+                        let mut cursor =
+                            computation.project_cursor(code.buffer);
                         let exports = match get_elm_module(
-                            project_info,
+                            &mut cursor,
                             &import.unaliased_name(),
                         ) {
                             Ok(module) => &module.exports,
@@ -1362,13 +1369,14 @@ fn qualify_value(
 
 fn on_added_exposing_list_to_import(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     new_parent: Node,
 ) -> Result<(), Error> {
     let import = parse_import_node(engine, code, new_parent)?;
-    let module = get_elm_module(project_info, &import.unaliased_name())?;
+    let mut cursor = computation.project_cursor(code.buffer);
+    let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
@@ -1378,7 +1386,7 @@ fn on_added_exposing_list_to_import(
     }
     remove_qualifier_from_references(
         engine,
-        project_info,
+        computation,
         refactor,
         code,
         &import.aliased_name(),
@@ -1390,7 +1398,7 @@ fn on_added_exposing_list_to_import(
 
 fn on_removed_exposing_list_from_import(
     engine: &Queries,
-    project_info: &ProjectInfo,
+    computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     diff: &SourceFileDiff,
     old_parent: Node,
@@ -1398,7 +1406,8 @@ fn on_removed_exposing_list_from_import(
     let import = parse_import_node(engine, &diff.old, old_parent)?;
     let qualifier = import.aliased_name();
     let mut val_cursor = QueryCursor::new();
-    let module = get_elm_module(project_info, &import.unaliased_name())?;
+    let mut cursor = computation.project_cursor(diff.new.buffer);
+    let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
     let mut references_to_qualify = HashSet::new();
     let import =
         get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
@@ -1813,11 +1822,11 @@ impl Import<'_> {
 
     fn constructors_of_type<'a>(
         &'a self,
-        project_info: &'a ProjectInfo,
+        cursor: &'a mut dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>>,
         type_: &ExposedType,
     ) -> Result<ExposedConstructors, Error> {
         let module = get_elm_module(
-            project_info,
+            cursor,
             &self.code.slice(&self.name_node.byte_range()),
         )?;
         for export in module.exports.iter() {
