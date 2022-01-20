@@ -1,4 +1,4 @@
-use crate::elm::dependencies::{ElmModule, ExportedName};
+use crate::elm::dependencies::ExportedName;
 use crate::support::log;
 use crate::support::log::Error;
 use std::collections::HashSet;
@@ -9,12 +9,12 @@ use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 pub fn parse(
     query_for_exports: &QueryForExports,
     path: &Path,
-) -> Result<Option<ElmModule>, Error> {
+) -> Result<Vec<ExportedName>, Error> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(err) => {
             if let std::io::ErrorKind::NotFound = err.kind() {
-                return Ok(None);
+                return Ok(Vec::new());
             } else {
                 return Err(log::mk_err!(
                     "failed to open module file: {:?}",
@@ -28,8 +28,7 @@ pub fn parse(
         .map_err(|err| log::mk_err!("failed to read module file: {:?}", err))?;
     let tree = crate::support::source_code::parse_bytes(&bytes)?;
     let exports = query_for_exports.run(&tree, &bytes)?;
-    let elm_module = ElmModule { exports };
-    Ok(Some(elm_module))
+    Ok(exports)
 }
 
 crate::elm::query::query!(
@@ -214,7 +213,7 @@ mod tests {
     fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = QueryForExports::init(language)?;
-        let ElmModule { exports } = parse(&query_for_exports, path)?.unwrap();
+        let exports = parse(&query_for_exports, path)?;
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))

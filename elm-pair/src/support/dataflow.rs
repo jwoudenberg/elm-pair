@@ -72,6 +72,66 @@ pub struct Cursor<T: TraceReader> {
     >>::Storage,
 }
 
+impl<T: TraceReader> Cursor<T> {
+    pub fn iter(&mut self) -> CursorKeys<T> {
+        differential_dataflow::trace::cursor::Cursor::rewind_keys(
+            &mut self.cursor,
+            &self.storage,
+        );
+        differential_dataflow::trace::cursor::Cursor::rewind_vals(
+            &mut self.cursor,
+            &self.storage,
+        );
+        CursorKeys {
+            cursor: &mut self.cursor,
+            storage: &self.storage,
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub struct CursorKeys<'a, T: TraceReader> {
+    cursor: &'a mut T::Cursor,
+    storage: &'a <T::Cursor as differential_dataflow::trace::Cursor<
+        T::Key,
+        T::Val,
+        T::Time,
+        T::R,
+    >>::Storage,
+}
+
+impl<'a, T> Iterator for CursorKeys<'a, T>
+where
+    T: TraceReader<R = Diff, Time = Timestamp>,
+    T::Key: 'a,
+{
+    type Item = &'a T::Key;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(module) =
+            differential_dataflow::trace::cursor::Cursor::get_key(
+                self.cursor,
+                self.storage,
+            )
+        {
+            let mut times = 0;
+            differential_dataflow::trace::cursor::Cursor::map_times(
+                self.cursor,
+                self.storage,
+                |_, r| times += r,
+            );
+            differential_dataflow::trace::cursor::Cursor::step_key(
+                self.cursor,
+                self.storage,
+            );
+            if times > 0 {
+                return Some(module);
+            }
+        }
+        None
+    }
+}
+
 // Advancing a dataflow calculation until there is no work left to be done
 // requires handling in a particular way all the calculation's inputs,
 // aggregates, and probes. This trait allows you to pass inputs, aggregates, and

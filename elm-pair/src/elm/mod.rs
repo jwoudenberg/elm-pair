@@ -1,6 +1,6 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
-use crate::elm::dependencies::{DataflowComputation, ElmModule, ExportedName};
+use crate::elm::dependencies::{DataflowComputation, ExportedName};
 use crate::support::log;
 use crate::support::log::Error;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
@@ -334,9 +334,10 @@ fn on_unrecognized_change(
         for new_import_name in new_import_names {
             if !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
                 && computation
-                    .module_cursor(code.buffer, new_import_name.clone())
-                    .get_module()
-                    .is_ok()
+                    .exports_cursor(code.buffer, new_import_name.clone())
+                    .iter()
+                    .next()
+                    .is_some()
             {
                 refactor.add_change(
                     insert_at_byte..insert_at_byte,
@@ -365,18 +366,17 @@ fn on_added_constructors_to_exposing_list(
         })?;
     let import = parse_import_node(engine, &diff.new, import_node)?;
     let mut cursor = computation
-        .module_cursor(diff.new.buffer, import.unaliased_name().to_string());
-    let module = cursor.get_module()?;
+        .exports_cursor(diff.new.buffer, import.unaliased_name().to_string());
     let mut references_to_unqualify = HashSet::new();
-    for result in import.exposing_list() {
-        let (_, exposed) = result?;
-        if let ExposedName::Type(type_) = &exposed {
-            if type_.name == type_name {
-                exposed.for_each_name(module, |reference| {
-                    if reference.kind == NameKind::Constructor {
-                        references_to_unqualify.insert(reference);
-                    }
-                });
+    for export in cursor.iter() {
+        if let ExportedName::Type { name, constructors } = export {
+            if name == &type_name {
+                references_to_unqualify.extend(constructors.iter().map(
+                    |ctor| Name {
+                        name: Rope::from_str(ctor),
+                        kind: NameKind::Constructor,
+                    },
+                ));
                 break;
             }
         }
@@ -567,12 +567,11 @@ fn on_removed_constructors_from_exposing_list(
         let (_, exposed) = result?;
         if let ExposedName::Type(type_) = exposed {
             if type_.name == type_name {
-                let mut cursor = computation.module_cursor(
+                let mut cursor = computation.exports_cursor(
                     diff.new.buffer,
                     old_import.unaliased_name().to_string(),
                 );
-                let module = cursor.get_module()?;
-                match constructors_of_type(module, &type_)? {
+                match constructors_of_type(cursor.iter(), &type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         references_to_qualify.insert(Name {
                             name: Rope::from_str(ctor),
@@ -616,15 +615,14 @@ fn on_changed_values_in_exposing_list(
         log::mk_err!("could not find parent import node of exposing list")
     })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
-    let mut cursor = computation.module_cursor(
+    let mut cursor = computation.exports_cursor(
         diff.new.buffer,
         old_import.unaliased_name().to_string(),
     );
-    let module = cursor.get_module()?;
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_name(module, |reference| {
+        exposed.for_each_name(cursor.iter(), |reference| {
             old_references.insert(reference);
         });
     }
@@ -638,7 +636,7 @@ fn on_changed_values_in_exposing_list(
     let mut new_references = HashSet::new();
     for result in new_import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_name(module, |reference| {
+        exposed.for_each_name(cursor.iter(), |reference| {
             new_references.insert(reference);
         });
     }
@@ -714,12 +712,11 @@ fn on_removed_module_qualifier_from_value(
         get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if unqualified_name.kind == NameKind::Constructor {
-        let mut cursor = computation.module_cursor(
+        let mut cursor = computation.exports_cursor(
             diff.new.buffer,
             import.unaliased_name().to_string(),
         );
-        let module = cursor.get_module()?;
-        for export in module.exports.iter() {
+        for export in cursor.iter() {
             match export {
                 ExportedName::Value { .. } => {}
                 ExportedName::RecordTypeAlias { name } => {
@@ -815,12 +812,11 @@ fn remove_qualifier_from_references(
         } else {
             for res in import.exposing_list() {
                 let (_, exposed) = res?;
-                let mut cursor = computation.module_cursor(
+                let mut cursor = computation.exports_cursor(
                     code.buffer,
                     import.unaliased_name().to_string(),
                 );
-                let module = cursor.get_module()?;
-                exposed.for_each_name(module, |reference| {
+                exposed.for_each_name(cursor.iter(), |reference| {
                     names_from_other_modules
                         .insert(reference, import.aliased_name().into());
                 });
@@ -1125,12 +1121,11 @@ fn qualify_value(
                     });
                 }
 
-                let mut cursor = computation.module_cursor(
+                let mut cursor = computation.exports_cursor(
                     code.buffer,
                     import.unaliased_name().to_string(),
                 );
-                let module = cursor.get_module()?;
-                match constructors_of_type(module, type_)? {
+                match constructors_of_type(cursor.iter(), type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         if ctor == &reference.name {
                             // Ensure we don't remove the item from the exposing
@@ -1199,66 +1194,55 @@ fn qualify_value(
                 if remove_expose_all_if_necessary {
                     let mut exposed_names: HashMap<Name, &ExportedName> =
                         HashMap::new();
-                    let mut cursor = computation.module_cursor(
+                    let mut cursor = computation.exports_cursor(
                         code.buffer,
                         import.unaliased_name().to_string(),
                     );
-                    cursor
-                        .get_module()
-                        .map_err(|err| {
-                            log::mk_err!(
-                                "failed to read exports of {}: {:?}",
-                                import.unaliased_name().to_string(),
-                                err
-                            )
-                        })?
-                        .exports
-                        .iter()
-                        .for_each(|export| match export {
-                            ExportedName::Value { name } => {
+                    cursor.iter().for_each(|export| match export {
+                        ExportedName::Value { name } => {
+                            exposed_names.insert(
+                                Name {
+                                    name: Rope::from_str(name),
+                                    kind: NameKind::Value,
+                                },
+                                export,
+                            );
+                        }
+                        ExportedName::RecordTypeAlias { name } => {
+                            exposed_names.insert(
+                                Name {
+                                    name: Rope::from_str(name),
+                                    kind: NameKind::Type,
+                                },
+                                export,
+                            );
+                            exposed_names.insert(
+                                Name {
+                                    name: Rope::from_str(name),
+                                    kind: NameKind::Constructor,
+                                },
+                                export,
+                            );
+                        }
+                        ExportedName::Type { name, constructors } => {
+                            exposed_names.insert(
+                                Name {
+                                    name: Rope::from_str(name),
+                                    kind: NameKind::Type,
+                                },
+                                export,
+                            );
+                            for ctor in constructors {
                                 exposed_names.insert(
                                     Name {
-                                        name: Rope::from_str(name),
-                                        kind: NameKind::Value,
-                                    },
-                                    export,
-                                );
-                            }
-                            ExportedName::RecordTypeAlias { name } => {
-                                exposed_names.insert(
-                                    Name {
-                                        name: Rope::from_str(name),
-                                        kind: NameKind::Type,
-                                    },
-                                    export,
-                                );
-                                exposed_names.insert(
-                                    Name {
-                                        name: Rope::from_str(name),
+                                        name: Rope::from_str(ctor),
                                         kind: NameKind::Constructor,
                                     },
                                     export,
                                 );
                             }
-                            ExportedName::Type { name, constructors } => {
-                                exposed_names.insert(
-                                    Name {
-                                        name: Rope::from_str(name),
-                                        kind: NameKind::Type,
-                                    },
-                                    export,
-                                );
-                                for ctor in constructors {
-                                    exposed_names.insert(
-                                        Name {
-                                            name: Rope::from_str(ctor),
-                                            kind: NameKind::Constructor,
-                                        },
-                                        export,
-                                    );
-                                }
-                            }
-                        });
+                        }
+                    });
                     let mut cursor = QueryCursor::new();
                     let mut unqualified_names_in_use: HashSet<Name> = engine
                         .query_for_unqualified_values
@@ -1313,22 +1297,11 @@ fn qualify_value(
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let mut cursor = computation.module_cursor(
+                        let mut cursor = computation.exports_cursor(
                             code.buffer,
                             import.unaliased_name().to_string(),
                         );
-                        let exports = match cursor.get_module() {
-                            Ok(module) => &module.exports,
-                            Err(err) => {
-                                log::error!(
-                                    "failed to read exports of {}: {:?}",
-                                    import.unaliased_name().to_string(),
-                                    err
-                                );
-                                break;
-                            }
-                        };
-                        for export in exports {
+                        for export in cursor.iter() {
                             match export {
                                 ExportedName::Value { .. } => {}
                                 ExportedName::RecordTypeAlias { .. } => {}
@@ -1377,12 +1350,11 @@ fn on_added_exposing_list_to_import(
 ) -> Result<(), Error> {
     let import = parse_import_node(engine, code, new_parent)?;
     let mut cursor = computation
-        .module_cursor(code.buffer, import.unaliased_name().to_string());
-    let module = cursor.get_module()?;
+        .exports_cursor(code.buffer, import.unaliased_name().to_string());
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_name(module, |reference| {
+        exposed.for_each_name(cursor.iter(), |reference| {
             references_to_unqualify.insert(reference);
         })
     }
@@ -1409,14 +1381,13 @@ fn on_removed_exposing_list_from_import(
     let qualifier = import.aliased_name();
     let mut val_cursor = QueryCursor::new();
     let mut cursor = computation
-        .module_cursor(diff.new.buffer, import.unaliased_name().to_string());
-    let module = cursor.get_module()?;
+        .exports_cursor(diff.new.buffer, import.unaliased_name().to_string());
     let mut references_to_qualify = HashSet::new();
     let import =
         get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
     for result in import.exposing_list() {
         let (_, exposed) = result?;
-        exposed.for_each_name(module, |reference| {
+        exposed.for_each_name(cursor.iter(), |reference| {
             references_to_qualify.insert(reference);
         });
     }
@@ -1824,11 +1795,14 @@ impl Import<'_> {
     }
 }
 
-fn constructors_of_type<'a>(
-    module: &'a ElmModule,
+fn constructors_of_type<'a, I>(
+    exported_names: I,
     type_: &ExposedType,
-) -> Result<ExposedConstructors<'a>, Error> {
-    for export in module.exports.iter() {
+) -> Result<ExposedConstructors<'a>, Error>
+where
+    I: Iterator<Item = &'a ExportedName>,
+{
+    for export in exported_names {
         match export {
             ExportedName::Value { .. } => {}
             ExportedName::RecordTypeAlias { name } => {
@@ -1920,8 +1894,9 @@ enum ExposedName<'a> {
 }
 
 impl<'a> ExposedName<'a> {
-    fn for_each_name<F>(&self, import: &ElmModule, mut f: F)
+    fn for_each_name<I, F>(&self, exports: I, mut f: F)
     where
+        I: Iterator<Item = &'a ExportedName>,
         F: FnMut(Name),
     {
         match self {
@@ -1934,7 +1909,7 @@ impl<'a> ExposedName<'a> {
                     kind: NameKind::Type,
                     name: type_.name.into(),
                 });
-                import.exports.iter().for_each(|export| match export {
+                exports.for_each(|export| match export {
                     ExportedName::Value { .. } => {}
                     ExportedName::RecordTypeAlias { name } => {
                         if name == &type_.name {
@@ -1957,7 +1932,7 @@ impl<'a> ExposedName<'a> {
                 });
             }
             ExposedName::All => {
-                import.exports.iter().for_each(|export| match export {
+                exports.for_each(|export| match export {
                     ExportedName::Value { name } => f(Name {
                         kind: NameKind::Value,
                         name: Rope::from_str(name),

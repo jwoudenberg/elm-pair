@@ -13,7 +13,7 @@ use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
 use differential_dataflow::trace::cursor::CursorDebug;
-use differential_dataflow::trace::{Cursor, TraceReader};
+use differential_dataflow::trace::TraceReader;
 use notify::Watcher;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -45,9 +45,8 @@ pub struct DataflowComputation {
     // A channel receiver that will receive events for changes to files in Elm
     // projects being tracked.
     file_event_receiver: Receiver<notify::DebouncedEvent>,
-    // A trace containing information about all Elm modules in projects
-    // currently tracked.
-    query_results: dataflow::SelfTrace<ElmModule>,
+    // A trace containing all exports from modules we're querying for.
+    exports_output: dataflow::SelfTrace<ExportedName>,
 }
 
 #[derive(
@@ -66,11 +65,11 @@ trait ElmIO: Clone {
         &self,
         query_for_exports: &QueryForExports,
         path: &Path,
-    ) -> Result<Option<ElmModule>, Error>;
+    ) -> Result<Vec<ExportedName>, Error>;
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
-    ) -> Result<Vec<(String, ElmModule)>, Error>;
+    ) -> Result<Vec<(String, ExportedName)>, Error>;
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
@@ -106,14 +105,15 @@ impl ElmIO for RealElmIO {
         &self,
         query_for_exports: &QueryForExports,
         path: &Path,
-    ) -> Result<Option<ElmModule>, Error> {
+    ) -> Result<Vec<ExportedName>, Error> {
         crate::elm::file_parsing::parse(query_for_exports, path)
     }
 
+    // TODO: Don't allocate the response Vec. Return an interator to dataflow.
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
-    ) -> Result<Vec<(String, ElmModule)>, Error> {
+    ) -> Result<Vec<(String, ExportedName)>, Error> {
         let file = std::fs::File::open(path).or_else(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
                 let project_root = project_root_from_idat_path(path)?;
@@ -132,15 +132,16 @@ impl ElmIO for RealElmIO {
             }
         })?;
         let reader = BufReader::new(file);
-        let modules = idat::parse(reader)?
+        let exports = idat::parse(reader)?
             .into_iter()
-            .filter_map(|(canonical_name, i)| {
+            .flat_map(|(canonical_name, i)| {
                 let idat::Name(name) = canonical_name.module;
-                let module = elm_module_from_interface(i)?;
-                Some((name, module))
+                elm_module_from_interface(i)
+                    .into_iter()
+                    .map(move |export| (name.clone(), export))
             })
             .collect();
-        Ok(modules)
+        Ok(exports)
     }
 
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir {
@@ -177,7 +178,7 @@ impl DataflowComputation {
             log::mk_err!("failed creating file watcher: {:?}", err)
         })?;
 
-        let (query_results, probes) = worker.dataflow(|scope| {
+        let (exports_output, probes) = worker.dataflow(|scope| {
             let queried_buffers = queried_buffers_input.to_collection(scope);
             let queried_modules = queried_modules_input.to_collection(scope);
             let buffers = buffers_input.to_collection(scope);
@@ -209,7 +210,7 @@ impl DataflowComputation {
                 .map(|(_, project, root)| (project, root))
                 .distinct();
 
-            let (modules, paths_to_watch) = dataflow_graph(
+            let (exports, paths_to_watch) = dataflow_graph(
                 elm_io,
                 query_for_exports,
                 project_roots,
@@ -248,16 +249,16 @@ impl DataflowComputation {
                 .semijoin(&queried_buffers)
                 .map(|(_, project)| project);
 
-            let query_results = modules
+            let exports_output = exports
                 .semijoin(&queried_projects)
                 .map(|(_, x)| x)
                 .semijoin(&queried_modules)
-                .map(|(_, x)| x)
+                .map(|(_, export)| export)
                 .arrange_by_self();
 
             (
-                query_results.trace,
-                vec![watched_paths.probe(), query_results.stream.probe()],
+                exports_output.trace,
+                vec![watched_paths.probe(), exports_output.stream.probe()],
             )
         });
 
@@ -269,7 +270,7 @@ impl DataflowComputation {
             buffers_input,
             filepath_events_input,
             file_event_receiver,
-            query_results,
+            exports_output,
         };
 
         Ok(computation)
@@ -288,7 +289,7 @@ impl DataflowComputation {
             filepath_events_input,
             probes,
             file_event_receiver,
-            query_results,
+            exports_output,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -326,18 +327,18 @@ impl DataflowComputation {
                 queried_modules_input,
                 buffers_input,
                 filepath_events_input,
-                query_results,
+                exports_output,
                 probes,
             ),
             worker,
         );
     }
 
-    pub fn module_cursor(
+    pub fn exports_cursor(
         &mut self,
         buffer: Buffer,
         module: String,
-    ) -> dataflow::Cursor<dataflow::SelfTrace<ElmModule>> {
+    ) -> dataflow::Cursor<dataflow::SelfTrace<ExportedName>> {
         self.queried_buffers_input.insert(buffer);
         self.queried_modules_input.insert(module.clone());
         self.advance();
@@ -346,30 +347,9 @@ impl DataflowComputation {
         self.queried_buffers_input.remove(buffer);
         self.queried_modules_input.remove(module);
 
-        let (cursor, storage) = self.query_results.cursor();
+        let (cursor, storage) = self.exports_output.cursor();
         dataflow::Cursor { cursor, storage }
     }
-}
-
-impl dataflow::Cursor<dataflow::SelfTrace<ElmModule>> {
-    pub fn get_module(&mut self) -> Result<&ElmModule, Error> {
-        self.cursor.rewind_keys(&self.storage);
-        self.cursor.rewind_vals(&self.storage);
-        while let Some(module) = self.cursor.get_key(&self.storage) {
-            let mut times = 0;
-            self.cursor.map_times(&self.storage, |_, r| times += r);
-            if times > 0 {
-                return Ok(module);
-            }
-            self.cursor.step_key(&self.storage);
-        }
-        Err(log::mk_err!("did not find modules for project"))
-    }
-}
-
-#[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ElmModule {
-    pub exports: Vec<ExportedName>,
 }
 
 #[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -413,7 +393,7 @@ fn dataflow_graph<'a, D>(
     project_roots: dataflow::Collection<'a, (ProjectId, PathBuf)>,
     filepath_events: dataflow::Collection<'a, PathBuf>,
 ) -> (
-    dataflow::Collection<'a, (ProjectId, (String, ElmModule))>,
+    dataflow::Collection<'a, (ProjectId, (String, ExportedName))>,
     dataflow::Collection<'a, PathBuf>,
 )
 where
@@ -472,8 +452,9 @@ where
         move |path, _input, output| match elm_io3
             .parse_elm_module(&query_for_exports, path)
         {
-            Ok(Some(module)) => output.push((module, 1)),
-            Ok(None) => {}
+            Ok(exports) => {
+                output.extend(exports.into_iter().map(|export| (export, 1)))
+            }
             Err(err) => {
                 log::error!("Failed parsing module: {:?}", err);
             }
@@ -607,16 +588,15 @@ fn create_elm_stuff(
 
 fn elm_module_from_interface(
     dep_i: idat::DependencyInterface,
-) -> Option<ElmModule> {
+) -> Vec<ExportedName> {
     if let idat::DependencyInterface::Public(interface) = dep_i {
         // TODO: add binops
         let values = interface.values.into_iter().map(elm_export_from_value);
         let unions = interface.unions.into_iter().map(elm_export_from_union);
         let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
-        let exports = Vec::from_iter(values.chain(unions).chain(aliases));
-        Some(ElmModule { exports })
+        Vec::from_iter(values.chain(unions).chain(aliases))
     } else {
-        None
+        Vec::new()
     }
 }
 
@@ -670,7 +650,8 @@ mod tests {
         probes: Vec<dataflow::Probe>,
         project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
         filepath_events_input: dataflow::Input<PathBuf>,
-        modules_by_project: dataflow::KeyTrace<ProjectId, (String, ElmModule)>,
+        exports_by_project:
+            dataflow::KeyTrace<ProjectId, (String, ExportedName)>,
         watched_paths: dataflow::SelfTrace<PathBuf>,
     }
 
@@ -690,7 +671,7 @@ mod tests {
             let mut filepath_events_input =
                 differential_dataflow::input::InputSession::new();
 
-            let (modules_by_project, watched_paths, probes) =
+            let (exports_by_project, watched_paths, probes) =
                 worker.dataflow(|scope| {
                     let project_roots =
                         project_roots_input.to_collection(scope);
@@ -703,16 +684,16 @@ mod tests {
                         filepath_events,
                     );
 
-                    let modules_by_project = modules.arrange_by_key();
+                    let exports_by_project = modules.arrange_by_key();
 
                     let watched_paths = paths_to_watch.arrange_by_self();
 
                     (
-                        modules_by_project.trace,
+                        exports_by_project.trace,
                         watched_paths.trace,
                         vec![
                             watched_paths.stream.probe(),
-                            modules_by_project.stream.probe(),
+                            exports_by_project.stream.probe(),
                         ],
                     )
                 });
@@ -722,7 +703,7 @@ mod tests {
                 probes,
                 project_roots_input,
                 filepath_events_input,
-                modules_by_project,
+                exports_by_project,
                 watched_paths,
             }
         }
@@ -732,7 +713,7 @@ mod tests {
                 &mut (
                     &mut self.project_roots_input,
                     &mut self.filepath_events_input,
-                    &mut self.modules_by_project,
+                    &mut self.exports_by_project,
                     &mut self.probes,
                 ),
                 &mut self.worker,
@@ -757,7 +738,7 @@ mod tests {
         }
 
         pub fn project(&mut self, project: ProjectId) -> HashSet<String> {
-            let (mut cursor, storage) = self.modules_by_project.cursor();
+            let (mut cursor, storage) = self.exports_by_project.cursor();
             cursor
                 .to_vec(&storage)
                 .into_iter()
@@ -777,7 +758,7 @@ mod tests {
     #[derive(Clone)]
     struct FakeElmIO {
         projects: Rc<Mutex<HashMap<PathBuf, FakeElmProject>>>,
-        modules: Rc<Mutex<HashMap<PathBuf, ElmModule>>>,
+        modules: Rc<Mutex<HashMap<PathBuf, Vec<ExportedName>>>>,
         elm_jsons_parsed: Rc<Mutex<u64>>,
         elm_modules_parsed: Rc<Mutex<u64>>,
         elm_idats_parsed: Rc<Mutex<u64>>,
@@ -786,13 +767,13 @@ mod tests {
     #[derive(Clone)]
     struct FakeElmProject {
         elm_json: ElmJson,
-        dependencies: Vec<(String, ElmModule)>,
+        dependencies: Vec<(String, ExportedName)>,
     }
 
     impl FakeElmIO {
         fn new(
             projects: Vec<(PathBuf, FakeElmProject)>,
-            modules: Vec<(PathBuf, ElmModule)>,
+            modules: Vec<(PathBuf, Vec<ExportedName>)>,
         ) -> FakeElmIO {
             FakeElmIO {
                 projects: Rc::new(Mutex::new(HashMap::from_iter(
@@ -830,21 +811,27 @@ mod tests {
             &self,
             _query_for_exports: &QueryForExports,
             path: &Path,
-        ) -> Result<Option<ElmModule>, Error> {
+        ) -> Result<Vec<ExportedName>, Error> {
             let mut elm_modules_parsed =
                 self.elm_modules_parsed.lock().unwrap();
-            let elm_module =
-                self.modules.lock().unwrap().get(path).map(ElmModule::clone);
-            if elm_module.is_some() {
+            let opt_module = self
+                .modules
+                .lock()
+                .unwrap()
+                .get(path)
+                .map(std::clone::Clone::clone);
+            if let Some(module) = opt_module {
                 *elm_modules_parsed += 1;
+                Ok(module)
+            } else {
+                Ok(Vec::new())
             }
-            Ok(elm_module)
         }
 
         fn parse_elm_stuff_idat(
             &self,
             path: &Path,
-        ) -> Result<Vec<(String, ElmModule)>, Error> {
+        ) -> Result<Vec<(String, ExportedName)>, Error> {
             let projects = self.projects.lock().unwrap();
             let project_root = project_root_from_idat_path(path)?;
             let project = projects.get(project_root).ok_or_else(|| {
@@ -886,10 +873,8 @@ mod tests {
                     .map(|name| {
                         (
                             name.to_string(),
-                            ElmModule {
-                                exports: vec![ExportedName::Value {
-                                    name: "ants".to_string(),
-                                }],
+                            ExportedName::Value {
+                                name: "ants".to_string(),
                             },
                         )
                     })
@@ -898,14 +883,12 @@ mod tests {
         )
     }
 
-    fn mk_module(path: &str) -> (PathBuf, ElmModule) {
+    fn mk_module(path: &str) -> (PathBuf, Vec<ExportedName>) {
         (
             PathBuf::from(path),
-            ElmModule {
-                exports: vec![ExportedName::Value {
-                    name: "bees".to_string(),
-                }],
-            },
+            vec![ExportedName::Value {
+                name: "bees".to_string(),
+            }],
         )
     }
 
