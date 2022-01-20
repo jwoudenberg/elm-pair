@@ -1,7 +1,6 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::{DataflowComputation, ElmModule, ExportedName};
-use crate::support::dataflow;
 use crate::support::log;
 use crate::support::log::Error;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
@@ -336,13 +335,11 @@ fn on_unrecognized_change(
         {}
         let insert_at_byte = tree_cursor.node().start_byte();
         for new_import_name in new_import_names {
-            let mut cursor = computation.project_cursor(code.buffer);
-            if get_elm_module(
-                &mut cursor,
-                &Rope::from_str(&new_import_name).slice(..),
-            )
-            .is_ok()
-                && !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
+            if !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
+                && computation
+                    .module_cursor(code.buffer, new_import_name.clone())
+                    .get_module()
+                    .is_ok()
             {
                 refactor.add_change(
                     insert_at_byte..insert_at_byte,
@@ -370,8 +367,9 @@ fn on_added_constructors_to_exposing_list(
             log::mk_err!("did not find parent import of exposed constructor")
         })?;
     let import = parse_import_node(engine, &diff.new, import_node)?;
-    let mut cursor = computation.project_cursor(diff.new.buffer);
-    let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
+    let mut cursor = computation
+        .module_cursor(diff.new.buffer, import.unaliased_name().to_string());
+    let module = cursor.get_module()?;
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
@@ -396,19 +394,6 @@ fn on_added_constructors_to_exposing_list(
         None,
     )?;
     Ok(())
-}
-
-fn get_elm_module<'a>(
-    cursor: &'a mut dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>>,
-    name: &RopeSlice,
-) -> Result<&'a ElmModule, Error> {
-    let project_info = cursor.get_project()?;
-    project_info
-        .get(name.to_string().as_str())
-        .ok_or_else(|| {
-            log::mk_err!("could not find module named {}", name.to_string())
-        })
-        .map(|module| *module)
 }
 
 fn on_changed_module_name(
@@ -585,8 +570,12 @@ fn on_removed_constructors_from_exposing_list(
         let (_, exposed) = result?;
         if let ExposedName::Type(type_) = exposed {
             if type_.name == type_name {
-                let mut cursor = computation.project_cursor(diff.new.buffer);
-                match old_import.constructors_of_type(&mut cursor, &type_)? {
+                let mut cursor = computation.module_cursor(
+                    diff.new.buffer,
+                    old_import.unaliased_name().to_string(),
+                );
+                let module = cursor.get_module()?;
+                match constructors_of_type(module, &type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         references_to_qualify.insert(Name {
                             name: Rope::from_str(ctor),
@@ -630,8 +619,11 @@ fn on_changed_values_in_exposing_list(
         log::mk_err!("could not find parent import node of exposing list")
     })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
-    let mut cursor = computation.project_cursor(diff.new.buffer);
-    let module = get_elm_module(&mut cursor, &old_import.unaliased_name())?;
+    let mut cursor = computation.module_cursor(
+        diff.new.buffer,
+        old_import.unaliased_name().to_string(),
+    );
+    let module = cursor.get_module()?;
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
@@ -725,8 +717,11 @@ fn on_removed_module_qualifier_from_value(
         get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if unqualified_name.kind == NameKind::Constructor {
-        let mut cursor = computation.project_cursor(diff.new.buffer);
-        let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
+        let mut cursor = computation.module_cursor(
+            diff.new.buffer,
+            import.unaliased_name().to_string(),
+        );
+        let module = cursor.get_module()?;
         for export in module.exports.iter() {
             match export {
                 ExportedName::Value { .. } => {}
@@ -823,9 +818,11 @@ fn remove_qualifier_from_references(
         } else {
             for res in import.exposing_list() {
                 let (_, exposed) = res?;
-                let mut cursor = computation.project_cursor(code.buffer);
-                let module =
-                    get_elm_module(&mut cursor, &import.unaliased_name())?;
+                let mut cursor = computation.module_cursor(
+                    code.buffer,
+                    import.unaliased_name().to_string(),
+                );
+                let module = cursor.get_module()?;
                 exposed.for_each_name(module, |reference| {
                     names_from_other_modules
                         .insert(reference, import.aliased_name().into());
@@ -1131,8 +1128,12 @@ fn qualify_value(
                     });
                 }
 
-                let mut cursor = computation.project_cursor(code.buffer);
-                match import.constructors_of_type(&mut cursor, type_)? {
+                let mut cursor = computation.module_cursor(
+                    code.buffer,
+                    import.unaliased_name().to_string(),
+                );
+                let module = cursor.get_module()?;
+                match constructors_of_type(module, type_)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         if ctor == &reference.name {
                             // Ensure we don't remove the item from the exposing
@@ -1201,8 +1202,12 @@ fn qualify_value(
                 if remove_expose_all_if_necessary {
                     let mut exposed_names: HashMap<Name, &ExportedName> =
                         HashMap::new();
-                    let mut cursor = computation.project_cursor(code.buffer);
-                    get_elm_module(&mut cursor, &import.unaliased_name())
+                    let mut cursor = computation.module_cursor(
+                        code.buffer,
+                        import.unaliased_name().to_string(),
+                    );
+                    cursor
+                        .get_module()
                         .map_err(|err| {
                             log::mk_err!(
                                 "failed to read exports of {}: {:?}",
@@ -1311,12 +1316,11 @@ fn qualify_value(
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let mut cursor =
-                            computation.project_cursor(code.buffer);
-                        let exports = match get_elm_module(
-                            &mut cursor,
-                            &import.unaliased_name(),
-                        ) {
+                        let mut cursor = computation.module_cursor(
+                            code.buffer,
+                            import.unaliased_name().to_string(),
+                        );
+                        let exports = match cursor.get_module() {
                             Ok(module) => &module.exports,
                             Err(err) => {
                                 log::error!(
@@ -1375,8 +1379,9 @@ fn on_added_exposing_list_to_import(
     new_parent: Node,
 ) -> Result<(), Error> {
     let import = parse_import_node(engine, code, new_parent)?;
-    let mut cursor = computation.project_cursor(code.buffer);
-    let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
+    let mut cursor = computation
+        .module_cursor(code.buffer, import.unaliased_name().to_string());
+    let module = cursor.get_module()?;
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;
@@ -1406,8 +1411,9 @@ fn on_removed_exposing_list_from_import(
     let import = parse_import_node(engine, &diff.old, old_parent)?;
     let qualifier = import.aliased_name();
     let mut val_cursor = QueryCursor::new();
-    let mut cursor = computation.project_cursor(diff.new.buffer);
-    let module = get_elm_module(&mut cursor, &import.unaliased_name())?;
+    let mut cursor = computation
+        .module_cursor(diff.new.buffer, import.unaliased_name().to_string());
+    let module = cursor.get_module()?;
     let mut references_to_qualify = HashSet::new();
     let import =
         get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
@@ -1819,33 +1825,28 @@ impl Import<'_> {
             cursor,
         }
     }
+}
 
-    fn constructors_of_type<'a>(
-        &'a self,
-        cursor: &'a mut dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>>,
-        type_: &ExposedType,
-    ) -> Result<ExposedConstructors, Error> {
-        let module = get_elm_module(
-            cursor,
-            &self.code.slice(&self.name_node.byte_range()),
-        )?;
-        for export in module.exports.iter() {
-            match export {
-                ExportedName::Value { .. } => {}
-                ExportedName::RecordTypeAlias { name } => {
-                    return Ok(ExposedConstructors::FromTypeAlias(name));
-                }
-                ExportedName::Type { name, constructors } => {
-                    if type_.name.eq(name) {
-                        return Ok(ExposedConstructors::FromCustomType(
-                            constructors,
-                        ));
-                    }
+fn constructors_of_type<'a>(
+    module: &'a ElmModule,
+    type_: &ExposedType,
+) -> Result<ExposedConstructors<'a>, Error> {
+    for export in module.exports.iter() {
+        match export {
+            ExportedName::Value { .. } => {}
+            ExportedName::RecordTypeAlias { name } => {
+                return Ok(ExposedConstructors::FromTypeAlias(name));
+            }
+            ExportedName::Type { name, constructors } => {
+                if type_.name.eq(name) {
+                    return Ok(ExposedConstructors::FromCustomType(
+                        constructors,
+                    ));
                 }
             }
         }
-        Err(log::mk_err!("did not find type in module"))
     }
+    Err(log::mk_err!("did not find type in module"))
 }
 
 struct ExposedList<'a> {

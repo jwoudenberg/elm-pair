@@ -32,8 +32,10 @@ pub struct DataflowComputation {
     // all changes made to the inputs below, i.e. whether the outputs will show
     // up-to-date information.
     probes: Vec<dataflow::Probe>,
-    // An input representing the project we're currently in having info about.
+    // An input representing the buffers we're querying.
     queried_buffers_input: dataflow::Input<Buffer>,
+    // An input representing the module names we're querying.
+    queried_modules_input: dataflow::Input<String>,
     // An input representing projects we're currently tracking.
     buffers_input: dataflow::Input<(Buffer, PathBuf)>,
     // An input representing events happening to files. Whether it's file
@@ -45,7 +47,7 @@ pub struct DataflowComputation {
     file_event_receiver: Receiver<notify::DebouncedEvent>,
     // A trace containing information about all Elm modules in projects
     // currently tracked.
-    modules_by_name: dataflow::KeyTrace<String, ElmModule>,
+    query_results: dataflow::SelfTrace<ElmModule>,
 }
 
 #[derive(
@@ -159,6 +161,8 @@ impl DataflowComputation {
 
         let mut queried_buffers_input =
             differential_dataflow::input::InputSession::new();
+        let mut queried_modules_input =
+            differential_dataflow::input::InputSession::new();
         let mut buffers_input =
             differential_dataflow::input::InputSession::new();
         let mut filepath_events_input =
@@ -173,8 +177,9 @@ impl DataflowComputation {
             log::mk_err!("failed creating file watcher: {:?}", err)
         })?;
 
-        let (modules_by_name, probes) = worker.dataflow(|scope| {
+        let (query_results, probes) = worker.dataflow(|scope| {
             let queried_buffers = queried_buffers_input.to_collection(scope);
+            let queried_modules = queried_modules_input.to_collection(scope);
             let buffers = buffers_input.to_collection(scope);
             let filepath_events = filepath_events_input.to_collection(scope);
 
@@ -243,14 +248,16 @@ impl DataflowComputation {
                 .semijoin(&queried_buffers)
                 .map(|(_, project)| project);
 
-            let modules_by_name = modules
+            let query_results = modules
                 .semijoin(&queried_projects)
                 .map(|(_, x)| x)
-                .arrange_by_key();
+                .semijoin(&queried_modules)
+                .map(|(_, x)| x)
+                .arrange_by_self();
 
             (
-                modules_by_name.trace,
-                vec![watched_paths.probe(), modules_by_name.stream.probe()],
+                query_results.trace,
+                vec![watched_paths.probe(), query_results.stream.probe()],
             )
         });
 
@@ -258,10 +265,11 @@ impl DataflowComputation {
             worker,
             probes,
             queried_buffers_input,
+            queried_modules_input,
             buffers_input,
             filepath_events_input,
             file_event_receiver,
-            modules_by_name,
+            query_results,
         };
 
         Ok(computation)
@@ -275,11 +283,12 @@ impl DataflowComputation {
         let DataflowComputation {
             worker,
             queried_buffers_input,
+            queried_modules_input,
             buffers_input,
             filepath_events_input,
             probes,
             file_event_receiver,
-            modules_by_name,
+            query_results,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -314,62 +323,56 @@ impl DataflowComputation {
         dataflow::Advancable::advance(
             &mut (
                 queried_buffers_input,
+                queried_modules_input,
                 buffers_input,
                 filepath_events_input,
-                modules_by_name,
+                query_results,
                 probes,
             ),
             worker,
         );
     }
 
-    pub fn project_cursor(
+    pub fn module_cursor(
         &mut self,
         buffer: Buffer,
-    ) -> dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>> {
+        module: String,
+    ) -> dataflow::Cursor<dataflow::SelfTrace<ElmModule>> {
         self.queried_buffers_input.insert(buffer);
+        self.queried_modules_input.insert(module.clone());
         self.advance();
-        // Remove the project from the query list as to not affect future
-        // queries. This change will take effect the next time we `advance()`.
+        // Remove the existing query as to not affect future queries.
+        // This change will take effect the next time we `advance()`.
         self.queried_buffers_input.remove(buffer);
+        self.queried_modules_input.remove(module);
 
-        let (cursor, storage) = self.modules_by_name.cursor();
+        let (cursor, storage) = self.query_results.cursor();
         dataflow::Cursor { cursor, storage }
     }
 }
 
-impl dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>> {
-    pub fn get_project(&mut self) -> Result<ProjectInfo, Error> {
-        let mut modules = HashMap::new();
+impl dataflow::Cursor<dataflow::SelfTrace<ElmModule>> {
+    pub fn get_module(&mut self) -> Result<&ElmModule, Error> {
         self.cursor.rewind_keys(&self.storage);
         self.cursor.rewind_vals(&self.storage);
-        while let (Some(module_name), Some(module)) = (
-            self.cursor.get_key(&self.storage),
-            self.cursor.get_val(&self.storage),
-        ) {
+        while let Some(module) = self.cursor.get_key(&self.storage) {
             let mut times = 0;
             self.cursor.map_times(&self.storage, |_, r| times += r);
             if times > 0 {
-                modules.insert(module_name.as_str(), module);
+                return Ok(module);
             }
             self.cursor.step_key(&self.storage);
         }
-        if modules.is_empty() {
-            return Err(log::mk_err!("did not find modules for project"));
-        } else {
-            Ok(modules)
-        }
+        Err(log::mk_err!("did not find modules for project"))
     }
 }
 
-pub type ProjectInfo<'a> = HashMap<&'a str, &'a ElmModule>;
-
-#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ElmModule {
     pub exports: Vec<ExportedName>,
 }
 
-#[derive(Abomonation, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExportedName {
     Value {
         name: String,
