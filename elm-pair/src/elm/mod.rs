@@ -19,63 +19,60 @@ pub mod module_name;
 pub mod project_directory;
 pub mod query;
 
+// Macro for defining constants for the elm tree-sitter node kinds. This macro
+// ensures a test is added checking each constant is correct.
+macro_rules! node_constants {
+    (@id $language:expr, $name:ident) => {
+        $language.id_for_node_kind(&stringify!($name).to_lowercase(), true)
+    };
+
+    (@id $language:expr, $_:ident, $name:expr) => {
+        $language.id_for_node_kind($name, false)
+    };
+
+    ($($name:ident $(($kind_name:expr))? = $kind_id:expr;)+) => {
+        $(const $name: u16 = $kind_id;)+
+
+        #[cfg(test)]
+        mod kind_constants {
+            use super::*;
+
+            #[test]
+            fn check_kind_constants() {
+                let language = tree_sitter_elm::language();
+                $(
+                    assert_eq!(
+                        $name,
+                        node_constants!(@id language, $name $(,$kind_name)?),
+                    );
+                )+
+            }
+        }
+    };
+}
+
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
-const AS_CLAUSE: u16 = 101;
-const BLOCK_COMMENT: u16 = 86;
-const COMMA: u16 = 6;
-const CONSTRUCTOR_IDENTIFIER: u16 = 8;
-const CONSTRUCTOR_QID: u16 = 96;
-const DOT: u16 = 55;
-const DOUBLE_DOT: u16 = 49;
-const EXPOSED_OPERATOR: u16 = 94;
-const EXPOSED_TYPE: u16 = 92;
-const EXPOSED_UNION_CONSTRUCTORS: u16 = 93;
-const EXPOSED_VALUE: u16 = 91;
-const EXPOSING_LIST: u16 = 90;
-const LOWER_CASE_IDENTIFIER: u16 = 1;
-const MODULE_NAME_SEGMENT: u16 = 201;
-const MODULE_DECLARATION: u16 = 87;
-const TYPE_IDENTIFIER: u16 = 33;
-const TYPE_QID: u16 = 97;
-const VALUE_QID: u16 = 98;
-
-#[cfg(test)]
-mod kind_constants {
-    #[test]
-    fn check_kind_constants() {
-        let language = tree_sitter_elm::language();
-        let check = |constant, str, named| {
-            assert_eq!(constant, language.id_for_node_kind(str, named))
-        };
-        check(super::AS_CLAUSE, "as_clause", true);
-        check(super::BLOCK_COMMENT, "block_comment", true);
-        check(super::COMMA, ",", false);
-        check(
-            super::CONSTRUCTOR_IDENTIFIER,
-            "constructor_identifier",
-            true,
-        );
-        check(super::CONSTRUCTOR_QID, "constructor_qid", true);
-        check(super::DOT, "dot", true);
-        check(super::DOUBLE_DOT, "double_dot", true);
-        check(super::EXPOSED_OPERATOR, "exposed_operator", true);
-        check(super::EXPOSED_TYPE, "exposed_type", true);
-        check(
-            super::EXPOSED_UNION_CONSTRUCTORS,
-            "exposed_union_constructors",
-            true,
-        );
-        check(super::EXPOSED_VALUE, "exposed_value", true);
-        check(super::EXPOSING_LIST, "exposing_list", true);
-        check(super::LOWER_CASE_IDENTIFIER, "lower_case_identifier", true);
-        check(super::MODULE_NAME_SEGMENT, "module_name_segment", true);
-        check(super::MODULE_DECLARATION, "module_declaration", true);
-        check(super::TYPE_IDENTIFIER, "type_identifier", true);
-        check(super::TYPE_QID, "type_qid", true);
-        check(super::VALUE_QID, "value_qid", true);
-    }
-}
+node_constants!(
+    AS_CLAUSE = 101;
+    BLOCK_COMMENT = 86;
+    COMMA (",") = 6;
+    CONSTRUCTOR_IDENTIFIER = 8;
+    CONSTRUCTOR_QID = 96;
+    DOT = 55;
+    DOUBLE_DOT = 49;
+    EXPOSED_OPERATOR = 94;
+    EXPOSED_TYPE = 92;
+    EXPOSED_UNION_CONSTRUCTORS = 93;
+    EXPOSED_VALUE = 91;
+    EXPOSING_LIST = 90;
+    LOWER_CASE_IDENTIFIER = 1;
+    MODULE_NAME_SEGMENT = 201;
+    MODULE_DECLARATION = 87;
+    TYPE_IDENTIFIER = 33;
+    TYPE_QID = 97;
+    VALUE_QID = 98;
+);
 
 const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
     "Basics", "Char", "Cmd", "List", "Maybe", "Platform", "Result", "String",
