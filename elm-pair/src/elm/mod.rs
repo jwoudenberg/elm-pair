@@ -1,7 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::{
-    DataflowComputation, ElmModule, ExportedName, ProjectId, ProjectInfo,
+    DataflowComputation, ElmModule, ExportedName, ProjectInfo,
 };
 use crate::support::log;
 use crate::support::log::Error;
@@ -85,7 +85,6 @@ const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
 ];
 
 pub struct RefactorEngine {
-    buffers: HashMap<Buffer, BufferInfo>,
     dataflow_computation: DataflowComputation,
     queries: Queries,
 }
@@ -94,10 +93,6 @@ pub struct Queries {
     query_for_imports: QueryForImports,
     query_for_unqualified_values: QueryForUnqualifiedValues,
     query_for_qualified_values: QueryForQualifiedValues,
-}
-
-pub struct BufferInfo {
-    pub project_id: ProjectId,
 }
 
 pub struct Refactor {
@@ -143,7 +138,6 @@ impl RefactorEngine {
     pub fn new(compiler: Compiler) -> Result<RefactorEngine, Error> {
         let language = tree_sitter_elm::language();
         let engine = RefactorEngine {
-            buffers: HashMap::new(),
             dataflow_computation: DataflowComputation::new(compiler)?,
             queries: Queries {
                 query_for_imports: QueryForImports::init(language)?,
@@ -167,7 +161,6 @@ impl RefactorEngine {
         changes: TreeChanges<'a>,
     ) -> Result<Refactor, Error> {
         let RefactorEngine {
-            buffers,
             dataflow_computation,
             queries,
         } = self;
@@ -179,11 +172,7 @@ impl RefactorEngine {
         let after = attach_kinds(&changes.new_added);
         let mut refactor = Refactor::new();
 
-        let buffer_info = buffers.get(&diff.new.buffer).ok_or_else(|| {
-            log::mk_err!("no project on file for buffer {:?}", diff.new.buffer)
-        })?;
-        let mut cursor =
-            dataflow_computation.project_cursor(&buffer_info.project_id);
+        let mut cursor = dataflow_computation.project_cursor(diff.new.buffer);
         let project_info = cursor.get_project()?;
 
         match (before.as_slice(), after.as_slice()) {
@@ -306,12 +295,9 @@ impl RefactorEngine {
         buffer: Buffer,
         path: &Path,
     ) -> Result<(), Error> {
-        let project_root =
-            crate::elm::project_directory::root(path)?.to_owned();
-        let project_id = self.dataflow_computation.watch_project(project_root);
+        self.dataflow_computation
+            .track_buffer(buffer, path.to_owned());
         self.dataflow_computation.advance();
-        let buffer_info = BufferInfo { project_id };
-        self.buffers.insert(buffer, buffer_info);
         Ok(())
     }
 }

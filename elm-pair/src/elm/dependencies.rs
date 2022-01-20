@@ -5,6 +5,7 @@ use crate::support::dataflow;
 use crate::support::dir_walker::DirWalker;
 use crate::support::log;
 use crate::support::log::Error;
+use crate::support::source_code::Buffer;
 use abomonation_derive::Abomonation;
 use differential_dataflow::operators::arrange::ArrangeByKey;
 use differential_dataflow::operators::arrange::ArrangeBySelf;
@@ -32,9 +33,9 @@ pub struct DataflowComputation {
     // up-to-date information.
     probes: Vec<dataflow::Probe>,
     // An input representing the project we're currently in having info about.
-    queried_projects_input: dataflow::Input<ProjectId>,
+    queried_buffers_input: dataflow::Input<Buffer>,
     // An input representing projects we're currently tracking.
-    project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
+    buffers_input: dataflow::Input<(Buffer, PathBuf)>,
     // An input representing events happening to files. Whether it's file
     // creation, removal, or modification, we just push a path in here to let
     // it know something's changed.
@@ -45,14 +46,12 @@ pub struct DataflowComputation {
     // A trace containing information about all Elm modules in projects
     // currently tracked.
     modules_by_name: dataflow::KeyTrace<String, ElmModule>,
-    // Generated project id's indexed by the project's root path.
-    project_ids: HashMap<PathBuf, ProjectId>,
 }
 
 #[derive(
     Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
-pub struct ProjectId(u8); // 256 Elm Project should be enough for everyone.
+struct ProjectId(u8); // 256 Elm Project should be enough for everyone.
 
 // This trait exists to allow dependency injection of side-effecty functions
 // that read and write files into pure dataflow computation logic. The goal is
@@ -149,6 +148,7 @@ impl ElmIO for RealElmIO {
 
 impl DataflowComputation {
     pub fn new(compiler: Compiler) -> Result<DataflowComputation, Error> {
+        let mut project_ids = HashMap::new();
         let elm_io = RealElmIO { compiler };
         let language = tree_sitter_elm::language();
         let query_for_exports = QueryForExports::init(language)?;
@@ -157,9 +157,9 @@ impl DataflowComputation {
         let mut worker =
             timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
-        let mut queried_projects_input =
+        let mut queried_buffers_input =
             differential_dataflow::input::InputSession::new();
-        let mut project_roots_input =
+        let mut buffers_input =
             differential_dataflow::input::InputSession::new();
         let mut filepath_events_input =
             differential_dataflow::input::InputSession::new();
@@ -174,15 +174,43 @@ impl DataflowComputation {
         })?;
 
         let (modules_by_name, probes) = worker.dataflow(|scope| {
-            let queried_projects = queried_projects_input.to_collection(scope);
-            let project_roots = project_roots_input.to_collection(scope);
+            let queried_buffers = queried_buffers_input.to_collection(scope);
+            let buffers = buffers_input.to_collection(scope);
             let filepath_events = filepath_events_input.to_collection(scope);
+
+            let buffer_projects =
+                buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
+                    match crate::elm::project_directory::root(&path) {
+                        Ok(root) => {
+                            let next_project_id =
+                                ProjectId(project_ids.len() as u8);
+                            let project_id = project_ids
+                                .entry(root.to_owned())
+                                .or_insert(next_project_id);
+                            Some((buffer, *project_id, root.to_owned()))
+                        }
+                        Err(err) => {
+                            log::error!(
+                            "Can't find Elm project root for path {:?}: {:?}",
+                                path,
+                                err,
+                            );
+                            None
+                        }
+                    }
+                });
+
+            let project_roots = buffer_projects
+                .map(|(_, project, root)| (project, root))
+                .distinct();
+
             let (modules, paths_to_watch) = dataflow_graph(
                 elm_io,
                 query_for_exports,
                 project_roots,
                 filepath_events,
             );
+
             let watched_paths =
                 paths_to_watch.inspect(move |(path, _, diff)| {
                     match std::cmp::Ord::cmp(diff, &0) {
@@ -209,10 +237,17 @@ impl DataflowComputation {
                         }
                     }
                 });
+
+            let queried_projects = buffer_projects
+                .map(|(buffer, project, _)| (buffer, project))
+                .semijoin(&queried_buffers)
+                .map(|(_, project)| project);
+
             let modules_by_name = modules
                 .semijoin(&queried_projects)
                 .map(|(_, x)| x)
                 .arrange_by_key();
+
             (
                 modules_by_name.trace,
                 vec![watched_paths.probe(), modules_by_name.stream.probe()],
@@ -222,52 +257,29 @@ impl DataflowComputation {
         let computation = DataflowComputation {
             worker,
             probes,
-            queried_projects_input,
-            project_roots_input,
+            queried_buffers_input,
+            buffers_input,
             filepath_events_input,
             file_event_receiver,
             modules_by_name,
-            project_ids: HashMap::new(),
         };
 
         Ok(computation)
     }
 
-    pub fn watch_project(&mut self, project_root: PathBuf) -> ProjectId {
-        let next_project_id = ProjectId(self.project_ids.len() as u8);
-        let project_id = *self
-            .project_ids
-            .entry(project_root.clone())
-            .or_insert(next_project_id);
-        self.project_roots_input.insert((project_id, project_root));
-        project_id
-    }
-
-    pub fn _unwatch_project(&mut self, project_id: ProjectId) {
-        let opt_project_root =
-            self.project_ids.iter().find_map(|(root, id)| {
-                if *id == project_id {
-                    Some(root)
-                } else {
-                    None
-                }
-            });
-        if let Some(project_root) = opt_project_root {
-            self.project_roots_input
-                .remove((project_id, project_root.clone()))
-        }
+    pub fn track_buffer(&mut self, buffer: Buffer, path: PathBuf) {
+        self.buffers_input.insert((buffer, path));
     }
 
     pub fn advance(&mut self) {
         let DataflowComputation {
             worker,
-            queried_projects_input,
-            project_roots_input,
+            queried_buffers_input,
+            buffers_input,
             filepath_events_input,
             probes,
             file_event_receiver,
             modules_by_name,
-            project_ids: _,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -301,8 +313,8 @@ impl DataflowComputation {
 
         dataflow::Advancable::advance(
             &mut (
-                queried_projects_input,
-                project_roots_input,
+                queried_buffers_input,
+                buffers_input,
                 filepath_events_input,
                 modules_by_name,
                 probes,
@@ -313,13 +325,13 @@ impl DataflowComputation {
 
     pub fn project_cursor(
         &mut self,
-        project: &ProjectId,
+        buffer: Buffer,
     ) -> dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>> {
-        self.queried_projects_input.insert(*project);
+        self.queried_buffers_input.insert(buffer);
         self.advance();
         // Remove the project from the query list as to not affect future
         // queries. This change will take effect the next time we `advance()`.
-        self.queried_projects_input.remove(*project);
+        self.queried_buffers_input.remove(buffer);
 
         let (cursor, storage) = self.modules_by_name.cursor();
         dataflow::Cursor { cursor, storage }
