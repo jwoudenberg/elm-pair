@@ -182,8 +182,9 @@ impl RefactorEngine {
         let buffer_info = buffers.get(&diff.new.buffer).ok_or_else(|| {
             log::mk_err!("no project on file for buffer {:?}", diff.new.buffer)
         })?;
-        let mut cursor = dataflow_computation.project_cursor();
-        let project_info = cursor.get_project(&buffer_info.project_id)?;
+        let mut cursor =
+            dataflow_computation.project_cursor(&buffer_info.project_id);
+        let project_info = cursor.get_project()?;
 
         match (before.as_slice(), after.as_slice()) {
             (

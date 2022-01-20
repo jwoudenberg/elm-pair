@@ -31,6 +31,8 @@ pub struct DataflowComputation {
     // all changes made to the inputs below, i.e. whether the outputs will show
     // up-to-date information.
     probes: Vec<dataflow::Probe>,
+    // An input representing the project we're currently in having info about.
+    queried_projects_input: dataflow::Input<ProjectId>,
     // An input representing projects we're currently tracking.
     project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
     // An input representing events happening to files. Whether it's file
@@ -42,7 +44,7 @@ pub struct DataflowComputation {
     file_event_receiver: Receiver<notify::DebouncedEvent>,
     // A trace containing information about all Elm modules in projects
     // currently tracked.
-    modules_by_project: dataflow::KeyTrace<ProjectId, (String, ElmModule)>,
+    modules_by_name: dataflow::KeyTrace<String, ElmModule>,
     // Generated project id's indexed by the project's root path.
     project_ids: HashMap<PathBuf, ProjectId>,
 }
@@ -155,6 +157,8 @@ impl DataflowComputation {
         let mut worker =
             timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
+        let mut queried_projects_input =
+            differential_dataflow::input::InputSession::new();
         let mut project_roots_input =
             differential_dataflow::input::InputSession::new();
         let mut filepath_events_input =
@@ -169,7 +173,8 @@ impl DataflowComputation {
             log::mk_err!("failed creating file watcher: {:?}", err)
         })?;
 
-        let (modules_by_project, probes) = worker.dataflow(|scope| {
+        let (modules_by_name, probes) = worker.dataflow(|scope| {
+            let queried_projects = queried_projects_input.to_collection(scope);
             let project_roots = project_roots_input.to_collection(scope);
             let filepath_events = filepath_events_input.to_collection(scope);
             let (modules, paths_to_watch) = dataflow_graph(
@@ -178,42 +183,50 @@ impl DataflowComputation {
                 project_roots,
                 filepath_events,
             );
-                let watched_paths = paths_to_watch
-                    .inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
+            let watched_paths =
+                paths_to_watch.inspect(move |(path, _, diff)| {
+                    match std::cmp::Ord::cmp(diff, &0) {
                         std::cmp::Ordering::Equal => {}
                         std::cmp::Ordering::Less => {
                             if let Err(err) = file_watcher.unwatch(path) {
                                 log::error!(
-                                    "failed while remove path {:?} to watch for changes: {:?}",
-                                    path,
-                                    err
-                                )
+                    "failed while remove path {:?} to watch for changes: {:?}",
+                                path,
+                                err
+                            )
                             }
                         }
                         std::cmp::Ordering::Greater => {
-                            if let Err(err) = file_watcher.watch(path, notify::RecursiveMode::Recursive) {
+                            if let Err(err) = file_watcher
+                                .watch(path, notify::RecursiveMode::Recursive)
+                            {
                                 log::error!(
-                                    "failed while adding path {:?} to watch for changes: {:?}",
+                "failed while adding path {:?} to watch for changes: {:?}",
                                     path,
-                                    err
-                                )
+                                err
+                            )
                             }
                         }
-                    });
-            let modules_by_project = modules.arrange_by_key();
+                    }
+                });
+            let modules_by_name = modules
+                .semijoin(&queried_projects)
+                .map(|(_, x)| x)
+                .arrange_by_key();
             (
-                modules_by_project.trace,
-                vec![watched_paths.probe(), modules_by_project.stream.probe()],
+                modules_by_name.trace,
+                vec![watched_paths.probe(), modules_by_name.stream.probe()],
             )
         });
 
         let computation = DataflowComputation {
             worker,
             probes,
+            queried_projects_input,
             project_roots_input,
             filepath_events_input,
             file_event_receiver,
-            modules_by_project,
+            modules_by_name,
             project_ids: HashMap::new(),
         };
 
@@ -248,11 +261,12 @@ impl DataflowComputation {
     pub fn advance(&mut self) {
         let DataflowComputation {
             worker,
+            queried_projects_input,
             project_roots_input,
             filepath_events_input,
             probes,
             file_event_receiver,
-            modules_by_project,
+            modules_by_name,
             project_ids: _,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
@@ -287,9 +301,10 @@ impl DataflowComputation {
 
         dataflow::Advancable::advance(
             &mut (
+                queried_projects_input,
                 project_roots_input,
                 filepath_events_input,
-                modules_by_project,
+                modules_by_name,
                 probes,
             ),
             worker,
@@ -298,37 +313,37 @@ impl DataflowComputation {
 
     pub fn project_cursor(
         &mut self,
-    ) -> dataflow::Cursor<dataflow::KeyTrace<ProjectId, (String, ElmModule)>>
-    {
-        let (cursor, storage) = self.modules_by_project.cursor();
+        project: &ProjectId,
+    ) -> dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>> {
+        self.queried_projects_input.insert(*project);
+        self.advance();
+        // Remove the project from the query list as to not affect future
+        // queries. This change will take effect the next time we `advance()`.
+        self.queried_projects_input.remove(*project);
+
+        let (cursor, storage) = self.modules_by_name.cursor();
         dataflow::Cursor { cursor, storage }
     }
 }
 
-impl dataflow::Cursor<dataflow::KeyTrace<ProjectId, (String, ElmModule)>> {
-    pub fn get_project(
-        &mut self,
-        project: &ProjectId,
-    ) -> Result<ProjectInfo, Error> {
+impl dataflow::Cursor<dataflow::KeyTrace<String, ElmModule>> {
+    pub fn get_project(&mut self) -> Result<ProjectInfo, Error> {
         let mut modules = HashMap::new();
         self.cursor.rewind_keys(&self.storage);
         self.cursor.rewind_vals(&self.storage);
-        self.cursor.seek_key(&self.storage, project);
-        while let Some((module_name, module)) =
-            self.cursor.get_val(&self.storage)
-        {
+        while let (Some(module_name), Some(module)) = (
+            self.cursor.get_key(&self.storage),
+            self.cursor.get_val(&self.storage),
+        ) {
             let mut times = 0;
             self.cursor.map_times(&self.storage, |_, r| times += r);
             if times > 0 {
                 modules.insert(module_name.as_str(), module);
             }
-            self.cursor.step_val(&self.storage);
+            self.cursor.step_key(&self.storage);
         }
         if modules.is_empty() {
-            return Err(log::mk_err!(
-                "did not find project with id {:?}",
-                project
-            ));
+            return Err(log::mk_err!("did not find modules for project"));
         } else {
             Ok(modules)
         }
@@ -726,12 +741,21 @@ mod tests {
                 .collect()
         }
 
-        fn project_cursor(
-            &mut self,
-        ) -> dataflow::Cursor<dataflow::KeyTrace<ProjectId, (String, ElmModule)>>
-        {
-            let (cursor, storage) = self.modules_by_project.cursor();
-            dataflow::Cursor { cursor, storage }
+        pub fn project(&mut self, project: ProjectId) -> HashSet<String> {
+            let (mut cursor, storage) = self.modules_by_project.cursor();
+            cursor
+                .to_vec(&storage)
+                .into_iter()
+                .filter_map(|((project_, (name, _contents)), counts)| {
+                    let total: isize =
+                        counts.into_iter().map(|(_, count)| count).sum();
+                    if total > 0 && project_ == project {
+                        Some(name)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         }
     }
 
@@ -870,19 +894,6 @@ mod tests {
         )
     }
 
-    fn assert_modules(
-        computation: &mut DependenciesCalculation,
-        project: &ProjectId,
-        modules: &[&str],
-    ) {
-        let mut cursor = computation.project_cursor();
-        let project = cursor.get_project(project).unwrap();
-        assert_eq!(
-            project.keys().copied().collect::<HashSet<&str>>(),
-            modules.iter().copied().collect::<HashSet<&str>>(),
-        );
-    }
-
     #[test]
     fn project_elm_files_are_found() {
         // Given an Elm project with some files...
@@ -904,10 +915,12 @@ mod tests {
         computation.advance();
 
         // Then all its modules are discovered...
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Animals.Bat".to_string(),
+                "Care.Soap".to_string()
+            ]),
         );
         // And the right paths are tracked...
         assert_eq!(
@@ -937,10 +950,12 @@ mod tests {
             .project_roots_input
             .insert((project_id, project_root.clone()));
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Animals.Bat".to_string(),
+                "Care.Soap".to_string()
+            ]),
         );
         // And the right paths are tracked...
         assert_eq!(
@@ -959,13 +974,7 @@ mod tests {
         computation.advance();
 
         // Then it is forgotten
-        if computation
-            .project_cursor()
-            .get_project(&project_id)
-            .is_ok()
-        {
-            panic!("Did not expect project to be found");
-        }
+        assert_eq!(computation.project(project_id), HashSet::new(),);
         // And the projects paths are no longer tracked...
         assert_eq!(computation.watched_paths(), HashSet::new(),);
     }
@@ -984,7 +993,10 @@ mod tests {
             .project_roots_input
             .insert((project_id, project_root));
         computation.advance();
-        assert_modules(&mut computation, &project_id, &["Animals.Bat"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Animals.Bat".to_string()]),
+        );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
         // When we add an another module file...
@@ -999,10 +1011,12 @@ mod tests {
         computation.advance();
 
         // Then the module file is picked up...
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Elements.Water", "Animals.Bat"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Elements.Water".to_string(),
+                "Animals.Bat".to_string()
+            ]),
         );
         // And we only parsed the new module...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
@@ -1033,12 +1047,17 @@ mod tests {
             .project_roots_input
             .insert((project2_id, project2_root));
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Animals.Bat".to_string(),
+                "Care.Soap".to_string()
+            ]),
         );
-        assert_modules(&mut computation, &project2_id, &["Care.Shampoo"]);
+        assert_eq!(
+            computation.project(project2_id),
+            HashSet::from_iter(["Care.Shampoo".to_string()]),
+        );
     }
 
     #[test]
@@ -1055,7 +1074,10 @@ mod tests {
             .project_roots_input
             .insert((project_id, project_root));
         computation.advance();
-        assert_modules(&mut computation, &project_id, &["Animals.Bat"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Animals.Bat".to_string()]),
+        );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
         // When we send an event for the file...
@@ -1085,10 +1107,12 @@ mod tests {
             .project_roots_input
             .insert((project_id, project_root));
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Animals.Bat".to_string(),
+                "Care.Soap".to_string()
+            ]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
 
@@ -1104,7 +1128,10 @@ mod tests {
         computation.advance();
 
         // Then the module is removed from the project...
-        assert_modules(&mut computation, &project_id, &["Care.Soap"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Care.Soap".to_string()]),
+        );
         // And no additional parsing has taken place...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
     }
@@ -1127,10 +1154,12 @@ mod tests {
             .project_roots_input
             .insert((project_id, project_root.clone()));
         computation.advance();
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Json.Decode", "Animals.Bat"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Json.Decode".to_string(),
+                "Animals.Bat".to_string()
+            ]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
         assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 1);
@@ -1149,7 +1178,10 @@ mod tests {
         // Then the elm.json is reparsed...
         assert_eq!(*elm_io.elm_jsons_parsed.lock().unwrap(), 2);
         // And the project's only contains dependency modules...
-        assert_modules(&mut computation, &project_id, &["Json.Decode"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Json.Decode".to_string()]),
+        );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
     }
 
@@ -1167,7 +1199,10 @@ mod tests {
             .project_roots_input
             .insert((project_id, project_root.clone()));
         computation.advance();
-        assert_modules(&mut computation, &project_id, &["Json.Decode"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Json.Decode".to_string()]),
+        );
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 1);
 
         // When we change the i.dat file to list other dependencies...
@@ -1184,7 +1219,10 @@ mod tests {
         // Then the i.dat file is reparsed...
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 2);
         // And the project's dependency modules have chanaged
-        assert_modules(&mut computation, &project_id, &["Time"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Time".to_string()]),
+        );
     }
 
     #[test]
@@ -1211,8 +1249,14 @@ mod tests {
         computation.advance();
 
         // Then both projects list the modules in the shared source directory...
-        assert_modules(&mut computation, &project_id, &["Care.Soap"]);
-        assert_modules(&mut computation, &project2_id, &["Care.Soap"]);
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter(["Care.Soap".to_string()]),
+        );
+        assert_eq!(
+            computation.project(project2_id),
+            HashSet::from_iter(["Care.Soap".to_string()]),
+        );
 
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
@@ -1243,10 +1287,12 @@ mod tests {
         computation.advance();
 
         // Then the resulting project contains the expected modules...
-        assert_modules(
-            &mut computation,
-            &project_id,
-            &["Animals.Bat", "Care.Soap"],
+        assert_eq!(
+            computation.project(project_id),
+            HashSet::from_iter([
+                "Animals.Bat".to_string(),
+                "Care.Soap".to_string()
+            ]),
         );
         // And each module has only been parsed once...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
