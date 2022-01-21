@@ -563,31 +563,23 @@ fn on_removed_constructors_from_exposing_list(
         })?;
     let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
     let mut references_to_qualify = HashSet::new();
-    for result in old_import.exposing_list() {
-        let (_, exposed) = result?;
-        if let ExposedName::Type(type_) = exposed {
-            if type_.name == type_name {
-                let mut cursor = computation.exports_cursor(
-                    diff.new.buffer,
-                    old_import.unaliased_name().to_string(),
-                );
-                match constructors_of_type(cursor.iter(), &type_)? {
-                    ExposedConstructors::FromTypeAlias(ctor) => {
-                        references_to_qualify.insert(Name {
-                            name: Rope::from_str(ctor),
-                            kind: NameKind::Constructor,
-                        });
-                    }
-                    ExposedConstructors::FromCustomType(ctors) => {
-                        for ctor in ctors {
-                            references_to_qualify.insert(Name {
-                                name: Rope::from_str(ctor),
-                                kind: NameKind::Constructor,
-                            });
-                        }
-                    }
-                }
-                break;
+    let mut cursor = computation.exports_cursor(
+        diff.new.buffer,
+        old_import.unaliased_name().to_string(),
+    );
+    match constructors_of_exports(cursor.iter(), type_name)? {
+        ExposedConstructors::FromTypeAlias(ctor) => {
+            references_to_qualify.insert(Name {
+                name: Rope::from_str(ctor),
+                kind: NameKind::Constructor,
+            });
+        }
+        ExposedConstructors::FromCustomType(ctors) => {
+            for ctor in ctors {
+                references_to_qualify.insert(Name {
+                    name: Rope::from_str(ctor),
+                    kind: NameKind::Constructor,
+                });
             }
         }
     }
@@ -1125,7 +1117,7 @@ fn qualify_value(
                     code.buffer,
                     import.unaliased_name().to_string(),
                 );
-                match constructors_of_type(cursor.iter(), type_)? {
+                match constructors_of_exports(cursor.iter(), type_.name)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         if ctor == &reference.name {
                             // Ensure we don't remove the item from the exposing
@@ -1795,9 +1787,9 @@ impl Import<'_> {
     }
 }
 
-fn constructors_of_type<'a, I>(
+fn constructors_of_exports<'a, I>(
     exported_names: I,
-    type_: &ExposedType,
+    type_name: RopeSlice<'a>,
 ) -> Result<ExposedConstructors<'a>, Error>
 where
     I: Iterator<Item = &'a ExportedName>,
@@ -1809,7 +1801,7 @@ where
                 return Ok(ExposedConstructors::FromTypeAlias(name));
             }
             ExportedName::Type { name, constructors } => {
-                if type_.name.eq(name) {
+                if type_name.eq(name) {
                     return Ok(ExposedConstructors::FromCustomType(
                         constructors,
                     ));
