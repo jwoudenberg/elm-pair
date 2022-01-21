@@ -18,6 +18,7 @@ pub mod io;
 pub mod module_name;
 pub mod project;
 pub mod query;
+pub mod refactors;
 
 // Macro for defining constants for the elm tree-sitter node kinds. This macro
 // ensures a test is added checking each constant is correct.
@@ -73,11 +74,6 @@ node_constants!(
     TYPE_QID = 97;
     VALUE_QID = 98;
 );
-
-const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
-    "Basics", "Char", "Cmd", "List", "Maybe", "Platform", "Result", "String",
-    "Sub", "Tuple",
-];
 
 pub struct RefactorEngine {
     dataflow_computation: DataflowComputation,
@@ -163,117 +159,345 @@ impl RefactorEngine {
         let after = attach_kinds(&changes.new_added);
         let mut refactor = Refactor::new();
 
-        match (before.as_slice(), after.as_slice()) {
-            (
-                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [DOUBLE_DOT]
-                | [],
-                [EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
-                | [DOUBLE_DOT]
-                | [],
-            ) => on_changed_values_in_exposing_list(
-                &self.queries,
-                &mut self.dataflow_computation,
-                &mut refactor,
-                diff,
-                changes.old_parent,
-                changes.new_parent,
-            )?,
-            (
-                [TYPE_IDENTIFIER],
-                [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
-            )
-            | (
-                [CONSTRUCTOR_IDENTIFIER],
-                [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
-            )
-            | (
-                [LOWER_CASE_IDENTIFIER],
-                [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-            ) => on_added_module_qualifier_to_value(
-                &self.queries,
-                &mut self.dataflow_computation,
-                &mut refactor,
-                diff,
-                changes.old_parent,
-                changes.new_parent,
-            )?,
-            (
-                [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
-                [TYPE_IDENTIFIER],
-            )
-            | (
-                [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
-                [CONSTRUCTOR_IDENTIFIER],
-            )
-            | (
-                [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
-                [LOWER_CASE_IDENTIFIER],
-            ) => on_removed_module_qualifier_from_value(
-                &self.queries,
-                &mut self.dataflow_computation,
-                &mut refactor,
-                diff,
-                changes.old_parent,
-                changes.new_parent,
-            )?,
-            ([], [EXPOSING_LIST]) => on_added_exposing_list_to_import(
-                &self.queries,
-                &mut self.dataflow_computation,
-                &mut refactor,
-                &diff.new,
-                changes.new_parent,
-            )?,
-            ([EXPOSING_LIST], []) => on_removed_exposing_list_from_import(
-                &self.queries,
-                &mut self.dataflow_computation,
-                &mut refactor,
-                diff,
-                changes.old_parent,
-            )?,
-            ([], [EXPOSED_UNION_CONSTRUCTORS]) => {
-                on_added_constructors_to_exposing_list(
+        match (Change {
+            before: before.as_slice(),
+            after: after.as_slice(),
+            parent: changes.old_parent.kind_id(),
+        }) {
+            Change {
+                before:
+                    [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                    | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                    | [DOUBLE_DOT]
+                    | [],
+                after:
+                    [EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                    | [COMMA, EXPOSED_VALUE | EXPOSED_TYPE, ..]
+                    | [DOUBLE_DOT]
+                    | [],
+                parent: _,
+            } => {
+                let old_import_node =
+                    changes.old_parent.parent().ok_or_else(|| {
+                        log::mk_err!(
+                        "could not find parent import node of exposing list"
+                    )
+                    })?;
+                let old_import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    old_import_node,
+                )?;
+                let new_import_node =
+                    changes.new_parent.parent().ok_or_else(|| {
+                        log::mk_err!(
+            "could not find import node as parent of exposing list node"
+        )
+                    })?;
+                let new_import = parse_import_node(
+                    &self.queries,
+                    &diff.new,
+                    new_import_node,
+                )?;
+                refactors::changed_values_in_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
                     &mut refactor,
-                    diff,
-                    changes.new_parent,
+                    &diff.new,
+                    old_import,
+                    new_import,
                 )?
             }
-            ([EXPOSED_UNION_CONSTRUCTORS], []) => {
-                on_removed_constructors_from_exposing_list(
+            Change {
+                before: [TYPE_IDENTIFIER],
+                after: [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+                parent: _,
+            }
+            | Change {
+                before: [CONSTRUCTOR_IDENTIFIER],
+                after: [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
+                parent: _,
+            }
+            | Change {
+                before: [LOWER_CASE_IDENTIFIER],
+                after: [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
+                parent: _,
+            } => {
+                let mut cursor = QueryCursor::new();
+                let (_, old_reference) = self
+                    .queries
+                    .query_for_unqualified_values
+                    .run_in(&mut cursor, &diff.old, changes.old_parent)
+                    .next()
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "parsing unqualified value node using query failed"
+                        )
+                    })??;
+                let (_, qualified_name) = self
+                    .queries
+                    .query_for_qualified_values
+                    .run_in(&mut cursor, &diff.new, changes.new_parent)
+                    .next()
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
+                    })??;
+                if old_reference.name == qualified_name.unqualified_name.name {
+                    refactors::added_module_qualifier_to_name::refactor(
+                        &self.queries,
+                        &mut self.dataflow_computation,
+                        &mut refactor,
+                        &diff.new,
+                        qualified_name,
+                    )?
+                }
+            }
+            Change {
+                before: [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
+                after: [TYPE_IDENTIFIER],
+                parent: _,
+            }
+            | Change {
+                before: [MODULE_NAME_SEGMENT, DOT, .., CONSTRUCTOR_IDENTIFIER],
+                after: [CONSTRUCTOR_IDENTIFIER],
+                parent: _,
+            }
+            | Change {
+                before: [MODULE_NAME_SEGMENT, DOT, .., LOWER_CASE_IDENTIFIER],
+                after: [LOWER_CASE_IDENTIFIER],
+                parent: _,
+            } => {
+                let mut cursor = QueryCursor::new();
+                let (node, new_reference) = self
+                    .queries
+                    .query_for_unqualified_values
+                    .run_in(&mut cursor, &diff.new, changes.new_parent)
+                    .next()
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "parsing unqualified value node using query failed"
+                        )
+                    })??;
+                let mut cursor2 = QueryCursor::new();
+                let (_, qualified_name) = self
+                    .queries
+                    .query_for_qualified_values
+                    .run_in(&mut cursor2, &diff.old, changes.old_parent)
+                    .next()
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
+                    })??;
+                if new_reference.name == qualified_name.unqualified_name.name {
+                    refactors::removed_module_qualifier_from_name::refactor(
+                        &self.queries,
+                        &mut self.dataflow_computation,
+                        &mut refactor,
+                        &diff.new,
+                        node,
+                        qualified_name,
+                    )?
+                }
+            }
+            Change {
+                before: [],
+                after: [EXPOSING_LIST],
+                parent: _,
+            } => {
+                let import = parse_import_node(
+                    &self.queries,
+                    &diff.new,
+                    changes.new_parent,
+                )?;
+                refactors::added_exposing_list_to_import::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
                     &mut refactor,
-                    diff,
-                    changes.old_parent,
+                    &diff.new,
+                    import,
                 )?
             }
-            ([] | [AS_CLAUSE], [AS_CLAUSE] | []) => on_changed_as_clause(
-                &self.queries,
-                &mut refactor,
-                diff,
-                changes.old_parent,
-                changes.new_parent,
-            )?,
-            ([.., MODULE_NAME_SEGMENT], [.., MODULE_NAME_SEGMENT]) => {
-                on_changed_module_name(
+            Change {
+                before: [EXPOSING_LIST],
+                after: [],
+                parent: _,
+            } => {
+                let import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    changes.old_parent,
+                )?;
+                refactors::removed_exposing_list_from_import::refactor(
+                    &self.queries,
+                    &mut self.dataflow_computation,
+                    &mut refactor,
+                    &diff.new,
+                    import,
+                )?
+            }
+            Change {
+                before: [],
+                after: [EXPOSED_UNION_CONSTRUCTORS],
+                parent: _,
+            } => {
+                let type_name_node = changes.new_parent.child(0).ok_or_else(|| {
+        log::mk_err!("did not find node with type name of exposed constructor")
+    })?;
+                let type_name = diff.new.slice(&type_name_node.byte_range());
+                let import_node = changes
+                    .new_parent
+                    .parent()
+                    .and_then(|n| n.parent())
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "did not find parent import of exposed constructor"
+                        )
+                    })?;
+                let import =
+                    parse_import_node(&self.queries, &diff.new, import_node)?;
+                refactors::added_constructors_to_exposing_list::refactor(
+                    &self.queries,
+                    &mut self.dataflow_computation,
+                    &mut refactor,
+                    &diff.new,
+                    import,
+                    type_name,
+                )?;
+            }
+            Change {
+                before: [EXPOSED_UNION_CONSTRUCTORS],
+                after: [],
+                parent: _,
+            } => {
+                let type_name_node =
+                    changes.old_parent.child(0).ok_or_else(|| {
+                        log::mk_err!(
+                            "could not find name node of exposed type node"
+                        )
+                    })?;
+                let type_name = diff.old.slice(&type_name_node.byte_range());
+                let old_import_node = changes
+                    .old_parent
+                    .parent()
+                    .and_then(|n| n.parent())
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                "could not find import parent node of exposed type node"
+            )
+                    })?;
+                let old_import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    old_import_node,
+                )?;
+                refactors::removed_constructors_from_exposing_list::refactor(
+                    &self.queries,
+                    &mut self.dataflow_computation,
+                    &mut refactor,
+                    &diff.new,
+                    old_import,
+                    type_name,
+                )?
+            }
+            Change {
+                before: [] | [AS_CLAUSE],
+                after: [AS_CLAUSE] | [],
+                parent: _,
+            }
+            | Change {
+                before: [.., MODULE_NAME_SEGMENT],
+                after: [.., MODULE_NAME_SEGMENT],
+                parent: AS_CLAUSE,
+            } => {
+                let (old_import_node, new_import_node) =
+                    if changes.old_parent.kind_id() == AS_CLAUSE {
+                        (
+                            changes.old_parent.parent().ok_or_else(|| {
+                                log::mk_err!(
+                                    "found an unexpected root as_clause node"
+                                )
+                            })?,
+                            changes.new_parent.parent().ok_or_else(|| {
+                                log::mk_err!(
+                                    "found an unexpected root as_clause node"
+                                )
+                            })?,
+                        )
+                    } else {
+                        (changes.old_parent, changes.new_parent)
+                    };
+                let new_import = parse_import_node(
+                    &self.queries,
+                    &diff.new,
+                    new_import_node,
+                )?;
+                let new_aliased_name = new_import.aliased_name();
+                let old_import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    old_import_node,
+                )?;
+                let old_aliased_name = old_import.aliased_name();
+                refactors::changed_as_clause::refactor(
                     &self.queries,
                     &mut refactor,
-                    diff,
-                    changes.old_parent,
-                    changes.new_parent,
-                )?
+                    &diff.new,
+                    old_aliased_name,
+                    new_aliased_name,
+                )?;
             }
-            _ => on_unrecognized_change(
-                &self.queries,
-                &mut self.dataflow_computation,
-                &mut refactor,
-                &diff.new,
-                changes.new_parent,
-            )?,
+            Change {
+                before: [.., MODULE_NAME_SEGMENT],
+                after: [.., MODULE_NAME_SEGMENT],
+                parent: VALUE_QID | TYPE_QID | CONSTRUCTOR_QID,
+            } => {
+                let mut cursor = QueryCursor::new();
+                let (_, old_name) = self
+                    .queries
+                    .query_for_qualified_values
+                    .run_in(&mut cursor, &diff.old, changes.old_parent)
+                    .next()
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
+                    })??;
+                let (_, new_name) = self
+                    .queries
+                    .query_for_qualified_values
+                    .run_in(&mut cursor, &diff.new, changes.new_parent)
+                    .next()
+                    .ok_or_else(|| {
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
+                    })??;
+                refactors::changed_module_qualifier::refactor(
+                    &self.queries,
+                    &mut refactor,
+                    &diff.new,
+                    old_name,
+                    new_name,
+                )?;
+            }
+            _ => {
+                let unimported_qualifiers = find_unimported_qualifiers(
+                    &self.queries,
+                    &diff.new,
+                    changes.new_parent,
+                )?;
+                if !unimported_qualifiers.is_empty() {
+                    refactors::typed_unimported_qualified_value::refactor(
+                        &mut self.dataflow_computation,
+                        &mut refactor,
+                        &diff.new,
+                        unimported_qualifiers,
+                    )?;
+                }
+            }
         }
         Ok(refactor)
     }
@@ -290,27 +514,29 @@ impl RefactorEngine {
     }
 }
 
+struct Change<'a> {
+    before: &'a [u16],
+    after: &'a [u16],
+    parent: u16,
+}
+
 fn _is_elm_file(path: &Path) -> bool {
     path.extension() == Some(std::ffi::OsStr::new("elm"))
 }
 
 #[allow(clippy::needless_collect)]
-fn on_unrecognized_change(
+fn find_unimported_qualifiers(
     engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     parent: Node,
-) -> Result<(), Error> {
-    // Check for new qualified variables, which might indicate imports we need
-    // to add.
+) -> Result<HashSet<String>, Error> {
     let mut cursor = QueryCursor::new();
     let existing_imports: Vec<Rope> = engine
         .query_for_imports
         .run(&mut cursor, code)
         .map(|import| import.aliased_name().into())
         .collect();
-    let mut new_import_names = HashSet::new();
+    let mut unimported_qualifiers = HashSet::new();
     for result in
         engine
             .query_for_qualified_values
@@ -320,458 +546,10 @@ fn on_unrecognized_change(
         if reference.unqualified_name.name.len_bytes() > 0
             && !existing_imports.contains(&reference.qualifier)
         {
-            new_import_names.insert(reference.qualifier.to_string());
+            unimported_qualifiers.insert(reference.qualifier.to_string());
         }
     }
-    if !new_import_names.is_empty() {
-        let mut tree_cursor = code.tree.root_node().walk();
-        tree_cursor.goto_first_child();
-        while (tree_cursor.node().kind_id() == MODULE_DECLARATION
-            || tree_cursor.node().kind_id() == BLOCK_COMMENT)
-            && tree_cursor.goto_next_sibling()
-        {}
-        let insert_at_byte = tree_cursor.node().start_byte();
-        for new_import_name in new_import_names {
-            if !IMPLICIT_ELM_IMPORTS.contains(&new_import_name.as_str())
-                && computation
-                    .exports_cursor(code.buffer, new_import_name.clone())
-                    .iter()
-                    .next()
-                    .is_some()
-            {
-                refactor.add_change(
-                    insert_at_byte..insert_at_byte,
-                    format!("import {}\n", new_import_name),
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn on_added_constructors_to_exposing_list(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    parent: Node,
-) -> Result<(), Error> {
-    let type_name_node = parent.child(0).ok_or_else(|| {
-        log::mk_err!("did not find node with type name of exposed constructor")
-    })?;
-    let type_name = diff.new.slice(&type_name_node.byte_range());
-    let import_node =
-        parent.parent().and_then(|n| n.parent()).ok_or_else(|| {
-            log::mk_err!("did not find parent import of exposed constructor")
-        })?;
-    let import = parse_import_node(engine, &diff.new, import_node)?;
-    let mut cursor = computation
-        .exports_cursor(diff.new.buffer, import.unaliased_name().to_string());
-    let mut references_to_unqualify = HashSet::new();
-    for export in cursor.iter() {
-        if let ExportedName::Type { name, constructors } = export {
-            if name == &type_name {
-                references_to_unqualify.extend(constructors.iter().map(
-                    |ctor| Name {
-                        name: Rope::from_str(ctor),
-                        kind: NameKind::Constructor,
-                    },
-                ));
-                break;
-            }
-        }
-    }
-    remove_qualifier_from_references(
-        engine,
-        computation,
-        refactor,
-        &diff.new,
-        &import.aliased_name(),
-        references_to_unqualify,
-        None,
-    )?;
-    Ok(())
-}
-
-fn on_changed_module_name(
-    engine: &Queries,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent_node: Node,
-    new_parent_node: Node,
-) -> Result<(), Error> {
-    match old_parent_node.kind_id() {
-        AS_CLAUSE => {
-            let old_import_node =
-                old_parent_node.parent().ok_or_else(|| {
-                    log::mk_err!("found an unexpected root as_clause node")
-                })?;
-            let new_import_node =
-                new_parent_node.parent().ok_or_else(|| {
-                    log::mk_err!("found an unexpected root as_clause node")
-                })?;
-            on_changed_as_clause(
-                engine,
-                refactor,
-                diff,
-                old_import_node,
-                new_import_node,
-            )?;
-        }
-        VALUE_QID | TYPE_QID | CONSTRUCTOR_QID => {
-            on_changed_module_qualifier(
-                engine,
-                refactor,
-                diff,
-                old_parent_node,
-                new_parent_node,
-            )?;
-        }
-        _ => {}
-    };
-    Ok(())
-}
-
-fn on_changed_module_qualifier(
-    engine: &Queries,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent_node: Node,
-    new_parent_node: Node,
-) -> Result<(), Error> {
-    let mut cursor = QueryCursor::new();
-    let (_, old_reference) = engine
-        .query_for_qualified_values
-        .run_in(&mut cursor, &diff.old, old_parent_node)
-        .next()
-        .ok_or_else(|| {
-            log::mk_err!("parsing qualified value node using query failed")
-        })??;
-    let (_, new_reference) = engine
-        .query_for_qualified_values
-        .run_in(&mut cursor, &diff.new, new_parent_node)
-        .next()
-        .ok_or_else(|| {
-            log::mk_err!("parsing qualified value node using query failed")
-        })??;
-
-    let import = engine
-        .query_for_imports
-        .run(&mut cursor, &diff.new)
-        .find(|import| import.aliased_name() == old_reference.qualifier)
-        .ok_or_else(|| {
-            log::mk_err!(
-                "did not find import statement with the expected aliased name"
-            )
-        })?;
-    match import.as_clause_node {
-        Some(as_clause_name_node) => {
-            if import.unaliased_name() == new_reference.qualifier {
-                let as_clause_node =
-                    as_clause_name_node.parent().ok_or_else(|| {
-                        log::mk_err!(
-                            "found unexpected root as clause name nood"
-                        )
-                    })?;
-                refactor.add_change(
-                    (as_clause_node.start_byte() - 1)
-                        ..as_clause_node.end_byte(),
-                    String::new(),
-                )
-            } else {
-                refactor.add_change(
-                    as_clause_name_node.byte_range(),
-                    new_reference.qualifier.to_string(),
-                )
-            }
-        }
-        None => {
-            let insert_point = import.name_node.end_byte();
-            refactor.add_change(
-                insert_point..insert_point,
-                format!(" as {}", new_reference.qualifier),
-            );
-        }
-    }
-
-    change_qualifier(
-        engine,
-        refactor,
-        diff,
-        old_reference.qualifier.slice(..),
-        new_reference.qualifier.slice(..),
-    )?;
-    Ok(())
-}
-
-fn on_changed_as_clause(
-    engine: &Queries,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_import_node: Node,
-    new_import_node: Node,
-) -> Result<(), Error> {
-    let new_import = parse_import_node(engine, &diff.new, new_import_node)?;
-    let new_aliased_name = new_import.aliased_name();
-    let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
-    let old_aliased_name = old_import.aliased_name();
-    change_qualifier(engine, refactor, diff, old_aliased_name, new_aliased_name)
-}
-
-fn change_qualifier(
-    engine: &Queries,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_aliased_name: RopeSlice,
-    new_aliased_name: RopeSlice,
-) -> Result<(), Error> {
-    let mut cursor = QueryCursor::new();
-    for result in engine
-        .query_for_qualified_values
-        .run(&mut cursor, &diff.new)
-    {
-        let (node, reference) = result?;
-        let old_qualifier_len = 1 + old_aliased_name.len_bytes();
-        if reference.qualifier == old_aliased_name {
-            refactor.add_change(
-                node.start_byte()..(node.start_byte() + old_qualifier_len),
-                format!("{}.", new_aliased_name),
-            );
-        }
-    }
-    Ok(())
-}
-
-fn on_removed_constructors_from_exposing_list(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent: Node,
-) -> Result<(), Error> {
-    let type_name_node = old_parent.child(0).ok_or_else(|| {
-        log::mk_err!("could not find name node of exposed type node")
-    })?;
-    let type_name = diff.old.slice(&type_name_node.byte_range());
-    let old_import_node = old_parent
-        .parent()
-        .and_then(|n| n.parent())
-        .ok_or_else(|| {
-            log::mk_err!(
-                "could not find import parent node of exposed type node"
-            )
-        })?;
-    let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
-    let mut references_to_qualify = HashSet::new();
-    let mut cursor = computation.exports_cursor(
-        diff.new.buffer,
-        old_import.unaliased_name().to_string(),
-    );
-    match constructors_of_exports(cursor.iter(), type_name)? {
-        ExposedConstructors::FromTypeAlias(ctor) => {
-            references_to_qualify.insert(Name {
-                name: Rope::from_str(ctor),
-                kind: NameKind::Constructor,
-            });
-        }
-        ExposedConstructors::FromCustomType(ctors) => {
-            for ctor in ctors {
-                references_to_qualify.insert(Name {
-                    name: Rope::from_str(ctor),
-                    kind: NameKind::Constructor,
-                });
-            }
-        }
-    }
-    add_qualifier_to_references(
-        engine,
-        refactor,
-        &mut QueryCursor::new(),
-        &diff.new,
-        None,
-        &old_import,
-        references_to_qualify,
-    )?;
-    Ok(())
-}
-
-fn on_changed_values_in_exposing_list(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent: Node,
-    new_parent: Node,
-) -> Result<(), Error> {
-    let old_import_node = old_parent.parent().ok_or_else(|| {
-        log::mk_err!("could not find parent import node of exposing list")
-    })?;
-    let old_import = parse_import_node(engine, &diff.old, old_import_node)?;
-    let mut cursor = computation.exports_cursor(
-        diff.new.buffer,
-        old_import.unaliased_name().to_string(),
-    );
-    let mut old_references = HashSet::new();
-    for result in old_import.exposing_list() {
-        let (_, exposed) = result?;
-        exposed.for_each_name(cursor.iter(), |reference| {
-            old_references.insert(reference);
-        });
-    }
-
-    let new_import_node = new_parent.parent().ok_or_else(|| {
-        log::mk_err!(
-            "could not find import node as parent of exposing list node"
-        )
-    })?;
-    let new_import = parse_import_node(engine, &diff.new, new_import_node)?;
-    let mut new_references = HashSet::new();
-    for result in new_import.exposing_list() {
-        let (_, exposed) = result?;
-        exposed.for_each_name(cursor.iter(), |reference| {
-            new_references.insert(reference);
-        });
-    }
-
-    let references_to_qualify = old_references
-        .clone()
-        .into_iter()
-        .filter(|reference| !new_references.contains(reference))
-        .collect();
-
-    let references_to_unqualify = new_references
-        .into_iter()
-        .filter(|reference| !old_references.contains(reference))
-        .collect();
-
-    add_qualifier_to_references(
-        engine,
-        refactor,
-        &mut QueryCursor::new(),
-        &diff.new,
-        None,
-        &new_import,
-        references_to_qualify,
-    )?;
-
-    remove_qualifier_from_references(
-        engine,
-        computation,
-        refactor,
-        &diff.new,
-        &new_import.aliased_name(),
-        references_to_unqualify,
-        None,
-    )?;
-
-    Ok(())
-}
-
-fn on_removed_module_qualifier_from_value(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent: Node,
-    new_parent: Node,
-) -> Result<(), Error> {
-    let mut cursor = QueryCursor::new();
-    let (node_stripped_of_qualifier, new_reference) = engine
-        .query_for_unqualified_values
-        .run_in(&mut cursor, &diff.new, new_parent)
-        .next()
-        .ok_or_else(|| {
-            log::mk_err!("parsing unqualified value node using query failed")
-        })??;
-    let mut cursor2 = QueryCursor::new();
-    let (
-        _,
-        QualifiedName {
-            unqualified_name,
-            qualifier,
-        },
-    ) = engine
-        .query_for_qualified_values
-        .run_in(&mut cursor2, &diff.old, old_parent)
-        .next()
-        .ok_or_else(|| {
-            log::mk_err!("parsing qualified value node using query failed")
-        })??;
-    if new_reference.name != unqualified_name.name {
-        return Ok(());
-    }
-    let import =
-        get_import_by_aliased_name(engine, &diff.new, &qualifier.slice(..))?;
-    let mut references_to_unqualify = HashSet::new();
-    if unqualified_name.kind == NameKind::Constructor {
-        let mut cursor = computation.exports_cursor(
-            diff.new.buffer,
-            import.unaliased_name().to_string(),
-        );
-        for export in cursor.iter() {
-            match export {
-                ExportedName::Value { .. } => {}
-                ExportedName::RecordTypeAlias { name } => {
-                    // We're dealing here with a type alias being used as a
-                    // constructor. For example, given a type alias like:
-                    //
-                    //     type alias Point = { x : Int, y : Int }
-                    //
-                    // constructor usage would be doing this:
-                    //
-                    //     point = Point 7 2
-                    if name == &unqualified_name.name.to_string() {
-                        references_to_unqualify.insert(Name {
-                            kind: NameKind::Constructor,
-                            name: Rope::from_str(name),
-                        });
-                        add_to_exposing_list(
-                            &import,
-                            &Name {
-                                kind: NameKind::Type,
-                                name: unqualified_name.name,
-                            },
-                            None,
-                            refactor,
-                        )?;
-                        break;
-                    }
-                }
-                ExportedName::Type { name, constructors } => {
-                    if constructors.contains(&unqualified_name.name.to_string())
-                    {
-                        for ctor in constructors.iter() {
-                            references_to_unqualify.insert(Name {
-                                kind: NameKind::Constructor,
-                                name: Rope::from_str(ctor),
-                            });
-                        }
-                        add_to_exposing_list(
-                            &import,
-                            &unqualified_name,
-                            Some(name),
-                            refactor,
-                        )?;
-                        references_to_unqualify.insert(unqualified_name);
-                        break;
-                    }
-                }
-            }
-        }
-    } else {
-        add_to_exposing_list(&import, &unqualified_name, None, refactor)?;
-        references_to_unqualify.insert(unqualified_name);
-    };
-    remove_qualifier_from_references(
-        engine,
-        computation,
-        refactor,
-        &diff.new,
-        &qualifier.slice(..),
-        references_to_unqualify,
-        Some(node_stripped_of_qualifier),
-    )?;
-    Ok(())
+    Ok(unimported_qualifiers)
 }
 
 fn remove_qualifier_from_references(
@@ -1020,51 +798,6 @@ fn add_to_exposing_list(
         }
     }
     Ok(())
-}
-
-fn on_added_module_qualifier_to_value(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent: Node,
-    new_parent: Node,
-) -> Result<(), Error> {
-    let mut cursor = QueryCursor::new();
-    let (_, old_reference) = engine
-        .query_for_unqualified_values
-        .run_in(&mut cursor, &diff.old, old_parent)
-        .next()
-        .ok_or_else(|| {
-            log::mk_err!("parsing unqualified value node using query failed")
-        })??;
-    let (
-        _,
-        QualifiedName {
-            qualifier,
-            unqualified_name,
-        },
-    ) = engine
-        .query_for_qualified_values
-        .run_in(&mut cursor, &diff.new, new_parent)
-        .next()
-        .ok_or_else(|| {
-            log::mk_err!("parsing qualified value node using query failed")
-        })??;
-    if old_reference.name == unqualified_name.name {
-        qualify_value(
-            engine,
-            computation,
-            refactor,
-            &diff.new,
-            None,
-            &qualifier,
-            &unqualified_name,
-            false,
-        )
-    } else {
-        Ok(())
-    }
 }
 
 fn qualify_value(
@@ -1333,68 +1066,6 @@ fn qualify_value(
     Ok(())
 }
 
-fn on_added_exposing_list_to_import(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    code: &SourceFileSnapshot,
-    new_parent: Node,
-) -> Result<(), Error> {
-    let import = parse_import_node(engine, code, new_parent)?;
-    let mut cursor = computation
-        .exports_cursor(code.buffer, import.unaliased_name().to_string());
-    let mut references_to_unqualify = HashSet::new();
-    for result in import.exposing_list() {
-        let (_, exposed) = result?;
-        exposed.for_each_name(cursor.iter(), |reference| {
-            references_to_unqualify.insert(reference);
-        })
-    }
-    remove_qualifier_from_references(
-        engine,
-        computation,
-        refactor,
-        code,
-        &import.aliased_name(),
-        references_to_unqualify,
-        None,
-    )?;
-    Ok(())
-}
-
-fn on_removed_exposing_list_from_import(
-    engine: &Queries,
-    computation: &mut DataflowComputation,
-    refactor: &mut Refactor,
-    diff: &SourceFileDiff,
-    old_parent: Node,
-) -> Result<(), Error> {
-    let import = parse_import_node(engine, &diff.old, old_parent)?;
-    let qualifier = import.aliased_name();
-    let mut val_cursor = QueryCursor::new();
-    let mut cursor = computation
-        .exports_cursor(diff.new.buffer, import.unaliased_name().to_string());
-    let mut references_to_qualify = HashSet::new();
-    let import =
-        get_import_by_aliased_name(engine, &diff.old, &qualifier.slice(..))?;
-    for result in import.exposing_list() {
-        let (_, exposed) = result?;
-        exposed.for_each_name(cursor.iter(), |reference| {
-            references_to_qualify.insert(reference);
-        });
-    }
-    add_qualifier_to_references(
-        engine,
-        refactor,
-        &mut val_cursor,
-        &diff.new,
-        None,
-        &import,
-        references_to_qualify,
-    )?;
-    Ok(())
-}
-
 fn remove_exposing_list(refactor: &mut Refactor, import: &Import) {
     match import.exposing_list_node {
         None => {}
@@ -1594,15 +1265,15 @@ impl<'a, 'tree> QualifiedNames<'a, 'tree> {
 }
 
 #[derive(PartialEq)]
-struct QualifiedName {
-    qualifier: Rope,
-    unqualified_name: Name,
+pub struct QualifiedName {
+    pub qualifier: Rope,
+    pub unqualified_name: Name,
 }
 
 #[derive(Clone, Debug, Eq)]
-struct Name {
-    name: Rope,
-    kind: NameKind,
+pub struct Name {
+    pub name: Rope,
+    pub kind: NameKind,
 }
 
 impl PartialEq for Name {
@@ -1620,7 +1291,7 @@ impl std::hash::Hash for Name {
 }
 
 #[derive(PartialEq, Clone, Copy, Debug, Hash)]
-enum NameKind {
+pub enum NameKind {
     Value,
     Type,
     Constructor,
@@ -1753,12 +1424,12 @@ impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
     }
 }
 
-struct Import<'a> {
-    code: &'a SourceFileSnapshot,
-    root_node: Node<'a>,
-    name_node: Node<'a>,
-    as_clause_node: Option<Node<'a>>,
-    exposing_list_node: Option<Node<'a>>,
+pub struct Import<'a> {
+    pub code: &'a SourceFileSnapshot,
+    pub root_node: Node<'a>,
+    pub name_node: Node<'a>,
+    pub as_clause_node: Option<Node<'a>>,
+    pub exposing_list_node: Option<Node<'a>>,
 }
 
 impl Import<'_> {
@@ -2012,221 +1683,5 @@ fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
     println!("ADDED NODES:");
     for node in &changes.new_added {
         crate::debug_print_node(&diff.new, 2, node);
-    }
-}
-
-#[cfg(test)]
-mod simulations {
-    use super::*;
-    use crate::analysis_thread::{diff_trees, SourceFileDiff};
-    use crate::elm::RefactorEngine;
-    use crate::support::log;
-    use crate::support::source_code::Buffer;
-    use crate::test_support::included_answer_test as ia_test;
-    use crate::test_support::simulation::Simulation;
-    use crate::SourceFileSnapshot;
-    use std::path::Path;
-
-    macro_rules! simulation_test {
-        ($name:ident) => {
-            #[test]
-            fn $name() {
-                let mut path = std::path::PathBuf::new();
-                path.push("./tests/refactor-simulations");
-                let module_name = stringify!($name);
-                path.push(module_name.to_owned() + ".elm");
-                println!("Run simulation {:?}", &path);
-                run_simulation_test(&path);
-            }
-        };
-    }
-
-    fn run_simulation_test(path: &Path) {
-        match run_simulation_test_helper(path) {
-            Err(Error::ElmPair(err)) => {
-                eprintln!("{:?}", err);
-                panic!();
-            }
-            Err(Error::RunningSimulation(err)) => {
-                eprintln!("{:?}", err);
-                panic!();
-            }
-            Ok(res) => ia_test::assert_eq_answer_in(&res, path),
-        }
-    }
-
-    fn run_simulation_test_helper(path: &Path) -> Result<String, Error> {
-        let simulation = Simulation::from_file(path)?;
-        let buffer = Buffer {
-            buffer_id: 0,
-            editor_id: 0,
-        };
-        let old = SourceFileSnapshot::new(buffer, simulation.start_bytes)?;
-        let new = SourceFileSnapshot::new(buffer, simulation.end_bytes)?;
-        let mut diff = SourceFileDiff { old, new };
-        let tree_changes = diff_trees(&diff);
-        let compiler = Compiler::new().unwrap();
-        let mut refactor_engine = RefactorEngine::new(compiler)?;
-        refactor_engine.init_buffer(
-            buffer,
-            &path.canonicalize().map_err(|err| {
-                log::mk_err!("failed to canonicalize path: {:?}", err)
-            })?,
-        )?;
-        let edits = refactor_engine
-            .respond_to_change(&diff, tree_changes)?
-            .edits(&mut diff.new)?;
-        if edits.is_empty() || diff.old.bytes == diff.new.bytes {
-            Ok("No refactor for this change.".to_owned())
-        } else if diff.new.tree.root_node().has_error() {
-            Ok(format!(
-                "Refactor produced invalid code:\n{}",
-                diff.new.bytes
-            ))
-        } else {
-            Ok(diff.new.bytes.to_string())
-        }
-    }
-
-    // Qualifying values
-    simulation_test!(add_module_alias_as_qualifier_to_variable);
-    simulation_test!(add_module_qualifier_to_constructor);
-    simulation_test!(
-        add_module_qualifier_to_constructor_from_expose_all_import
-    );
-    simulation_test!(add_module_qualifier_to_type);
-    simulation_test!(add_module_qualifier_to_type_with_same_name);
-    simulation_test!(add_module_qualifier_to_value_from_exposing_all_import);
-    simulation_test!(add_module_qualifier_to_variable);
-    simulation_test!(
-        add_module_qualifier_to_record_type_alias_in_type_declaration
-    );
-    simulation_test!(
-        add_module_qualifier_to_record_type_alias_used_as_constructor
-    );
-    simulation_test!(remove_constructor_from_exposing_list_of_import);
-    simulation_test!(remove_exposing_all_clause_from_import);
-    simulation_test!(remove_exposing_all_clause_from_local_import);
-    simulation_test!(remove_exposing_clause_from_import);
-    simulation_test!(remove_exposing_clause_from_import_with_as_clause);
-    simulation_test!(remove_multiple_values_from_exposing_list_of_import);
-    simulation_test!(remove_operator_from_exposing_list_of_import);
-    simulation_test!(remove_type_with_constructor_from_exposing_list_of_import);
-    simulation_test!(remove_value_from_exposing_list_of_import_with_as_clause);
-    simulation_test!(remove_variable_from_exposing_list_of_import);
-    simulation_test!(remove_record_type_alias_from_exposing_list_of_import);
-    simulation_test!(add_record_type_alias_to_exposing_list_of_import);
-
-    // Removing module qualifiers from values
-    simulation_test!(remove_module_qualifier_from_variable);
-    simulation_test!(remove_module_qualifier_from_type);
-    simulation_test!(
-        remove_module_qualifier_inserting_variable_at_end_of_exposing_list
-    );
-    simulation_test!(remove_module_qualifier_for_module_without_exposing_list);
-    simulation_test!(remove_module_qualifier_for_module_exposing_all);
-    simulation_test!(remove_module_qualifier_from_constructor);
-    simulation_test!(remove_module_qualifier_from_exposed_constructor);
-    simulation_test!(remove_module_qualifier_from_constructor_of_exposed_type);
-    simulation_test!(
-        remove_module_qualifier_from_record_type_alias_used_as_function
-    );
-    simulation_test!(add_value_to_exposing_list);
-    simulation_test!(add_type_to_exposing_list);
-    simulation_test!(add_constructors_for_type_to_exposing_list);
-    simulation_test!(add_type_exposing_constructors_to_exposing_list);
-    simulation_test!(
-        add_record_type_alias_with_same_name_as_local_constructor_to_exposing_list_of_import
-    );
-    simulation_test!(
-        add_non_record_type_alias_with_same_name_as_local_constructor_to_exposing_list_of_import
-    );
-    simulation_test!(add_exposing_list);
-    simulation_test!(add_exposing_all_list);
-    simulation_test!(add_and_remove_items_in_exposing_list);
-    simulation_test!(replace_exposing_list_with_double_dot);
-    simulation_test!(replace_double_dot_with_exposing_list);
-    simulation_test!(
-        add_value_to_exposing_list_with_same_name_as_local_variable
-    );
-    simulation_test!(
-        add_value_to_exposing_list_with_same_name_as_top_level_function
-    );
-    simulation_test!(
-        remove_module_qualifier_from_variable_with_same_name_as_local_variable
-    );
-    simulation_test!(
-        expose_value_with_same_name_as_exposed_value_from_other_module
-    );
-    simulation_test!(
-        expose_value_with_same_name_as_value_from_other_module_exposing_all
-    );
-    simulation_test!(
-        remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
-    );
-    simulation_test!(
-        remove_module_qualifier_from_type_with_same_name_as_local_type_alias
-    );
-    simulation_test!(
-        remove_module_qualifier_from_type_with_same_name_as_local_type
-    );
-    simulation_test!(remove_module_qualifier_from_constructor_with_same_name_as_local_constructor);
-
-    // Changing as-clauses
-    simulation_test!(add_as_clause_to_import);
-    simulation_test!(change_as_clause_of_import);
-    simulation_test!(remove_as_clause_from_import);
-    simulation_test!(change_module_qualifier_of_value);
-    simulation_test!(change_module_qualifier_of_type);
-    simulation_test!(change_module_qualifier_of_constructor);
-    simulation_test!(
-        change_module_qualifier_of_variable_from_unaliased_import_name
-    );
-    simulation_test!(change_module_qualifier_to_match_unaliased_import_name);
-    simulation_test!(change_module_qualifier_to_invalid_name);
-
-    // Adding import statements
-    simulation_test!(use_qualifier_of_unimported_module_in_new_code);
-    simulation_test!(use_qualifier_of_non_existing_module_in_new_code);
-    simulation_test!(use_qualifier_of_implicitly_imported_module_in_new_code);
-    simulation_test!(use_qualifier_of_unimported_module_while_in_the_middle_of_writing_identifier);
-
-    // --- TESTS DEMONSTRATING CURRENT BUGS ---
-
-    // The exposing lists in these tests contained an operator. It doesn't get a
-    // qualifier because Elm doesn't allow qualified operators, and as a result
-    // this refactor doesn't produce compiling code.
-    // Potential fix: Add the exposing list back containing just the operator.
-    simulation_test!(remove_exposing_clause_containing_operator_from_import);
-    simulation_test!(
-        remove_exposing_all_clause_containing_operator_from_import
-    );
-    // When we expose a value with the same name as a local variable the local
-    // variable gets renamed to something else. This test demonstrates an edge
-    // case in this logic where the renaming logic is failing. When we expose
-    // multiple variables at the same time, one of which has the same name as
-    // a local variable and the other which has the name we would rename the
-    // local variable too, then we still end up with a naming conflict when all
-    // is done.
-    simulation_test!(
-        add_value_to_exposing_list_of_import_with_same_name_as_local_variable_and_another_with_the_same_name_plus_trailing_2
-    );
-
-    #[derive(Debug)]
-    enum Error {
-        RunningSimulation(crate::test_support::simulation::Error),
-        ElmPair(crate::Error),
-    }
-
-    impl From<crate::test_support::simulation::Error> for Error {
-        fn from(err: crate::test_support::simulation::Error) -> Error {
-            Error::RunningSimulation(err)
-        }
-    }
-
-    impl From<crate::Error> for Error {
-        fn from(err: crate::Error) -> Error {
-            Error::ElmPair(err)
-        }
     }
 }
