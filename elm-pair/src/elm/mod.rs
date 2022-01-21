@@ -1,6 +1,7 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
-use crate::elm::dependencies::{DataflowComputation, ExportedName};
+use crate::elm::dependencies::DataflowComputation;
+use crate::elm::io::ExportedName;
 use crate::support::log;
 use crate::support::log::Error;
 use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
@@ -13,10 +14,9 @@ use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
 
 pub mod compiler;
 pub mod dependencies;
-pub mod file_parsing;
-pub mod idat;
+pub mod io;
 pub mod module_name;
-pub mod project_directory;
+pub mod project;
 pub mod query;
 
 // Macro for defining constants for the elm tree-sitter node kinds. This macro

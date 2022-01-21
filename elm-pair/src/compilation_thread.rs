@@ -111,7 +111,7 @@ impl BufferInfo {
     fn new(path: &Path) -> Result<BufferInfo, Error> {
         let info = BufferInfo {
             last_checked_revision: None,
-            root: crate::elm::project_directory::root(path)?.to_owned(),
+            root: crate::elm::project::root(path)?.to_owned(),
         };
         Ok(info)
     }

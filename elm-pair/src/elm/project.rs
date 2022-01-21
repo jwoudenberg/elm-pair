@@ -1,6 +1,6 @@
 use crate::support::log;
 use crate::support::log::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn root(path: &Path) -> Result<&Path, Error> {
     let mut maybe_root = path;
@@ -20,6 +20,38 @@ pub fn root(path: &Path) -> Result<&Path, Error> {
             }
         }
     }
+}
+
+pub fn is_elm_file(path: &Path) -> bool {
+    path.extension() == Some(std::ffi::OsStr::new("elm"))
+}
+
+pub fn elm_json_path(project_root: &Path) -> PathBuf {
+    project_root.join("elm.json")
+}
+
+pub fn root_from_elm_json_path(elm_json: &Path) -> Result<&Path, Error> {
+    elm_json.parent().ok_or_else(|| {
+        log::mk_err!(
+            "couldn't navigate from elm.json file to project root directory"
+        )
+    })
+}
+
+pub fn idat_path(project_root: &Path) -> PathBuf {
+    project_root
+        .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
+}
+
+pub fn root_from_idat_path(idat: &Path) -> Result<&Path, Error> {
+    idat.parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| {
+            log::mk_err!(
+                "couldn't navigate from i.dat file to project root directory"
+            )
+        })
 }
 
 #[cfg(test)]

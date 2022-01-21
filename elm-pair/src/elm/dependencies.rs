@@ -1,25 +1,19 @@
 use crate::elm::compiler::Compiler;
-use crate::elm::file_parsing::QueryForExports;
-use crate::elm::idat;
+use crate::elm::io::{ElmIO, ExportedName, RealElmIO};
+use crate::elm::project;
 use crate::support::dataflow;
-use crate::support::dir_walker::DirWalker;
 use crate::support::log;
 use crate::support::log::Error;
 use crate::support::source_code::Buffer;
 use abomonation_derive::Abomonation;
-use differential_dataflow::operators::arrange::ArrangeByKey;
 use differential_dataflow::operators::arrange::ArrangeBySelf;
 use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
-use differential_dataflow::trace::cursor::CursorDebug;
 use differential_dataflow::trace::TraceReader;
 use notify::Watcher;
-use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::BufReader;
-use std::iter::FromIterator;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use timely::dataflow::operators::Probe;
 
@@ -54,107 +48,10 @@ pub struct DataflowComputation {
 )]
 struct ProjectId(u8); // 256 Elm Project should be enough for everyone.
 
-// This trait exists to allow dependency injection of side-effecty functions
-// that read and write files into pure dataflow computation logic. The goal is
-// to allow the dataflow logic to be tested in isolation.
-trait ElmIO: Clone {
-    type FilesInDir: IntoIterator<Item = PathBuf>;
-
-    fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error>;
-    fn parse_elm_module(
-        &self,
-        query_for_exports: &QueryForExports,
-        path: &Path,
-    ) -> Result<Vec<ExportedName>, Error>;
-    fn parse_elm_stuff_idat(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<(String, ExportedName)>, Error>;
-    fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
-}
-
-#[derive(Clone)]
-struct RealElmIO {
-    compiler: Compiler,
-}
-
-impl ElmIO for RealElmIO {
-    type FilesInDir = DirWalker;
-
-    fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error> {
-        let file = std::fs::File::open(path).map_err(|err| {
-            log::mk_err!("error while reading elm.json: {:?}", err)
-        })?;
-        let reader = BufReader::new(file);
-        let mut elm_json: ElmJson =
-            serde_json::from_reader(reader).map_err(|err| {
-                log::mk_err!("error while parsing elm.json: {:?}", err)
-            })?;
-        let project_root = project_root_from_elm_json_path(path)?;
-        for dir in elm_json.source_directories.as_mut_slice() {
-            let abs_path = project_root.join(&dir);
-            // If we cannot canonicalize the path, likely because it doesn't
-            // exist, we still want to keep listing the directory in case it is
-            // created in the future.
-            *dir = abs_path.canonicalize().unwrap_or(abs_path);
-        }
-        Ok(elm_json)
-    }
-
-    fn parse_elm_module(
-        &self,
-        query_for_exports: &QueryForExports,
-        path: &Path,
-    ) -> Result<Vec<ExportedName>, Error> {
-        crate::elm::file_parsing::parse(query_for_exports, path)
-    }
-
-    // TODO: Don't allocate the response Vec. Return an interator to dataflow.
-    fn parse_elm_stuff_idat(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<(String, ExportedName)>, Error> {
-        let file = std::fs::File::open(path).or_else(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                let project_root = project_root_from_idat_path(path)?;
-                create_elm_stuff(&self.compiler, project_root)?;
-                std::fs::File::open(path).map_err(|err| {
-                    log::mk_err!(
-                        "error opening elm-stuff/i.dat file: {:?}",
-                        err
-                    )
-                })
-            } else {
-                Err(log::mk_err!(
-                    "error opening elm-stuff/i.dat file: {:?}",
-                    err
-                ))
-            }
-        })?;
-        let reader = BufReader::new(file);
-        let exports = idat::parse(reader)?
-            .into_iter()
-            .flat_map(|(canonical_name, i)| {
-                let idat::Name(name) = canonical_name.module;
-                elm_module_from_interface(i)
-                    .into_iter()
-                    .map(move |export| (name.clone(), export))
-            })
-            .collect();
-        Ok(exports)
-    }
-
-    fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir {
-        DirWalker::new(path)
-    }
-}
-
 impl DataflowComputation {
     pub fn new(compiler: Compiler) -> Result<DataflowComputation, Error> {
         let mut project_ids = HashMap::new();
-        let elm_io = RealElmIO { compiler };
-        let language = tree_sitter_elm::language();
-        let query_for_exports = QueryForExports::init(language)?;
+        let elm_io = RealElmIO::new(compiler)?;
 
         let alloc = timely::communication::allocator::thread::Thread::new();
         let mut worker =
@@ -186,7 +83,7 @@ impl DataflowComputation {
 
             let buffer_projects =
                 buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
-                    match crate::elm::project_directory::root(&path) {
+                    match project::root(&path) {
                         Ok(root) => {
                             let next_project_id =
                                 ProjectId(project_ids.len() as u8);
@@ -210,12 +107,8 @@ impl DataflowComputation {
                 .map(|(_, project, root)| (project, root))
                 .distinct();
 
-            let (exports, paths_to_watch) = dataflow_graph(
-                elm_io,
-                query_for_exports,
-                project_roots,
-                filepath_events,
-            );
+            let (exports, paths_to_watch) =
+                dataflow_graph(elm_io, project_roots, filepath_events);
 
             let watched_paths =
                 paths_to_watch.inspect(move |(path, _, diff)| {
@@ -293,7 +186,7 @@ impl DataflowComputation {
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
-                if is_elm_file(&path) {
+                if project::is_elm_file(&path) {
                     filepath_events_input.insert(path)
                 }
             };
@@ -352,44 +245,9 @@ impl DataflowComputation {
     }
 }
 
-#[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ExportedName {
-    Value {
-        name: String,
-    },
-    Type {
-        name: String,
-        constructors: Vec<String>,
-    },
-    // We treat RecordTypeAlias separately from type, because it can be used as
-    // both a type and a constructor in imported code, i.e. you can do this:
-    //
-    //     type alias Point = { x : Int, y : Int }
-    //
-    //     origin : Point       // using `Point` as a type
-    //     origin = Point 0 0   // using `Point` as a constructor
-    //
-    // Modeling this as a `Type` with name `Point` and a single constructor also
-    // named `Point` wouldn't be entirely accurate, because constructors of
-    // custom types are imported using `exposing (MyType(..))`, whereas
-    // `exposing (Point)` is enough to import both type and constructor in case
-    // of a record type alias.
-    RecordTypeAlias {
-        name: String,
-    },
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct ElmJson {
-    #[serde(rename = "source-directories")]
-    source_directories: Vec<PathBuf>,
-}
-
 #[allow(clippy::type_complexity)]
 fn dataflow_graph<'a, D>(
     elm_io: D,
-    query_for_exports: QueryForExports,
     project_roots: dataflow::Collection<'a, (ProjectId, PathBuf)>,
     filepath_events: dataflow::Collection<'a, PathBuf>,
 ) -> (
@@ -407,7 +265,7 @@ where
 
     let elm_json_files =
         project_roots.map(move |(project_id, project_root)| {
-            (elm_json_path(&project_root), project_id)
+            (project::elm_json_path(&project_root), project_id)
         });
 
     let elm_json_file_events = elm_json_files
@@ -444,14 +302,12 @@ where
             elm_io2
                 .find_files_recursively(&path)
                 .into_iter()
-                .filter(|path| is_elm_file(path))
+                .filter(|path| project::is_elm_file(path))
         })
-        .concat(&filepath_events.filter(|path| is_elm_file(path)));
+        .concat(&filepath_events.filter(|path| project::is_elm_file(path)));
 
     let parsed_modules = module_events.map(|path| (path, ())).reduce(
-        move |path, _input, output| match elm_io3
-            .parse_elm_module(&query_for_exports, path)
-        {
+        move |path, _input, output| match elm_io3.parse_elm_module(path) {
             Ok(exports) => {
                 output.extend(exports.into_iter().map(|export| (export, 1)))
             }
@@ -496,12 +352,12 @@ where
 
     let paths_to_watch = source_directories_by_project
         .map(|(_, path)| path)
-        .concat(&project_roots.map(|(_, path)| elm_json_path(&path)))
-        .concat(&project_roots.map(|(_, path)| idat_path(&path)))
+        .concat(&project_roots.map(|(_, path)| project::elm_json_path(&path)))
+        .concat(&project_roots.map(|(_, path)| project::idat_path(&path)))
         .distinct();
 
     let idat_files = project_roots.map(|(project_id, project_root)| {
-        (idat_path(&project_root), project_id)
+        (project::idat_path(&project_root), project_id)
     });
 
     let idat_file_events =
@@ -524,126 +380,14 @@ where
     (project_modules.concat(&idat_modules), paths_to_watch)
 }
 
-fn is_elm_file(path: &Path) -> bool {
-    path.extension() == Some(std::ffi::OsStr::new("elm"))
-}
-
-fn elm_json_path(project_root: &Path) -> PathBuf {
-    project_root.join("elm.json")
-}
-
-fn project_root_from_elm_json_path(elm_json: &Path) -> Result<&Path, Error> {
-    elm_json.parent().ok_or_else(|| {
-        log::mk_err!(
-            "couldn't navigate from elm.json file to project root directory"
-        )
-    })
-}
-
-fn idat_path(project_root: &Path) -> PathBuf {
-    project_root
-        .join(format!("elm-stuff/{}/i.dat", crate::elm::compiler::VERSION))
-}
-
-fn project_root_from_idat_path(idat: &Path) -> Result<&Path, Error> {
-    idat.parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .ok_or_else(|| {
-            log::mk_err!(
-                "couldn't navigate from i.dat file to project root directory"
-            )
-        })
-}
-
-fn create_elm_stuff(
-    compiler: &Compiler,
-    project_root: &Path,
-) -> Result<(), Error> {
-    log::info!(
-        "Running `elm make` to generate elm-stuff in project: {:?}",
-        project_root
-    );
-    // Running `elm make` will create elm-stuff. We'll pass it a valid module
-    // to compile or `elm make` will return an error. `elm make` would create
-    // `elm-stuff` before returning an error, but it'd be difficult to
-    // distinguish that expected error from other potential unexpected ones.
-    let temp_module = ropey::Rope::from_str(
-        "\
-        module Main exposing (..)\n\
-        val : Int\n\
-        val = 4\n\
-        ",
-    );
-    let output = compiler.make(project_root, &temp_module)?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(log::mk_err!(
-            "failed running elm-make to generate elm-stuff:\n{:?}",
-            std::string::String::from_utf8(output.stderr)
-        ))
-    }
-}
-
-fn elm_module_from_interface(
-    dep_i: idat::DependencyInterface,
-) -> Vec<ExportedName> {
-    if let idat::DependencyInterface::Public(interface) = dep_i {
-        // TODO: add binops
-        let values = interface.values.into_iter().map(elm_export_from_value);
-        let unions = interface.unions.into_iter().map(elm_export_from_union);
-        let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
-        Vec::from_iter(values.chain(unions).chain(aliases))
-    } else {
-        Vec::new()
-    }
-}
-
-fn elm_export_from_value(
-    (idat::Name(name), _): (idat::Name, idat::CanonicalAnnotation),
-) -> ExportedName {
-    ExportedName::Value { name }
-}
-
-fn elm_export_from_union(
-    (idat::Name(name), union): (idat::Name, idat::Union),
-) -> ExportedName {
-    let constructor_names = |canonical_union: idat::CanonicalUnion| {
-        let iter = canonical_union
-            .alts
-            .into_iter()
-            .map(|idat::Ctor(idat::Name(name), _, _, _)| name);
-        Vec::from_iter(iter)
-    };
-    let constructors = match union {
-        idat::Union::Open(canonical_union) => {
-            constructor_names(canonical_union)
-        }
-        // We're reading this information for use by other modules.
-        // These external modules can't see private constructors,
-        // so we don't need to return them here.
-        idat::Union::Closed(_) => Vec::new(),
-        idat::Union::Private(_) => Vec::new(),
-    };
-    ExportedName::Type { name, constructors }
-}
-
-fn elm_export_from_alias(
-    (idat::Name(name), _): (idat::Name, idat::Alias),
-) -> ExportedName {
-    ExportedName::Type {
-        name,
-        constructors: Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elm::io::mock::{mk_module, mk_project, FakeElmIO};
+    use differential_dataflow::operators::arrange::ArrangeByKey;
+    use differential_dataflow::trace::cursor::CursorDebug;
     use std::collections::HashSet;
-    use std::rc::Rc;
-    use std::sync::Mutex;
+    use std::iter::FromIterator;
 
     struct DependenciesCalculation {
         worker: dataflow::Worker,
@@ -657,9 +401,6 @@ mod tests {
 
     impl DependenciesCalculation {
         fn new(elm_io: &FakeElmIO) -> DependenciesCalculation {
-            let language = tree_sitter_elm::language();
-            let query_for_exports = QueryForExports::init(language).unwrap();
-
             let alloc = timely::communication::allocator::thread::Thread::new();
             let mut worker = timely::worker::Worker::new(
                 timely::WorkerConfig::default(),
@@ -679,7 +420,6 @@ mod tests {
                         filepath_events_input.to_collection(scope);
                     let (modules, paths_to_watch) = dataflow_graph(
                         elm_io.clone(),
-                        query_for_exports,
                         project_roots,
                         filepath_events,
                     );
@@ -753,143 +493,6 @@ mod tests {
                 })
                 .collect()
         }
-    }
-
-    #[derive(Clone)]
-    struct FakeElmIO {
-        projects: Rc<Mutex<HashMap<PathBuf, FakeElmProject>>>,
-        modules: Rc<Mutex<HashMap<PathBuf, Vec<ExportedName>>>>,
-        elm_jsons_parsed: Rc<Mutex<u64>>,
-        elm_modules_parsed: Rc<Mutex<u64>>,
-        elm_idats_parsed: Rc<Mutex<u64>>,
-    }
-
-    #[derive(Clone)]
-    struct FakeElmProject {
-        elm_json: ElmJson,
-        dependencies: Vec<(String, ExportedName)>,
-    }
-
-    impl FakeElmIO {
-        fn new(
-            projects: Vec<(PathBuf, FakeElmProject)>,
-            modules: Vec<(PathBuf, Vec<ExportedName>)>,
-        ) -> FakeElmIO {
-            FakeElmIO {
-                projects: Rc::new(Mutex::new(HashMap::from_iter(
-                    projects.into_iter(),
-                ))),
-                modules: Rc::new(Mutex::new(HashMap::from_iter(
-                    modules.into_iter(),
-                ))),
-                elm_jsons_parsed: Rc::new(Mutex::new(0)),
-                elm_modules_parsed: Rc::new(Mutex::new(0)),
-                elm_idats_parsed: Rc::new(Mutex::new(0)),
-            }
-        }
-    }
-
-    impl ElmIO for FakeElmIO {
-        type FilesInDir = Vec<PathBuf>;
-
-        fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error> {
-            if path.file_name() != Some(std::ffi::OsStr::new("elm.json")) {
-                return Err(log::mk_err!("not an elm.json file: {:?}", path));
-            }
-            let mut elm_jsons_parsed = self.elm_jsons_parsed.lock().unwrap();
-            let project_root = project_root_from_elm_json_path(path)?;
-            *elm_jsons_parsed += 1;
-            self.projects
-                .lock()
-                .unwrap()
-                .get(project_root)
-                .ok_or_else(|| log::mk_err!("did not find project {:?}", path))
-                .map(|project| project.elm_json.clone())
-        }
-
-        fn parse_elm_module(
-            &self,
-            _query_for_exports: &QueryForExports,
-            path: &Path,
-        ) -> Result<Vec<ExportedName>, Error> {
-            let mut elm_modules_parsed =
-                self.elm_modules_parsed.lock().unwrap();
-            let opt_module = self
-                .modules
-                .lock()
-                .unwrap()
-                .get(path)
-                .map(std::clone::Clone::clone);
-            if let Some(module) = opt_module {
-                *elm_modules_parsed += 1;
-                Ok(module)
-            } else {
-                Ok(Vec::new())
-            }
-        }
-
-        fn parse_elm_stuff_idat(
-            &self,
-            path: &Path,
-        ) -> Result<Vec<(String, ExportedName)>, Error> {
-            let projects = self.projects.lock().unwrap();
-            let project_root = project_root_from_idat_path(path)?;
-            let project = projects.get(project_root).ok_or_else(|| {
-                log::mk_err!("did not find project {:?}", project_root)
-            })?;
-            let mut elm_idats_parsed = self.elm_idats_parsed.lock().unwrap();
-            *elm_idats_parsed += 1;
-            let dependencies = project.dependencies.clone();
-            Ok(dependencies)
-        }
-
-        fn find_files_recursively(&self, dir: &Path) -> Self::FilesInDir {
-            self.modules
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|path| path.starts_with(dir))
-                .map(PathBuf::clone)
-                .collect()
-        }
-    }
-
-    fn mk_project(
-        root: &Path,
-        src_dirs: Vec<&str>,
-        dep_mods: Vec<&str>,
-    ) -> (PathBuf, FakeElmProject) {
-        (
-            root.to_owned(),
-            FakeElmProject {
-                elm_json: ElmJson {
-                    source_directories: src_dirs
-                        .into_iter()
-                        .map(PathBuf::from)
-                        .collect(),
-                },
-                dependencies: dep_mods
-                    .into_iter()
-                    .map(|name| {
-                        (
-                            name.to_string(),
-                            ExportedName::Value {
-                                name: "ants".to_string(),
-                            },
-                        )
-                    })
-                    .collect(),
-            },
-        )
-    }
-
-    fn mk_module(path: &str) -> (PathBuf, Vec<ExportedName>) {
-        (
-            PathBuf::from(path),
-            vec![ExportedName::Value {
-                name: "bees".to_string(),
-            }],
-        )
     }
 
     #[test]

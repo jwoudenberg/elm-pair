@@ -1,4 +1,4 @@
-use crate::elm::dependencies::ExportedName;
+use crate::elm::io::ExportedName;
 use crate::support::log;
 use crate::support::log::Error;
 use std::collections::HashSet;
@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::Path;
 use tree_sitter::{Language, Node, Query, QueryCursor, Tree};
 
-pub fn parse(
+pub fn parse_elm_module(
     query_for_exports: &QueryForExports,
     path: &Path,
 ) -> Result<Vec<ExportedName>, Error> {
@@ -34,7 +34,7 @@ pub fn parse(
 crate::elm::query::query!(
     QueryForExports,
     query_for_exports,
-    "./queries/exports",
+    "../queries/exports",
     exposed_all,
     exposed_value,
     exposed_type,
@@ -213,7 +213,7 @@ mod tests {
     fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = QueryForExports::init(language)?;
-        let exports = parse(&query_for_exports, path)?;
+        let exports = parse_elm_module(&query_for_exports, path)?;
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))

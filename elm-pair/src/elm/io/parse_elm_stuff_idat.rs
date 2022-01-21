@@ -1,11 +1,120 @@
-// A parser for `elm-stuff/0.19.1/i.dat` files.
-
+use crate::elm::compiler::Compiler;
+use crate::elm::io::ExportedName;
+use crate::elm::project;
 use crate::support::log;
 use crate::support::log::Error;
 use byteorder::{BigEndian, ReadBytesExt};
+use std::io::BufReader;
 use std::io::Read;
+use std::iter::FromIterator;
+use std::path::Path;
 
-pub fn parse<R: Read>(
+pub fn parse_elm_stuff_idat(
+    compiler: &Compiler,
+    path: &Path,
+) -> Result<Vec<(String, ExportedName)>, Error> {
+    let file = std::fs::File::open(path).or_else(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            let project_root = project::root_from_idat_path(path)?;
+            create_elm_stuff(compiler, project_root)?;
+            std::fs::File::open(path).map_err(|err| {
+                log::mk_err!("error opening elm-stuff/i.dat file: {:?}", err)
+            })
+        } else {
+            Err(log::mk_err!(
+                "error opening elm-stuff/i.dat file: {:?}",
+                err
+            ))
+        }
+    })?;
+    let reader = BufReader::new(file);
+    let exports = parse(reader)?
+        .into_iter()
+        .flat_map(|(canonical_name, i)| {
+            let Name(name) = canonical_name.module;
+            elm_module_from_interface(i)
+                .into_iter()
+                .map(move |export| (name.clone(), export))
+        })
+        .collect();
+    Ok(exports)
+}
+
+fn create_elm_stuff(
+    compiler: &Compiler,
+    project_root: &Path,
+) -> Result<(), Error> {
+    log::info!(
+        "Running `elm make` to generate elm-stuff in project: {:?}",
+        project_root
+    );
+    // Running `elm make` will create elm-stuff. We'll pass it a valid module
+    // to compile or `elm make` will return an error. `elm make` would create
+    // `elm-stuff` before returning an error, but it'd be difficult to
+    // distinguish that expected error from other potential unexpected ones.
+    let temp_module = ropey::Rope::from_str(
+        "\
+        module Main exposing (..)\n\
+        val : Int\n\
+        val = 4\n\
+        ",
+    );
+    let output = compiler.make(project_root, &temp_module)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(log::mk_err!(
+            "failed running elm-make to generate elm-stuff:\n{:?}",
+            std::string::String::from_utf8(output.stderr)
+        ))
+    }
+}
+
+fn elm_module_from_interface(dep_i: DependencyInterface) -> Vec<ExportedName> {
+    if let DependencyInterface::Public(interface) = dep_i {
+        // TODO: add binops
+        let values = interface.values.into_iter().map(elm_export_from_value);
+        let unions = interface.unions.into_iter().map(elm_export_from_union);
+        let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
+        Vec::from_iter(values.chain(unions).chain(aliases))
+    } else {
+        Vec::new()
+    }
+}
+
+fn elm_export_from_value(
+    (Name(name), _): (Name, CanonicalAnnotation),
+) -> ExportedName {
+    ExportedName::Value { name }
+}
+
+fn elm_export_from_union((Name(name), union): (Name, Union)) -> ExportedName {
+    let constructor_names = |canonical_union: CanonicalUnion| {
+        let iter = canonical_union
+            .alts
+            .into_iter()
+            .map(|Ctor(Name(name), _, _, _)| name);
+        Vec::from_iter(iter)
+    };
+    let constructors = match union {
+        Union::Open(canonical_union) => constructor_names(canonical_union),
+        // We're reading this information for use by other modules.
+        // These external modules can't see private constructors,
+        // so we don't need to return them here.
+        Union::Closed(_) => Vec::new(),
+        Union::Private(_) => Vec::new(),
+    };
+    ExportedName::Type { name, constructors }
+}
+
+fn elm_export_from_alias((Name(name), _): (Name, Alias)) -> ExportedName {
+    ExportedName::Type {
+        name,
+        constructors: Vec::new(),
+    }
+}
+
+fn parse<R: Read>(
     reader: R,
 ) -> Result<DataMap<CanonicalModuleName, DependencyInterface>, Error> {
     let mut parser = IdatParser { reader };
@@ -348,21 +457,23 @@ impl<R: Read> IdatParser<R> {
 // are not intended for direct use, only as a waystation between data read
 // from `i.dat` file and whatever datastructure we use internally to contain
 // the data relevant to elm-pair.
-pub type DataMap<Key, Val> = Vec<(Key, Val)>;
+type DataMap<Key, Val> = Vec<(Key, Val)>;
 
-pub struct CanonicalModuleName {
-    pub package: PackageName,
-    pub module: Name,
+#[allow(dead_code)]
+struct CanonicalModuleName {
+    package: PackageName,
+    module: Name,
 }
 
-pub struct PackageName {
-    pub author: String,
-    pub package: String,
+#[allow(dead_code)]
+struct PackageName {
+    author: String,
+    package: String,
 }
 
-pub struct Name(pub String);
+struct Name(String);
 
-pub enum DependencyInterface {
+enum DependencyInterface {
     Public(Interface),
     Private(
         PackageName,
@@ -371,39 +482,41 @@ pub enum DependencyInterface {
     ),
 }
 
-pub struct Interface {
-    pub home: PackageName,
-    pub values: DataMap<Name, CanonicalAnnotation>,
-    pub unions: DataMap<Name, Union>,
-    pub aliases: DataMap<Name, Alias>,
-    pub binops: DataMap<Name, Binop>,
+#[allow(dead_code)]
+struct Interface {
+    home: PackageName,
+    values: DataMap<Name, CanonicalAnnotation>,
+    unions: DataMap<Name, Union>,
+    aliases: DataMap<Name, Alias>,
+    binops: DataMap<Name, Binop>,
 }
 
-pub struct CanonicalUnion {
-    pub vars: Vec<Name>,
-    pub alts: Vec<Ctor>,
-    pub num_alts: i64,
-    pub opts: CtorOpts,
+#[allow(dead_code)]
+struct CanonicalUnion {
+    vars: Vec<Name>,
+    alts: Vec<Ctor>,
+    num_alts: i64,
+    opts: CtorOpts,
 }
 
-pub struct Ctor(pub Name, pub IndexZeroBased, pub i64, pub Vec<Type>);
+struct Ctor(Name, IndexZeroBased, i64, Vec<Type>);
 
-pub struct IndexZeroBased(pub i64);
+struct IndexZeroBased(i64);
 
-pub enum CtorOpts {
+enum CtorOpts {
     Normal,
     Enum,
     Unbox,
 }
 
-pub struct CanonicalAlias(pub Vec<Name>, pub Type);
+struct CanonicalAlias(Vec<Name>, Type);
 
-pub struct CanonicalAnnotation(pub FreeVars, pub Type);
+struct CanonicalAnnotation(FreeVars, Type);
 
 type FreeVars = DataMap<Name, ()>;
 
 #[allow(clippy::enum_variant_names)]
-pub enum Type {
+enum Type {
     Lambda(Box<Type>, Box<Type>),
     Var(Name),
     Type(CanonicalModuleName, Name, Vec<Type>),
@@ -413,35 +526,36 @@ pub enum Type {
     Alias(CanonicalModuleName, Name, Vec<(Name, Type)>, AliasType),
 }
 
-pub enum Union {
+enum Union {
     Open(CanonicalUnion),
     Closed(CanonicalUnion),
     Private(CanonicalUnion),
 }
 
-pub enum Alias {
+enum Alias {
     Public(CanonicalAlias),
     Private(CanonicalAlias),
 }
 
-pub struct Binop {
-    pub name: Name,
-    pub annotation: CanonicalAnnotation,
-    pub associativity: BinopAssociativity,
-    pub precedence: BinopPrecedence,
+#[allow(dead_code)]
+struct Binop {
+    name: Name,
+    annotation: CanonicalAnnotation,
+    associativity: BinopAssociativity,
+    precedence: BinopPrecedence,
 }
 
-pub enum BinopAssociativity {
+enum BinopAssociativity {
     Left,
     Non,
     Right,
 }
 
-pub struct BinopPrecedence(pub i64);
+struct BinopPrecedence(i64);
 
-pub struct FieldType(pub u16, pub Type);
+struct FieldType(u16, Type);
 
-pub enum AliasType {
+enum AliasType {
     Holey(Box<Type>),
     Filled(Box<Type>),
 }
