@@ -1,7 +1,7 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::{Refactor, BLOCK_COMMENT, MODULE_DECLARATION};
-use crate::support::log::Error;
-use crate::support::source_code::SourceFileSnapshot;
+use crate::lib::log::Error;
+use crate::lib::source_code::SourceFileSnapshot;
 use std::collections::HashSet;
 
 const IMPLICIT_ELM_IMPORTS: [&str; 10] = [

@@ -1,6 +1,6 @@
-use crate::support::intersperse::Intersperse;
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::intersperse::Intersperse;
+use crate::lib::log;
+use crate::lib::log::Error;
 use std::path::Path;
 
 pub fn from_path(

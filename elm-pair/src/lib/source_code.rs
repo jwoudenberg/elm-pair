@@ -1,5 +1,5 @@
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::log;
+use crate::lib::log::Error;
 use abomonation_derive::Abomonation;
 use core::ops::Range;
 use ropey::{Rope, RopeSlice};

@@ -1,4 +1,4 @@
-use crate::support::log;
+use crate::lib::log;
 use std::path::{Path, PathBuf};
 
 // This iterator finds as many files as it can and so logs rather than fails

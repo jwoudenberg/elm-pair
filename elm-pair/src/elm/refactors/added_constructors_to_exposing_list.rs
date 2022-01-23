@@ -3,8 +3,8 @@ use crate::elm::io::ExportedName;
 use crate::elm::{
     remove_qualifier_from_references, Import, Name, NameKind, Queries, Refactor,
 };
-use crate::support::log::Error;
-use crate::support::source_code::SourceFileSnapshot;
+use crate::lib::log::Error;
+use crate::lib::source_code::SourceFileSnapshot;
 use ropey::{Rope, RopeSlice};
 use std::collections::HashSet;
 

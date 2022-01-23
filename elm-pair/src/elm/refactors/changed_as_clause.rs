@@ -1,6 +1,6 @@
 use crate::elm::{Queries, Refactor};
-use crate::support::log::Error;
-use crate::support::source_code::SourceFileSnapshot;
+use crate::lib::log::Error;
+use crate::lib::source_code::SourceFileSnapshot;
 use ropey::RopeSlice;
 use tree_sitter::QueryCursor;
 

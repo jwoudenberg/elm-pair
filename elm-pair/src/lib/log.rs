@@ -3,7 +3,7 @@ use std::sync::mpsc::SendError;
 #[macro_export]
 macro_rules! mk_err {
     ( $($args:tt)* ) => {{
-        crate::support::log::Error(
+        crate::lib::log::Error(
             format!(
                 "[{}:{:?}] {}",
                 std::file!(),

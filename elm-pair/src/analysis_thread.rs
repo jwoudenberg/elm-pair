@@ -1,7 +1,7 @@
 use crate::elm;
 use crate::elm::compiler::Compiler;
-use crate::support::log;
-use crate::support::source_code::{Buffer, Edit, SourceFileSnapshot};
+use crate::lib::log;
+use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;

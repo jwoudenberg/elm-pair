@@ -1,7 +1,7 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::{qualify_value, QualifiedName, Queries, Refactor};
-use crate::support::log::Error;
-use crate::support::source_code::SourceFileSnapshot;
+use crate::lib::log::Error;
+use crate::lib::source_code::SourceFileSnapshot;
 
 pub fn refactor(
     queries: &Queries,

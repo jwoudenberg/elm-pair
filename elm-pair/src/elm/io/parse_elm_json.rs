@@ -1,6 +1,6 @@
 use crate::elm::project;
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::log;
+use crate::lib::log::Error;
 use serde::Deserialize;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};

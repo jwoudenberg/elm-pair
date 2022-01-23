@@ -1,7 +1,7 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::{add_qualifier_to_references, Import, Queries, Refactor};
-use crate::support::log::Error;
-use crate::support::source_code::SourceFileSnapshot;
+use crate::lib::log::Error;
+use crate::lib::source_code::SourceFileSnapshot;
 use std::collections::HashSet;
 use tree_sitter::QueryCursor;
 

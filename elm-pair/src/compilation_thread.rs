@@ -1,8 +1,8 @@
 use crate::analysis_thread;
 use crate::elm::compiler::Compiler;
 use crate::sized_stack::SizedStack;
-use crate::support::log;
-use crate::support::source_code::{Buffer, SourceFileSnapshot};
+use crate::lib::log;
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use crate::{Error, MsgLoop};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

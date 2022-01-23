@@ -1,8 +1,8 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
-use crate::support::log;
-use crate::support::log::Error;
-use crate::support::source_code::{
+use crate::lib::log;
+use crate::lib::log::Error;
+use crate::lib::source_code::{
     byte_to_point, Buffer, Edit, SourceFileSnapshot,
 };
 use byteorder::ReadBytesExt;

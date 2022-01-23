@@ -1,5 +1,5 @@
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::log;
+use crate::lib::log::Error;
 use tree_sitter::Query;
 
 #[macro_export]
@@ -49,7 +49,7 @@ macro_rules! query {
                           None => panic!("No test input found in query file.")
                       };
                 let mut cursor = tree_sitter::QueryCursor::new();
-                let tree = $crate::support::source_code::parse_bytes(test_str).unwrap();
+                let tree = $crate::lib::source_code::parse_bytes(test_str).unwrap();
                 let root_node = tree.root_node();
                 if root_node.has_error() {
                     panic!("Parsing resulted in invalid syntax tree.");
@@ -75,7 +75,7 @@ macro_rules! query {
                 let mut query_file_path = std::path::PathBuf::from(std::file!());
                 query_file_path.pop();
                 query_file_path = query_file_path.join($file);
-                $crate::test_support::included_answer_test::assert_eq_answer_in(
+                $crate::lib::included_answer_test::assert_eq_answer_in(
                     output.as_str(),
                     &query_file_path,
                 );

@@ -1,8 +1,8 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::io::ExportedName;
 use crate::elm::project;
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::log;
+use crate::lib::log::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::BufReader;
 use std::io::Read;

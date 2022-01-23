@@ -1,8 +1,8 @@
 use crate::elm::refactors;
 use crate::elm::{QualifiedName, Queries, Refactor};
-use crate::support::log;
-use crate::support::log::Error;
-use crate::support::source_code::SourceFileSnapshot;
+use crate::lib::log;
+use crate::lib::log::Error;
+use crate::lib::source_code::SourceFileSnapshot;
 use tree_sitter::QueryCursor;
 
 pub fn refactor(

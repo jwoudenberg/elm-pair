@@ -1,5 +1,5 @@
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::log;
+use crate::lib::log::Error;
 use std::path::{Path, PathBuf};
 
 pub const VERSION: &str = "0.19.1";

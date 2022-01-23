@@ -1,7 +1,7 @@
 // A module to support tests of the diffing logic by running simulations against
 // it.
 
-use crate::support::source_code::{Buffer, Edit};
+use crate::lib::source_code::{Buffer, Edit};
 use core::ops::Range;
 use ropey::Rope;
 use std::io::BufRead;

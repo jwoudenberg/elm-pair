@@ -1,10 +1,10 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::io::{ElmIO, ExportedName, RealElmIO};
 use crate::elm::project;
-use crate::support::dataflow;
-use crate::support::log;
-use crate::support::log::Error;
-use crate::support::source_code::Buffer;
+use crate::lib::dataflow;
+use crate::lib::log;
+use crate::lib::log::Error;
+use crate::lib::source_code::Buffer;
 use abomonation_derive::Abomonation;
 use differential_dataflow::operators::arrange::ArrangeBySelf;
 use differential_dataflow::operators::Join;

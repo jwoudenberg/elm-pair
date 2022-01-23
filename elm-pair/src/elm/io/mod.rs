@@ -2,8 +2,8 @@ use crate::elm::compiler::Compiler;
 use crate::elm::io::parse_elm_json::{parse_elm_json, ElmJson};
 use crate::elm::io::parse_elm_module::{parse_elm_module, QueryForExports};
 use crate::elm::io::parse_elm_stuff_idat::parse_elm_stuff_idat;
-use crate::support::dir_walker::DirWalker;
-use crate::support::log::Error;
+use crate::lib::dir_walker::DirWalker;
+use crate::lib::log::Error;
 use abomonation_derive::Abomonation;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -103,7 +103,7 @@ impl ElmIO for RealElmIO {
 pub mod mock {
     use super::*;
     use crate::elm::project;
-    use crate::support::log;
+    use crate::lib::log;
     use std::collections::HashMap;
     use std::iter::FromIterator;
     use std::rc::Rc;

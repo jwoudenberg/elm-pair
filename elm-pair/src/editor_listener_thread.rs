@@ -1,8 +1,8 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
-use crate::support::log;
-use crate::support::source_code::{Buffer, SourceFileSnapshot};
+use crate::lib::log;
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use crate::{Error, MVar};
 use ropey::Rope;
 use std::collections::HashMap;

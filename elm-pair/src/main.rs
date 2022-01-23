@@ -7,9 +7,9 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
-use support::log;
-use support::log::Error;
-use support::source_code::SourceFileSnapshot;
+use lib::log;
+use lib::log::Error;
+use lib::source_code::SourceFileSnapshot;
 use tree_sitter::Node;
 
 mod analysis_thread;
@@ -17,10 +17,7 @@ mod compilation_thread;
 mod editor_listener_thread;
 mod editors;
 mod elm;
-mod support;
-
-#[cfg(test)]
-mod test_support;
+mod lib;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_COMPILATION_CANDIDATES: usize = 10;

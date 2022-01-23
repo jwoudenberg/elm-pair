@@ -1,6 +1,6 @@
 use crate::elm::io::ExportedName;
-use crate::support::log;
-use crate::support::log::Error;
+use crate::lib::log;
+use crate::lib::log::Error;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
@@ -26,7 +26,7 @@ pub fn parse_elm_module(
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|err| log::mk_err!("failed to read module file: {:?}", err))?;
-    let tree = crate::support::source_code::parse_bytes(&bytes)?;
+    let tree = crate::lib::source_code::parse_bytes(&bytes)?;
     let exports = query_for_exports.run(&tree, &bytes)?;
     Ok(exports)
 }
@@ -183,8 +183,8 @@ fn code_slice<'a>(code: &'a [u8], node: &Node) -> Result<&'a str, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::intersperse::Intersperse;
-    use crate::test_support::included_answer_test as ia_test;
+    use crate::lib::intersperse::Intersperse;
+    use crate::lib::included_answer_test as ia_test;
 
     macro_rules! exports_scanning_test {
         ($name:ident) => {
