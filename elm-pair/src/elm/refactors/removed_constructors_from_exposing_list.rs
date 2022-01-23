@@ -1,7 +1,8 @@
 use crate::elm::dependencies::DataflowComputation;
+use crate::elm::refactors::lib::add_qualifier_to_references::add_qualifier_to_references;
+use crate::elm::refactors::lib::constructors_of_exports::constructors_of_exports;
 use crate::elm::{
-    add_qualifier_to_references, constructors_of_exports, ExposedConstructors,
-    Import, Name, NameKind, Queries, Refactor,
+    ExposedConstructors, Import, Name, NameKind, Queries, Refactor,
 };
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;

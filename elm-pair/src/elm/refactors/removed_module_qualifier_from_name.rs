@@ -1,10 +1,9 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
-use crate::elm::{
-    add_to_exposing_list, get_import_by_aliased_name,
-    remove_qualifier_from_references, Name, NameKind, QualifiedName, Queries,
-    Refactor,
-};
+use crate::elm::queries::imports::{ExposedName, Import};
+use crate::elm::refactors::lib::remove_qualifier_from_references::remove_qualifier_from_references;
+use crate::elm::{Name, NameKind, QualifiedName, Queries, Refactor};
+
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
 use ropey::Rope;
@@ -23,8 +22,9 @@ pub fn refactor(
         unqualified_name,
         qualifier,
     } = node_name;
-    let import =
-        get_import_by_aliased_name(queries, code, &qualifier.slice(..))?;
+    let import = queries
+        .query_for_imports
+        .by_aliased_name(code, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if unqualified_name.kind == NameKind::Constructor {
         let mut cursor = computation
@@ -92,6 +92,86 @@ pub fn refactor(
         references_to_unqualify,
         Some(node),
     )?;
+    Ok(())
+}
+
+// Add a name to the list of values exposed from a particular module.
+fn add_to_exposing_list(
+    import: &Import,
+    reference: &Name,
+    ctor_type: Option<&String>,
+    refactor: &mut Refactor,
+) -> Result<(), Error> {
+    let (target_exposed_name, insert_str) = match ctor_type {
+        Some(type_name) => (type_name.to_owned(), format!("{}(..)", type_name)),
+        None => (reference.name.to_string(), reference.name.to_string()),
+    };
+
+    let mut last_node = None;
+
+    // Find the first node in the existing exposing list alphabetically
+    // coming after the node we're looking to insert, then insert in
+    // front of that node.
+    for result in import.exposing_list() {
+        let (node, exposed) = result?;
+        let exposed_name = match exposed {
+            ExposedName::Operator(op) => op.name,
+            ExposedName::Value(val) => val.name,
+            ExposedName::Type(type_) => type_.name,
+            ExposedName::All => {
+                return Ok(());
+            }
+        };
+        last_node = Some(node);
+        // Insert right before this item to maintain alphabetic order.
+        // If the exposing list wasn't ordered alphabetically the insert
+        // place might appear random.
+        match std::cmp::Ord::cmp(
+            &target_exposed_name,
+            &exposed_name.to_string(),
+        ) {
+            std::cmp::Ordering::Equal => {
+                if ctor_type.is_some() {
+                    // node.child(1) is the node corresponding to the exposed
+                    // contructors: `(..)`.
+                    if node.child(1).is_none() {
+                        let insert_at = node.end_byte();
+                        refactor.add_change(
+                            insert_at..insert_at,
+                            "(..)".to_string(),
+                        );
+                    }
+                };
+                return Ok(());
+            }
+            std::cmp::Ordering::Less => {
+                let insert_at = node.start_byte();
+                refactor.add_change(
+                    insert_at..insert_at,
+                    format!("{}, ", insert_str),
+                );
+                return Ok(());
+            }
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+
+    // We didn't find anything in the exposing list alphabetically
+    // after us. Either we come alphabetically after all currently
+    // exposed elements, or there is no exposing list at all.
+    match last_node {
+        None => {
+            refactor.add_change(
+                import.root_node.end_byte()..import.root_node.end_byte(),
+                format!(" exposing ({})", insert_str),
+            );
+        }
+        Some(node) => {
+            let insert_at = node.end_byte();
+            refactor
+                .add_change(insert_at..insert_at, format!(", {}", insert_str));
+        }
+    }
     Ok(())
 }
 

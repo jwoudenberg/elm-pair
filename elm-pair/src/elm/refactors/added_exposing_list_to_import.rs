@@ -1,5 +1,6 @@
 use crate::elm::dependencies::DataflowComputation;
-use crate::elm::{remove_qualifier_from_references, Import, Queries, Refactor};
+use crate::elm::refactors::lib::remove_qualifier_from_references::remove_qualifier_from_references;
+use crate::elm::{Import, Queries, Refactor};
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
 use std::collections::HashSet;

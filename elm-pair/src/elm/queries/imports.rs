@@ -36,6 +36,21 @@ impl Query {
             query: self,
         }
     }
+
+    pub fn by_aliased_name<'a>(
+        &'a self,
+        code: &'a SourceFileSnapshot,
+        qualifier: &RopeSlice,
+    ) -> Result<Import<'a>, Error> {
+        let mut cursor = QueryCursor::new();
+        self.run(&mut cursor, code)
+            .find(|import| import.aliased_name() == *qualifier)
+            .ok_or_else(|| {
+                log::mk_err!(
+                    "could not find an import with the requested aliased name"
+                )
+            })
+    }
 }
 
 pub struct Imports<'a, 'tree> {

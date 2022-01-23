@@ -1,5 +1,6 @@
 use crate::elm::dependencies::DataflowComputation;
-use crate::elm::{qualify_value, QualifiedName, Queries, Refactor};
+use crate::elm::refactors::lib::qualify_value::qualify_value;
+use crate::elm::{QualifiedName, Queries, Refactor};
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
 
