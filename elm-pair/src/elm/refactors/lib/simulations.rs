@@ -8,10 +8,10 @@
 use crate::analysis_thread::{diff_trees, SourceFileDiff};
 use crate::elm::compiler::Compiler;
 use crate::elm::RefactorEngine;
-use crate::lib::log;
-use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use crate::lib::included_answer_test as ia_test;
+use crate::lib::log;
 use crate::lib::simulation::Simulation;
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use std::path::Path;
 
 #[macro_export]
@@ -24,7 +24,7 @@ macro_rules! simulation_test {
             let module_name = stringify!($name);
             path.push(module_name.to_owned() + ".elm");
             println!("Run simulation {:?}", &path);
-            $crate::elm::refactors::simulations::run_simulation_test(&path);
+            $crate::elm::refactors::lib::simulations::run_simulation_test(&path);
         }
     };
 }

@@ -41,7 +41,7 @@ pub fn refactor(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::refactors::simulations::simulation_test;
+    use crate::elm::refactors::lib::simulations::simulation_test;
 
     simulation_test!(use_qualifier_of_unimported_module_in_new_code);
     simulation_test!(use_qualifier_of_non_existing_module_in_new_code);

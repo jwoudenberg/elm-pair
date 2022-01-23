@@ -36,7 +36,7 @@ pub fn refactor(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::refactors::simulations::simulation_test;
+    use crate::elm::refactors::lib::simulations::simulation_test;
 
     simulation_test!(remove_exposing_all_clause_from_import);
     simulation_test!(remove_exposing_all_clause_from_local_import);

@@ -45,7 +45,7 @@ pub fn refactor(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::refactors::simulations::simulation_test;
+    use crate::elm::refactors::lib::simulations::simulation_test;
 
     simulation_test!(add_constructors_for_type_to_exposing_list);
 }

@@ -2,6 +2,11 @@ use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
+use crate::elm::queries::imports;
+use crate::elm::queries::imports::{ExposedConstructors, ExposedName, Import};
+use crate::elm::queries::qualified_values;
+use crate::elm::queries::qualified_values::QualifiedName;
+use crate::elm::queries::unqualified_values;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
@@ -10,14 +15,14 @@ use ropey::{Rope, RopeSlice};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
-use tree_sitter::{Language, Node, Query, QueryCursor, QueryMatch, TreeCursor};
+use tree_sitter::{Node, QueryCursor};
 
 pub mod compiler;
 pub mod dependencies;
 pub mod io;
 pub mod module_name;
 pub mod project;
-pub mod query;
+pub mod queries;
 pub mod refactors;
 
 // Macro for defining constants for the elm tree-sitter node kinds. This macro
@@ -81,9 +86,9 @@ pub struct RefactorEngine {
 }
 
 pub struct Queries {
-    query_for_imports: QueryForImports,
-    query_for_unqualified_values: QueryForUnqualifiedValues,
-    query_for_qualified_values: QueryForQualifiedValues,
+    query_for_imports: imports::Query,
+    query_for_unqualified_values: unqualified_values::Query,
+    query_for_qualified_values: qualified_values::Query,
 }
 
 pub struct Refactor {
@@ -131,11 +136,11 @@ impl RefactorEngine {
         let engine = RefactorEngine {
             dataflow_computation: DataflowComputation::new(compiler)?,
             queries: Queries {
-                query_for_imports: QueryForImports::init(language)?,
-                query_for_unqualified_values: QueryForUnqualifiedValues::init(
+                query_for_imports: imports::Query::init(language)?,
+                query_for_unqualified_values: unqualified_values::Query::init(
                     language,
                 )?,
-                query_for_qualified_values: QueryForQualifiedValues::init(
+                query_for_qualified_values: qualified_values::Query::init(
                     language,
                 )?,
             },
@@ -1152,124 +1157,6 @@ fn add_qualifier_to_references(
     Ok(())
 }
 
-query::query!(
-    QueryForQualifiedValues,
-    query_for_qualified_values,
-    "./queries/qualified_values",
-    root,
-    qualifier,
-    value,
-    type_,
-    constructor,
-);
-
-impl QueryForQualifiedValues {
-    fn run<'a, 'tree>(
-        &'a self,
-        cursor: &'a mut QueryCursor,
-        code: &'tree SourceFileSnapshot,
-    ) -> QualifiedNames<'a, 'tree> {
-        self.run_in(cursor, code, code.tree.root_node())
-    }
-
-    fn run_in<'a, 'tree>(
-        &'a self,
-        cursor: &'a mut QueryCursor,
-        code: &'tree SourceFileSnapshot,
-        node: Node<'tree>,
-    ) -> QualifiedNames<'a, 'tree> {
-        QualifiedNames {
-            code,
-            query: self,
-            matches: cursor.matches(&self.query, node, code),
-        }
-    }
-}
-
-struct QualifiedNames<'a, 'tree> {
-    query: &'a QueryForQualifiedValues,
-    code: &'tree SourceFileSnapshot,
-    matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
-}
-
-impl<'a, 'tree> Iterator for QualifiedNames<'a, 'tree> {
-    type Item = Result<(Node<'a>, QualifiedName), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let match_ = self.matches.next()?;
-        Some(self.parse_match(match_))
-    }
-}
-
-impl<'a, 'tree> QualifiedNames<'a, 'tree> {
-    fn parse_match(
-        &self,
-        match_: QueryMatch<'a, 'tree>,
-    ) -> Result<(Node<'a>, QualifiedName), Error> {
-        let mut qualifier_range = None;
-        let mut root_node = None;
-        let mut opt_name_capture = None;
-        match_.captures.iter().for_each(|capture| {
-            if capture.index == self.query.root {
-                root_node = Some(capture.node);
-            }
-            if capture.index == self.query.qualifier {
-                match &qualifier_range {
-                    None => qualifier_range = Some(capture.node.byte_range()),
-                    Some(existing_range) => {
-                        qualifier_range =
-                            Some(existing_range.start..capture.node.end_byte())
-                    }
-                }
-            } else {
-                opt_name_capture = Some(capture)
-            }
-        });
-        let name_capture = opt_name_capture.ok_or_else(|| {
-            log::mk_err!("match of qualified reference did not include name")
-        })?;
-        let qualifier_range = qualifier_range.ok_or_else(|| {
-            log::mk_err!(
-                "match of qualified reference did not include qualifier"
-            )
-        })?;
-        let qualifier = self.code.slice(&qualifier_range);
-        let kind = match name_capture.index {
-            index if index == self.query.value => NameKind::Value,
-            index if index == self.query.type_ => NameKind::Type,
-            index if index == self.query.constructor => NameKind::Constructor,
-            index => {
-                return Err(log::mk_err!(
-                    "name in match of qualified reference has unexpected index {:?}",
-                    index,
-                ))
-            }
-        };
-        let unqualified_name = Name {
-            name: self.code.slice(&name_capture.node.byte_range()).into(),
-            kind,
-        };
-        let qualified = QualifiedName {
-            qualifier: qualifier.into(),
-            unqualified_name,
-        };
-        Ok((
-            root_node.ok_or_else(|| {
-                log::mk_err!(
-                    "match of qualified reference did not include root node"
-                )
-            })?,
-            qualified,
-        ))
-    }
-}
-
-#[derive(PartialEq)]
-pub struct QualifiedName {
-    pub qualifier: Rope,
-    pub unqualified_name: Name,
-}
-
 #[derive(Clone, Debug, Eq)]
 pub struct Name {
     pub name: Rope,
@@ -1300,164 +1187,6 @@ pub enum NameKind {
 
 impl Eq for NameKind {}
 
-query::query!(
-    QueryForUnqualifiedValues,
-    query_for_unqualified_values,
-    "./queries/unqualified_values",
-    value,
-    type_,
-    constructor,
-);
-
-impl QueryForUnqualifiedValues {
-    fn run<'a, 'tree>(
-        &'a self,
-        cursor: &'a mut QueryCursor,
-        code: &'tree SourceFileSnapshot,
-    ) -> UnqualifiedValues<'a, 'tree> {
-        self.run_in(cursor, code, code.tree.root_node())
-    }
-
-    fn run_in<'a, 'tree>(
-        &'a self,
-        cursor: &'a mut QueryCursor,
-        code: &'tree SourceFileSnapshot,
-        node: Node<'tree>,
-    ) -> UnqualifiedValues<'a, 'tree> {
-        let matches = cursor.matches(&self.query, node, code);
-        UnqualifiedValues {
-            matches,
-            code,
-            query: self,
-        }
-    }
-}
-
-struct UnqualifiedValues<'a, 'tree> {
-    matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
-    code: &'a SourceFileSnapshot,
-    query: &'a QueryForUnqualifiedValues,
-}
-
-impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
-    type Item = Result<(Node<'a>, Name), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let match_ = self.matches.next()?;
-        let capture = match_.captures.first()?;
-        let kind = match capture.index {
-            index if index == self.query.value => NameKind::Value,
-            index if index == self.query.type_ => NameKind::Type,
-            index if index == self.query.constructor => NameKind::Constructor,
-            index => {
-                return Some(Err(log::mk_err!(
-                    "query for unqualified values captured name with unexpected index {:?}",
-                    index
-                )))
-            }
-        };
-        let node = capture.node;
-        let name = self.code.slice(&node.byte_range());
-        let reference = Name {
-            name: name.into(),
-            kind,
-        };
-        Some(Ok((node, reference)))
-    }
-}
-
-query::query!(
-    QueryForImports,
-    query_for_imports,
-    "./queries/imports",
-    root,
-    name,
-    as_clause,
-    exposing_list
-);
-
-impl QueryForImports {
-    fn run<'a, 'tree>(
-        &'a self,
-        cursor: &'a mut QueryCursor,
-        code: &'tree SourceFileSnapshot,
-    ) -> Imports<'a, 'tree> {
-        self.run_in(cursor, code, code.tree.root_node())
-    }
-
-    fn run_in<'a, 'tree>(
-        &'a self,
-        cursor: &'a mut QueryCursor,
-        code: &'tree SourceFileSnapshot,
-        node: Node<'tree>,
-    ) -> Imports<'a, 'tree> {
-        let matches = cursor.matches(&self.query, node, code);
-        Imports {
-            code,
-            matches,
-            query: self,
-        }
-    }
-}
-
-struct Imports<'a, 'tree> {
-    code: &'tree SourceFileSnapshot,
-    matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
-    query: &'a QueryForImports,
-}
-
-impl<'a, 'tree> Iterator for Imports<'a, 'tree> {
-    type Item = Import<'tree>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut nodes: [Option<Node>; 4] = [None; 4];
-        self.matches.next()?.captures.iter().for_each(|capture| {
-            nodes[capture.index as usize] = Some(capture.node)
-        });
-        Some(Import {
-            code: self.code,
-            root_node: nodes[self.query.root as usize]?,
-            name_node: nodes[self.query.name as usize]?,
-            as_clause_node: nodes[self.query.as_clause as usize],
-            exposing_list_node: nodes[self.query.exposing_list as usize],
-        })
-    }
-}
-
-pub struct Import<'a> {
-    pub code: &'a SourceFileSnapshot,
-    pub root_node: Node<'a>,
-    pub name_node: Node<'a>,
-    pub as_clause_node: Option<Node<'a>>,
-    pub exposing_list_node: Option<Node<'a>>,
-}
-
-impl Import<'_> {
-    fn unaliased_name(&self) -> RopeSlice {
-        self.code.slice(&self.name_node.byte_range())
-    }
-
-    fn aliased_name(&self) -> RopeSlice {
-        let name_node = self.as_clause_node.unwrap_or(self.name_node);
-        self.code.slice(&name_node.byte_range())
-    }
-
-    fn exposing_list(&self) -> ExposedList<'_> {
-        let cursor = self.exposing_list_node.and_then(|node| {
-            let mut cursor = node.walk();
-            if cursor.goto_first_child() {
-                Some(cursor)
-            } else {
-                None
-            }
-        });
-        ExposedList {
-            code: self.code,
-            cursor,
-        }
-    }
-}
-
 fn constructors_of_exports<'a, I>(
     exported_names: I,
     type_name: RopeSlice<'a>,
@@ -1481,177 +1210,6 @@ where
         }
     }
     Err(log::mk_err!("did not find type in module"))
-}
-
-struct ExposedList<'a> {
-    code: &'a SourceFileSnapshot,
-    cursor: Option<TreeCursor<'a>>,
-}
-
-impl<'a> Iterator for ExposedList<'a> {
-    type Item = Result<(Node<'a>, ExposedName<'a>), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let cursor = self.cursor.as_mut()?;
-        while cursor.goto_next_sibling() {
-            let node = cursor.node();
-            // When the programmer emptied out an exposing list entirely, so
-            // only `exposing ()` remains, then the tree-sitter-elm parse result
-            // will contain a single, empty `exposed_val` node, containing
-            // another node marked 'missing'. This is not-unreasonable, given
-            // an empty exposed list isn't valid Elm.
-            //
-            // For our purposes here we'd like to treat that exposed-list as
-            // empty, so we can easily check for emptiness and then remove it.
-            // Because the 'missing' node is wrapped inside a regular node, we
-            // cannot use `is_missing()` on the outer nodes we see here, so we
-            // check for length instead.
-            //
-            // We might consider tweaking the grammer to either put the
-            // 'missing' state on the outside node, or maybe even remove the
-            // wrapping entirely. Then this check likely wouldn't need this huge
-            // comment explaining it.
-            if node.is_named() && !node.byte_range().is_empty() {
-                let exposed = match node.kind_id() {
-                    EXPOSED_VALUE => ExposedName::Value(ExposedValue {
-                        name: self.code.slice(&node.byte_range()),
-                    }),
-                    EXPOSED_OPERATOR => ExposedName::Operator(ExposedOperator {
-                        name: self.code.slice(&node.byte_range()),
-                    }),
-                    EXPOSED_TYPE => {
-                        let type_name_node = match node.child(0) {
-                            Some(node) => node,
-                            None => {
-                                return Some(Err(log::mk_err!(
-                                    "did not find name node for type in exposing list"
-                                )));
-                            }
-                        };
-                        ExposedName::Type(ExposedType {
-                            name: self.code.slice(&type_name_node.byte_range()),
-                            exposing_constructors: node.child(1).is_some(),
-                        })
-                    }
-                    DOUBLE_DOT => ExposedName::All,
-                    _ => {
-                        return Some(Err(log::mk_err!(
-                            "capture in query for exposing list has unexpected kind {:?}",
-                            node.kind()
-                        )))
-                    }
-                };
-                return Some(Ok((node, exposed)));
-            }
-        }
-        None
-    }
-}
-
-#[derive(PartialEq)]
-enum ExposedName<'a> {
-    Operator(ExposedOperator<'a>),
-    Value(ExposedValue<'a>),
-    Type(ExposedType<'a>),
-    All,
-}
-
-impl<'a> ExposedName<'a> {
-    fn for_each_name<I, F>(&self, exports: I, mut f: F)
-    where
-        I: Iterator<Item = &'a ExportedName>,
-        F: FnMut(Name),
-    {
-        match self {
-            ExposedName::Value(val) => f(Name {
-                kind: NameKind::Value,
-                name: val.name.into(),
-            }),
-            ExposedName::Type(type_) => {
-                f(Name {
-                    kind: NameKind::Type,
-                    name: type_.name.into(),
-                });
-                exports.for_each(|export| match export {
-                    ExportedName::Value { .. } => {}
-                    ExportedName::RecordTypeAlias { name } => {
-                        if name == &type_.name {
-                            f(Name {
-                                kind: NameKind::Constructor,
-                                name: Rope::from_str(name),
-                            });
-                        }
-                    }
-                    ExportedName::Type { name, constructors } => {
-                        if type_.exposing_constructors && name == &type_.name {
-                            for ctor in constructors.iter() {
-                                f(Name {
-                                    kind: NameKind::Constructor,
-                                    name: Rope::from_str(ctor),
-                                })
-                            }
-                        }
-                    }
-                });
-            }
-            ExposedName::All => {
-                exports.for_each(|export| match export {
-                    ExportedName::Value { name } => f(Name {
-                        kind: NameKind::Value,
-                        name: Rope::from_str(name),
-                    }),
-                    ExportedName::RecordTypeAlias { name } => {
-                        f(Name {
-                            kind: NameKind::Value,
-                            name: Rope::from_str(name),
-                        });
-                        f(Name {
-                            kind: NameKind::Type,
-                            name: Rope::from_str(name),
-                        });
-                    }
-                    ExportedName::Type { name, constructors } => {
-                        f(Name {
-                            kind: NameKind::Type,
-                            name: Rope::from_str(name),
-                        });
-                        for ctor in constructors.iter() {
-                            f(Name {
-                                kind: NameKind::Constructor,
-                                name: Rope::from_str(ctor),
-                            });
-                        }
-                    }
-                });
-            }
-            ExposedName::Operator(op) => f(Name {
-                kind: NameKind::Operator,
-                name: op.name.into(),
-            }),
-        }
-    }
-}
-
-#[derive(PartialEq)]
-struct ExposedOperator<'a> {
-    name: RopeSlice<'a>,
-}
-
-#[derive(PartialEq)]
-struct ExposedValue<'a> {
-    name: RopeSlice<'a>,
-}
-
-#[derive(PartialEq)]
-struct ExposedType<'a> {
-    name: RopeSlice<'a>,
-    exposing_constructors: bool,
-}
-
-#[derive(Clone)]
-enum ExposedConstructors<'a> {
-    FromTypeAlias(&'a String),
-    FromCustomType(&'a Vec<String>),
 }
 
 fn parse_import_node<'a>(

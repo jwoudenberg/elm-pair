@@ -70,7 +70,7 @@ pub fn refactor(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::refactors::simulations::simulation_test;
+    use crate::elm::refactors::lib::simulations::simulation_test;
 
     simulation_test!(remove_multiple_values_from_exposing_list_of_import);
     simulation_test!(remove_operator_from_exposing_list_of_import);

@@ -24,7 +24,7 @@ pub fn refactor(
 
 #[cfg(test)]
 mod tests {
-    use crate::elm::refactors::simulations::simulation_test;
+    use crate::elm::refactors::lib::simulations::simulation_test;
 
     simulation_test!(add_module_qualifier_to_constructor);
     simulation_test!(

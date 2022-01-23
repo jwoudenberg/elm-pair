@@ -1,7 +1,8 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::io::parse_elm_json::{parse_elm_json, ElmJson};
-use crate::elm::io::parse_elm_module::{parse_elm_module, QueryForExports};
+use crate::elm::io::parse_elm_module::parse_elm_module;
 use crate::elm::io::parse_elm_stuff_idat::parse_elm_stuff_idat;
+use crate::elm::queries::exports;
 use crate::lib::dir_walker::DirWalker;
 use crate::lib::log::Error;
 use abomonation_derive::Abomonation;
@@ -59,13 +60,13 @@ pub enum ExportedName {
 #[derive(Clone)]
 pub struct RealElmIO {
     compiler: Compiler,
-    query_for_exports: Rc<parse_elm_module::QueryForExports>,
+    query_for_exports: Rc<exports::Query>,
 }
 
 impl RealElmIO {
     pub fn new(compiler: Compiler) -> Result<RealElmIO, Error> {
         let language = tree_sitter_elm::language();
-        let query_for_exports = Rc::new(QueryForExports::init(language)?);
+        let query_for_exports = Rc::new(exports::Query::init(language)?);
         Ok(RealElmIO {
             compiler,
             query_for_exports,

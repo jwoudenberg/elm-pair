@@ -2,16 +2,21 @@ use crate::lib::log;
 use crate::lib::log::Error;
 use tree_sitter::Query;
 
+pub mod exports;
+pub mod imports;
+pub mod qualified_values;
+pub mod unqualified_values;
+
 #[macro_export]
 macro_rules! query {
-    ($name:ident, $test_mod_name:ident, $file:literal $(, $capture:ident )* $(,)? ) => {
-        pub struct $name {
-            query: Query,
+    ($file:literal $(, $capture:ident )* $(,)? ) => {
+        pub struct Query {
+            query: tree_sitter::Query,
             $($capture: u32,)*
         }
 
-        impl $name {
-            pub fn init(lang: Language) -> Result<$name, Error> {
+        impl Query {
+            pub fn init(lang: tree_sitter::Language) -> Result<Query, Error> {
                 let query_file_contents = include_str!($file);
                 let separator = "=== test input below ===";
                 let query_str =
@@ -19,15 +24,15 @@ macro_rules! query {
                           Some((query, _)) => query,
                           None => query_file_contents,
                       };
-                let query = Query::new(lang, query_str).map_err(|err| {
+                let query = tree_sitter::Query::new(lang, query_str).map_err(|err| {
                     log::mk_err!(
                         "failed to parse tree-sitter {}: {:?}",
-                        stringify!($name),
+                        stringify!(Query),
                         err
                     )
                 })?;
-                let query_struct = $name {
-                    $($capture: $crate::elm::query::index_for_name(&query, stringify!($capture))?,)*
+                let query_struct = Query {
+                    $($capture: $crate::elm::queries::index_for_name(&query, stringify!($capture))?,)*
                     query,
                 };
                 Ok(query_struct)
@@ -35,13 +40,13 @@ macro_rules! query {
         }
 
         #[cfg(test)]
-        mod $test_mod_name {
-            use super::$name;
+        mod query_tests {
+            use super::Query;
 
             #[test]
             fn query_sample_data() {
                 let language = tree_sitter_elm::language();
-                let query = $name::init(language).unwrap();
+                let query = Query::init(language).unwrap();
                 let separator = "=== test input below ===";
                 let test_str =
                       match include_str!($file).split_once(separator) {
