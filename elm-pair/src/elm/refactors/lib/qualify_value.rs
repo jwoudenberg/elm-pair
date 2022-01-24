@@ -8,8 +8,8 @@ use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
 use ropey::Rope;
-use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Range;
 use tree_sitter::{Node, QueryCursor};
 
 pub fn qualify_value(
@@ -17,7 +17,7 @@ pub fn qualify_value(
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
-    node_to_skip: Option<Node>,
+    skip_byteranges: &[&Range<usize>],
     qualifier: &Rope,
     reference: &Name,
     // If the qualified value is coming from an import that exposing everything,
@@ -129,54 +129,54 @@ pub fn qualify_value(
             }
             ExposedName::All => {
                 if remove_expose_all_if_necessary {
-                    let mut exposed_names: HashMap<Name, &ExportedName> =
-                        HashMap::new();
+                    let mut exposed_names: Vec<(Name, &ExportedName)> =
+                        Vec::new();
                     let mut cursor = computation.exports_cursor(
                         code.buffer,
                         import.unaliased_name().to_string(),
                     );
                     cursor.iter().for_each(|export| match export {
                         ExportedName::Value { name } => {
-                            exposed_names.insert(
+                            exposed_names.push((
                                 Name {
                                     name: Rope::from_str(name),
                                     kind: NameKind::Value,
                                 },
                                 export,
-                            );
+                            ));
                         }
                         ExportedName::RecordTypeAlias { name } => {
-                            exposed_names.insert(
+                            exposed_names.push((
                                 Name {
                                     name: Rope::from_str(name),
                                     kind: NameKind::Type,
                                 },
                                 export,
-                            );
-                            exposed_names.insert(
+                            ));
+                            exposed_names.push((
                                 Name {
                                     name: Rope::from_str(name),
                                     kind: NameKind::Constructor,
                                 },
                                 export,
-                            );
+                            ));
                         }
                         ExportedName::Type { name, constructors } => {
-                            exposed_names.insert(
+                            exposed_names.push((
                                 Name {
                                     name: Rope::from_str(name),
                                     kind: NameKind::Type,
                                 },
                                 export,
-                            );
+                            ));
                             for ctor in constructors {
-                                exposed_names.insert(
+                                exposed_names.push((
                                     Name {
                                         name: Rope::from_str(ctor),
                                         kind: NameKind::Constructor,
                                     },
                                     export,
-                                );
+                                ));
                             }
                         }
                     });
@@ -188,6 +188,7 @@ pub fn qualify_value(
                         .collect::<Result<HashSet<Name>, Error>>()?;
                     unqualified_names_in_use.remove(reference);
                     let mut new_exposed: String = String::new();
+                    exposed_names.sort_by_key(|(name, _)| name.name.clone());
                     exposed_names.into_iter().for_each(
                         |(reference, export)| {
                             if unqualified_names_in_use.contains(&reference) {
@@ -271,7 +272,7 @@ pub fn qualify_value(
         refactor,
         &mut QueryCursor::new(),
         code,
-        node_to_skip,
+        skip_byteranges,
         &import,
         references_to_qualify,
     )?;

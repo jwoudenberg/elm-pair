@@ -499,10 +499,12 @@ impl RefactorEngine {
                     .parse_single(&diff.new, changes.new_parent)?;
                 refactors::changed_name::refactor(
                     &self.queries,
+                    &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
                     old_name,
                     new_name,
+                    &changes.new_parent,
                 )?;
             }
             _ => {

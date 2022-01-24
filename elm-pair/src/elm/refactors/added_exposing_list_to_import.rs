@@ -26,9 +26,9 @@ pub fn refactor(
         computation,
         refactor,
         code,
-        &import.aliased_name(),
+        import.aliased_name(),
         references_to_unqualify,
-        None,
+        &[&import.root_node.byte_range()],
     )?;
     Ok(())
 }

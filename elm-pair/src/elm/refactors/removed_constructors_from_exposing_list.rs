@@ -42,7 +42,7 @@ pub fn refactor(
         refactor,
         &mut QueryCursor::new(),
         code,
-        None,
+        &[],
         &old_import,
         references_to_qualify,
     )?;

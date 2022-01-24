@@ -49,7 +49,7 @@ pub fn refactor(
         refactor,
         &mut QueryCursor::new(),
         code,
-        None,
+        &[],
         &new_import,
         references_to_qualify,
     )?;
@@ -59,9 +59,9 @@ pub fn refactor(
         computation,
         refactor,
         code,
-        &new_import.aliased_name(),
+        new_import.aliased_name(),
         references_to_unqualify,
-        None,
+        &[&new_import.root_node.byte_range()],
     )?;
 
     Ok(())

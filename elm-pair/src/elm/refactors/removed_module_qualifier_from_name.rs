@@ -88,9 +88,9 @@ pub fn refactor(
         computation,
         refactor,
         code,
-        &qualifier.slice(..),
+        qualifier.slice(..),
         references_to_unqualify,
-        Some(node),
+        &[&node.byte_range(), &import.root_node.byte_range()],
     )?;
     Ok(())
 }

@@ -28,7 +28,7 @@ pub fn refactor(
         refactor,
         &mut val_cursor,
         code,
-        None,
+        &[],
         &import,
         references_to_qualify,
     )?;

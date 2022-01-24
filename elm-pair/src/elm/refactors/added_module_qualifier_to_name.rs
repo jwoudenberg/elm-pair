@@ -16,7 +16,7 @@ pub fn refactor(
         computation,
         refactor,
         code,
-        None,
+        &[],
         &name.qualifier,
         &name.unqualified_name,
         false,
