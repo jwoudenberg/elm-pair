@@ -1,0 +1,44 @@
+(let_in_expr
+  (value_declaration
+    (function_declaration_left
+      (lower_case_identifier) @name
+    )
+  )
+) @scope
+
+=== test input below ===
+
+module Main exposing (..)
+
+
+orderPizza : Int -> Int
+orderPizza groupSize =
+    let
+        slicesPerPerson =
+            2
+
+        pizzaSize =
+            6
+    in
+    ceiling (toFloat (groupSize * slicesPerPerson) / pizzaSize)
+-- === expected output below ===
+-- scope: [7:4] let
+--         slicesPerPerson =
+--             2
+--
+--         pizzaSize =
+--             6
+--     in
+--     ceiling (toFloat (groupSize * slicesPerPerson) / pizzaSize)
+-- name: [8:8] slicesPerPerson
+--
+-- scope: [7:4] let
+--         slicesPerPerson =
+--             2
+--
+--         pizzaSize =
+--             6
+--     in
+--     ceiling (toFloat (groupSize * slicesPerPerson) / pizzaSize)
+-- name: [11:8] pizzaSize
+--

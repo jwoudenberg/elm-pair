@@ -7,7 +7,7 @@ use crate::lib::source_code::SourceFileSnapshot;
 use ropey::Rope;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use tree_sitter::QueryCursor;
+use tree_sitter::{Node, QueryCursor};
 
 // Free some names so we can use them for something else. Depending on the name
 // this might happen in one of two ways:
@@ -88,7 +88,15 @@ pub fn free_names(
                         "names_with_digit unexpectedly ran out of names."
                     )
                 })?;
-            rename(queries, refactor, code, name, &new_name, skip_byteranges)?;
+            rename(
+                queries,
+                refactor,
+                code,
+                name,
+                &new_name,
+                &[],
+                skip_byteranges,
+            )?;
         }
     }
     Ok(())
@@ -102,6 +110,10 @@ pub fn rename(
     code: &SourceFileSnapshot,
     from: &Name,
     to: &Name,
+    // If this slice is non empty, only rename within the ranges specified.
+    include_byteranges: &[&Range<usize>],
+    // Skip remames in the slices specified. This argument takes precedence over
+    // `incluce_byteranges`.
     skip_byteranges: &[&Range<usize>],
 ) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
@@ -110,16 +122,26 @@ pub fn rename(
         code,
         code.tree.root_node(),
     );
-    for res in unqualified_values {
-        let (node, reference) = res?;
-        if &reference == from
-            && !skip_byteranges.iter().any(|skip_range| {
+    let should_include = |node: &Node| {
+        if include_byteranges.is_empty() {
+            true
+        } else {
+            include_byteranges.iter().any(|include_range| {
                 crate::lib::range::contains_range(
-                    skip_range,
+                    include_range,
                     &node.byte_range(),
                 )
             })
-        {
+        }
+    };
+    let should_skip = |node: &Node| {
+        skip_byteranges.iter().any(|skip_range| {
+            crate::lib::range::contains_range(skip_range, &node.byte_range())
+        })
+    };
+    for res in unqualified_values {
+        let (node, reference) = res?;
+        if &reference == from && should_include(&node) && !should_skip(&node) {
             refactor.add_change(node.byte_range(), to.name.to_string())
         }
     }

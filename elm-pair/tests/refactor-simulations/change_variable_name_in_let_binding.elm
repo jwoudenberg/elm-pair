@@ -1,35 +1,39 @@
 module Main exposing (..)
 
 
-orderPizza : Int -> Int
-orderPizza groupSize =
+isYoung : Int -> Int -> Bool
+isYoung birthYear_ currentYear =
     let
-        slicesPerPerson =
-            2
-
-        pizzaSize =
-            6
+        age =
+            currentYear - birthYear_
     in
-    ceiling (toFloat (groupSize * slicesPerPerson) / pizzaSize)
+    age < 30
+
+
+birthYear : Int -> Int -> Int
+birthYear age currentYear =
+    currentYear - age
 
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 10 pizzaSize
--- DELETE pizzaSize
--- INSERT slicesPerPizza
+-- MOVE CURSOR TO LINE 7 age
+-- DELETE age
+-- INSERT ageInYears
 -- END SIMULATION
 -- === expected output below ===
 -- module Main exposing (..)
 --
 --
--- orderPizza : Int -> Int
--- orderPizza groupSize =
+-- isYoung : Int -> Int -> Bool
+-- isYoung birthYear_ currentYear =
 --     let
---         slicesPerPerson =
---             2
---
---         slicesPerPizza =
---             6
+--         ageInYears =
+--             currentYear - birthYear_
 --     in
---     ceiling (toFloat (groupSize * slicesPerPerson) / slicesPerPizza)
+--     ageInYears < 30
+--
+--
+-- birthYear : Int -> Int -> Int
+-- birthYear age currentYear =
+--     currentYear - age

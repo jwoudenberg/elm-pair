@@ -2,11 +2,8 @@ use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
-use crate::elm::queries::imports;
 use crate::elm::queries::imports::{ExposedConstructors, Import};
-use crate::elm::queries::qualified_values;
 use crate::elm::queries::qualified_values::QualifiedName;
-use crate::elm::queries::unqualified_values;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
@@ -86,9 +83,10 @@ pub struct RefactorEngine {
 }
 
 pub struct Queries {
-    query_for_imports: imports::Query,
-    query_for_unqualified_values: unqualified_values::Query,
-    query_for_qualified_values: qualified_values::Query,
+    query_for_imports: queries::imports::Query,
+    query_for_unqualified_values: queries::unqualified_values::Query,
+    query_for_qualified_values: queries::qualified_values::Query,
+    query_for_names_with_scopes: queries::names_with_scopes::Query,
 }
 
 pub struct Refactor {
@@ -136,13 +134,13 @@ impl RefactorEngine {
         let engine = RefactorEngine {
             dataflow_computation: DataflowComputation::new(compiler)?,
             queries: Queries {
-                query_for_imports: imports::Query::init(language)?,
-                query_for_unqualified_values: unqualified_values::Query::init(
-                    language,
-                )?,
-                query_for_qualified_values: qualified_values::Query::init(
-                    language,
-                )?,
+                query_for_imports: queries::imports::Query::init(language)?,
+                query_for_unqualified_values:
+                    queries::unqualified_values::Query::init(language)?,
+                query_for_qualified_values:
+                    queries::qualified_values::Query::init(language)?,
+                query_for_names_with_scopes:
+                    queries::names_with_scopes::Query::init(language)?,
             },
         };
 
@@ -546,19 +544,19 @@ struct Change<'a> {
 
 #[allow(clippy::needless_collect)]
 fn find_unimported_qualifiers(
-    engine: &Queries,
+    queries: &Queries,
     code: &SourceFileSnapshot,
     parent: Node,
 ) -> Result<HashSet<String>, Error> {
     let mut cursor = QueryCursor::new();
-    let existing_imports: Vec<Rope> = engine
+    let existing_imports: Vec<Rope> = queries
         .query_for_imports
         .run(&mut cursor, code)
         .map(|import| import.aliased_name().into())
         .collect();
     let mut unimported_qualifiers = HashSet::new();
     for result in
-        engine
+        queries
             .query_for_qualified_values
             .run_in(&mut cursor, code, parent)
     {
@@ -603,12 +601,12 @@ pub enum NameKind {
 impl Eq for NameKind {}
 
 fn parse_import_node<'a>(
-    engine: &'a Queries,
+    queries: &'a Queries,
     code: &'a SourceFileSnapshot,
     node: Node<'a>,
 ) -> Result<Import<'a>, Error> {
     let mut cursor = QueryCursor::new();
-    engine
+    queries
         .query_for_imports
         .run_in(&mut cursor, code, node)
         .next()

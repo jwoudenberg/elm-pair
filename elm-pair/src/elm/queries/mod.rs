@@ -4,6 +4,7 @@ use tree_sitter::Query;
 
 pub mod exports;
 pub mod imports;
+pub mod names_with_scopes;
 pub mod qualified_values;
 pub mod unqualified_values;
 
@@ -16,7 +17,7 @@ macro_rules! query {
         }
 
         impl Query {
-            pub fn init(lang: tree_sitter::Language) -> Result<Query, Error> {
+            pub fn init(lang: tree_sitter::Language) -> Result<Query, $crate::lib::log::Error> {
                 let query_file_contents = include_str!($file);
                 let separator = "=== test input below ===";
                 let query_str =
@@ -25,7 +26,7 @@ macro_rules! query {
                           None => query_file_contents,
                       };
                 let query = tree_sitter::Query::new(lang, query_str).map_err(|err| {
-                    log::mk_err!(
+                    $crate::lib::log::mk_err!(
                         "failed to parse tree-sitter {}: {:?}",
                         stringify!(Query),
                         err
