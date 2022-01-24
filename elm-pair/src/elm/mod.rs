@@ -155,7 +155,9 @@ impl RefactorEngine {
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
     ) -> Result<Refactor, Error> {
-        // debug_print_tree_changes(diff, &changes);
+        #[cfg(debug_assertions)]
+        debug_print_tree_changes(diff, &changes);
+        #[cfg(not(debug_assertions))]
         if changes.old_removed.is_empty() && changes.new_added.is_empty() {
             return Ok(Refactor::new());
         }
@@ -601,15 +603,26 @@ fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
     nodes.iter().map(|node| node.kind_id()).collect()
 }
 
-// TODO: remove debug helper when it's no longer needed.
-#[allow(dead_code)]
+#[cfg(debug_assertions)]
 fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
     println!("REMOVED NODES:");
     for node in &changes.old_removed {
-        crate::debug_print_node(&diff.old, 2, node);
+        debug_print_node(&diff.old, 2, node);
     }
     println!("ADDED NODES:");
     for node in &changes.new_added {
-        crate::debug_print_node(&diff.new, 2, node);
+        debug_print_node(&diff.new, 2, node);
     }
+}
+
+#[cfg(debug_assertions)]
+fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
+    println!(
+        "{}[{} {:?}] {:?}{}",
+        "  ".repeat(indent),
+        node.kind(),
+        node.kind_id(),
+        code.slice(&node.byte_range()).to_string(),
+        if node.has_changes() { " (changed)" } else { "" },
+    );
 }

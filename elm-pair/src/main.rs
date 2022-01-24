@@ -1,3 +1,5 @@
+use lib::log;
+use lib::log::Error;
 use mvar::MVar;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -7,10 +9,6 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
-use lib::log;
-use lib::log::Error;
-use lib::source_code::SourceFileSnapshot;
-use tree_sitter::Node;
 
 mod analysis_thread;
 mod compilation_thread;
@@ -241,47 +239,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
     // to recover from panicked threads, so letting the original problem
     // showball by calling `unwrap()` here is fine.
     mutex.lock().unwrap()
-}
-
-// TODO: remove debug helper when it's no longer needed.
-#[allow(dead_code)]
-fn debug_print_code(code: &SourceFileSnapshot) {
-    println!("CODE:\n{}", code.bytes);
-}
-
-// TODO: remove debug helper when it's no longer needed.
-#[allow(dead_code)]
-fn debug_print_tree(code: &SourceFileSnapshot) {
-    let mut cursor = code.tree.walk();
-    debug_print_tree_helper(code, 0, &mut cursor);
-    println!();
-}
-
-fn debug_print_tree_helper(
-    code: &SourceFileSnapshot,
-    indent: usize,
-    cursor: &mut tree_sitter::TreeCursor,
-) {
-    let node = cursor.node();
-    debug_print_node(code, indent, &node);
-    if cursor.goto_first_child() {
-        debug_print_tree_helper(code, indent + 1, cursor);
-        cursor.goto_parent();
-    }
-    if cursor.goto_next_sibling() {
-        debug_print_tree_helper(code, indent, cursor);
-    }
-}
-
-fn debug_print_node(code: &SourceFileSnapshot, indent: usize, node: &Node) {
-    println!(
-        "{}[{} {:?}] {:?}{}",
-        "  ".repeat(indent),
-        node.kind(),
-        node.kind_id(),
-        code.slice(&node.byte_range()).to_string(),
-        if node.has_changes() { " (changed)" } else { "" },
-    );
 }
 
 trait MsgLoop<E> {
