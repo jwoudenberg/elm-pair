@@ -33,6 +33,23 @@ impl Query {
             query: self,
         }
     }
+
+    pub fn parse_single(
+        &self,
+        code: &SourceFileSnapshot,
+        node: Node,
+    ) -> Result<Name, Error> {
+        let mut cursor = QueryCursor::new();
+        let (_, new_name) = self
+            .run_in(&mut cursor, code, node)
+            .next()
+            .ok_or_else(|| {
+                log::mk_err!(
+                    "parsing unqualified value node using query failed"
+                )
+            })??;
+        Ok(new_name)
+    }
 }
 
 pub struct UnqualifiedValues<'a, 'tree> {

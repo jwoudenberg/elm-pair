@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use tree_sitter::{Node, QueryCursor};
 
 pub fn remove_qualifier_from_references(
-    engine: &Queries,
+    queries: &Queries,
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
@@ -25,14 +25,14 @@ pub fn remove_qualifier_from_references(
     // Find existing unqualified references, so we can check whether removing
     // a qualifier from a qualified reference will introduce a naming conflict.
     let mut cursor = QueryCursor::new();
-    let names_in_use: HashSet<Name> = engine
+    let names_in_use: HashSet<Name> = queries
         .query_for_unqualified_values
         .run_in(&mut cursor, code, code.tree.root_node())
         .map(|r| r.map(|(_, reference)| reference))
         .collect::<Result<HashSet<Name>, Error>>()?;
 
     let mut names_from_other_modules: HashMap<Name, Rope> = HashMap::new();
-    let imports = engine.query_for_imports.run(&mut cursor, code);
+    let imports = queries.query_for_imports.run(&mut cursor, code);
     for import in imports {
         if &import.aliased_name() == qualifier {
             continue;
@@ -55,7 +55,7 @@ pub fn remove_qualifier_from_references(
         // if another module is exposing a variable by this name, un-expose it
         if let Some(other_qualifier) = names_from_other_modules.get(reference) {
             qualify_value(
-                engine,
+                queries,
                 computation,
                 refactor,
                 code,
@@ -77,7 +77,7 @@ pub fn remove_qualifier_from_references(
                     )
                 })?;
             rename(
-                engine,
+                queries,
                 refactor,
                 code,
                 node_stripped_of_qualifier,
@@ -87,7 +87,7 @@ pub fn remove_qualifier_from_references(
         }
     }
 
-    let qualified_references = engine.query_for_qualified_values.run_in(
+    let qualified_references = queries.query_for_qualified_values.run_in(
         &mut cursor,
         code,
         code.tree.root_node(),
@@ -107,8 +107,8 @@ pub fn remove_qualifier_from_references(
     Ok(())
 }
 
-fn rename(
-    engine: &Queries,
+pub fn rename(
+    queries: &Queries,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     node_stripped_of_qualifier: Option<Node>,
@@ -116,7 +116,7 @@ fn rename(
     to: &Name,
 ) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
-    let unqualified_values = engine.query_for_unqualified_values.run_in(
+    let unqualified_values = queries.query_for_unqualified_values.run_in(
         &mut cursor,
         code,
         code.tree.root_node(),

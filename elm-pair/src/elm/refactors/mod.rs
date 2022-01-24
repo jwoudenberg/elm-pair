@@ -5,6 +5,7 @@ pub mod added_exposing_list_to_import;
 pub mod added_module_qualifier_to_name;
 pub mod changed_as_clause;
 pub mod changed_module_qualifier;
+pub mod changed_name;
 pub mod changed_values_in_exposing_list;
 pub mod removed_constructors_from_exposing_list;
 pub mod removed_exposing_list_from_import;

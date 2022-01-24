@@ -71,6 +71,7 @@ node_constants!(
     EXPOSED_UNION_CONSTRUCTORS = 93;
     EXPOSED_VALUE = 91;
     EXPOSING_LIST = 90;
+    FUNCTION_DECLARATION_LEFT = 103;
     LOWER_CASE_IDENTIFIER = 1;
     MODULE_NAME_SEGMENT = 201;
     MODULE_DECLARATION = 87;
@@ -230,16 +231,10 @@ impl RefactorEngine {
                 parent: _,
             } => {
                 let mut cursor = QueryCursor::new();
-                let (_, old_reference) = self
+                let old_name = self
                     .queries
                     .query_for_unqualified_values
-                    .run_in(&mut cursor, &diff.old, changes.old_parent)
-                    .next()
-                    .ok_or_else(|| {
-                        log::mk_err!(
-                            "parsing unqualified value node using query failed"
-                        )
-                    })??;
+                    .parse_single(&diff.old, changes.old_parent)?;
                 let (_, qualified_name) = self
                     .queries
                     .query_for_qualified_values
@@ -250,7 +245,7 @@ impl RefactorEngine {
                             "parsing qualified value node using query failed"
                         )
                     })??;
-                if old_reference.name == qualified_name.unqualified_name.name {
+                if old_name.name == qualified_name.unqualified_name.name {
                     refactors::added_module_qualifier_to_name::refactor(
                         &self.queries,
                         &mut self.dataflow_computation,
@@ -489,6 +484,27 @@ impl RefactorEngine {
                     new_name,
                 )?;
             }
+            Change {
+                before: [LOWER_CASE_IDENTIFIER],
+                after: [LOWER_CASE_IDENTIFIER],
+                parent: FUNCTION_DECLARATION_LEFT,
+            } => {
+                let old_name = self
+                    .queries
+                    .query_for_unqualified_values
+                    .parse_single(&diff.old, changes.old_parent)?;
+                let new_name = self
+                    .queries
+                    .query_for_unqualified_values
+                    .parse_single(&diff.new, changes.new_parent)?;
+                refactors::changed_name::refactor(
+                    &self.queries,
+                    &mut refactor,
+                    &diff.new,
+                    old_name,
+                    new_name,
+                )?;
+            }
             _ => {
                 let unimported_qualifiers = find_unimported_qualifiers(
                     &self.queries,
@@ -605,6 +621,8 @@ fn attach_kinds(nodes: &[Node]) -> Vec<u16> {
 
 #[cfg(debug_assertions)]
 fn debug_print_tree_changes(diff: &SourceFileDiff, changes: &TreeChanges) {
+    println!("PARENT:");
+    debug_print_node(&diff.old, 2, &changes.old_parent);
     println!("REMOVED NODES:");
     for node in &changes.old_removed {
         debug_print_node(&diff.old, 2, node);
