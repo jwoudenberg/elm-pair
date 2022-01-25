@@ -1,0 +1,33 @@
+[
+  (function_declaration_left
+    (lower_case_identifier) @name
+  )
+  (lower_pattern
+    (lower_case_identifier) @name
+  )
+]
+
+=== test input below ===
+
+module Main exposing (..)
+
+
+type Age
+    = Age Int
+
+
+isYoung : Age -> Bool
+isYoung age =
+    let
+        (Age ageInYears) =
+            age
+    in
+    ageInYears < 30
+
+-- === expected output below ===
+-- name: [10:0] isYoung
+--
+-- name: [10:8] age
+--
+-- name: [12:13] ageInYears
+--

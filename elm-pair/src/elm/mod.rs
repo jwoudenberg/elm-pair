@@ -87,7 +87,8 @@ pub struct Queries {
     query_for_imports: queries::imports::Query,
     query_for_unqualified_values: queries::unqualified_values::Query,
     query_for_qualified_values: queries::qualified_values::Query,
-    query_for_names_with_scopes: queries::names_with_scopes::Query,
+    query_for_scopes: queries::scopes::Query,
+    query_for_name_definitions: queries::name_definitions::Query,
 }
 
 pub struct Refactor {
@@ -140,8 +141,9 @@ impl RefactorEngine {
                     queries::unqualified_values::Query::init(language)?,
                 query_for_qualified_values:
                     queries::qualified_values::Query::init(language)?,
-                query_for_names_with_scopes:
-                    queries::names_with_scopes::Query::init(language)?,
+                query_for_scopes: queries::scopes::Query::init(language)?,
+                query_for_name_definitions:
+                    queries::name_definitions::Query::init(language)?,
             },
         };
 

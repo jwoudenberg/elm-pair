@@ -4,8 +4,9 @@ use tree_sitter::Query;
 
 pub mod exports;
 pub mod imports;
-pub mod names_with_scopes;
+pub mod name_definitions;
 pub mod qualified_values;
+pub mod scopes;
 pub mod unqualified_values;
 
 #[macro_export]

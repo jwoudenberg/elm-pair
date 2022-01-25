@@ -1,0 +1,34 @@
+[
+  (let_in_expr) @scope
+  (file
+    (value_declaration (function_declaration_left)) @scope
+  )
+]
+
+=== test input below ===
+
+module Main exposing (..)
+
+
+isYoung : Int -> Int -> Bool
+isYoung birthYear currentYear =
+    let
+        age =
+            currentYear - birthYear
+    in
+    age < 30
+
+-- === expected output below ===
+-- scope: [6:0] isYoung birthYear currentYear =
+--     let
+--         age =
+--             currentYear - birthYear
+--     in
+--     age < 30
+--
+-- scope: [7:4] let
+--         age =
+--             currentYear - birthYear
+--     in
+--     age < 30
+--
