@@ -24,10 +24,21 @@ isYoung age =
     in
     ageInYears < 30
 
+
+birthYear : Age -> { r | year : Int } -> Int
+birthYear (Age yearsLived) { year } =
+  year - yearsLived
+
 -- === expected output below ===
 -- name: [10:0] isYoung
---
+-- 
 -- name: [10:8] age
---
+-- 
 -- name: [12:13] ageInYears
---
+-- 
+-- name: [19:0] birthYear
+-- 
+-- name: [19:15] yearsLived
+-- 
+-- name: [19:29] year
+-- 

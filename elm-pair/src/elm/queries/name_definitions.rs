@@ -32,7 +32,7 @@ pub struct NameDefinitions<'a, 'tree> {
 }
 
 impl<'a, 'tree> Iterator for NameDefinitions<'a, 'tree> {
-    type Item = Name;
+    type Item = (Name, Node<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
@@ -41,6 +41,6 @@ impl<'a, 'tree> Iterator for NameDefinitions<'a, 'tree> {
             name: self.code.slice(&name_node.byte_range()).into(),
             kind: NameKind::Value,
         };
-        Some(name)
+        Some((name, name_node))
     }
 }
