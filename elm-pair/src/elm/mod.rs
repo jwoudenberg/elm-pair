@@ -485,7 +485,7 @@ impl RefactorEngine {
             Change {
                 before: [LOWER_CASE_IDENTIFIER],
                 after: [LOWER_CASE_IDENTIFIER],
-                parent: FUNCTION_DECLARATION_LEFT,
+                parent: FUNCTION_DECLARATION_LEFT | VALUE_QID,
             } => {
                 let old_name = self
                     .queries
