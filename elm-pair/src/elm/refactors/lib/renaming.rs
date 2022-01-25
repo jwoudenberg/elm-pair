@@ -42,10 +42,7 @@ pub fn free_names(
     let imports = queries.query_for_imports.run(&mut cursor, code);
     for import in imports {
         if skip_byteranges.iter().any(|skip_range| {
-            crate::lib::range::contains_range(
-                skip_range,
-                &import.root_node.byte_range(),
-            )
+            skip_range.contains(&import.root_node.start_byte())
         }) {
             continue;
         } else {
@@ -126,18 +123,15 @@ pub fn rename(
         if include_byteranges.is_empty() {
             true
         } else {
-            include_byteranges.iter().any(|include_range| {
-                crate::lib::range::contains_range(
-                    include_range,
-                    &node.byte_range(),
-                )
-            })
+            include_byteranges
+                .iter()
+                .any(|include_range| include_range.contains(&node.start_byte()))
         }
     };
     let should_skip = |node: &Node| {
-        skip_byteranges.iter().any(|skip_range| {
-            crate::lib::range::contains_range(skip_range, &node.byte_range())
-        })
+        skip_byteranges
+            .iter()
+            .any(|skip_range| skip_range.contains(&node.start_byte()))
     };
     for res in unqualified_values {
         let (node, reference) = res?;

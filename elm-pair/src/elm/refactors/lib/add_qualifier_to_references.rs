@@ -17,9 +17,9 @@ pub fn add_qualifier_to_references(
 ) -> Result<(), Error> {
     let results = engine.query_for_unqualified_values.run(cursor, code);
     let should_skip = |node: Node| {
-        skip_byteranges.iter().any(|skip_range| {
-            crate::lib::range::contains_range(skip_range, &node.byte_range())
-        })
+        skip_byteranges
+            .iter()
+            .any(|skip_range| skip_range.contains(&node.start_byte()))
     };
     for result in results {
         let (node, reference) = result?;

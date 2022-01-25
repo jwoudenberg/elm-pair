@@ -2,7 +2,6 @@ pub mod dataflow;
 pub mod dir_walker;
 pub mod intersperse;
 pub mod log;
-pub mod range;
 pub mod source_code;
 
 #[cfg(test)]

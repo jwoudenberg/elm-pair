@@ -76,18 +76,14 @@ fn is_changed_scope(
         FUNCTION_DECLARATION_LEFT | LOWER_PATTERN => {
             // We changed the definition site of the name to a new name.
             scope_name == new_name
-                && crate::lib::range::contains_range(
-                    &changed_node.byte_range(),
-                    &scope_name_node.byte_range(),
-                )
+                && changed_node
+                    .byte_range()
+                    .contains(&scope_name_node.start_byte())
         }
         VALUE_QID => {
             // We changed a variable at a usage site, not where it is defined.
             scope_name == old_name
-                && crate::lib::range::contains_range(
-                    scope_range,
-                    &changed_node.byte_range(),
-                )
+                && scope_range.contains(&changed_node.start_byte())
         }
         kind => {
             log::mk_err!("no rename behavior for kind {:?}", kind);
