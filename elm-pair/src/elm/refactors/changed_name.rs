@@ -1,7 +1,8 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
-    Name, Queries, Refactor, FUNCTION_DECLARATION_LEFT, VALUE_QID,
+    Name, Queries, Refactor, FUNCTION_DECLARATION_LEFT, LOWER_PATTERN,
+    VALUE_QID,
 };
 use crate::lib::log;
 use crate::lib::log::Error;
@@ -72,7 +73,7 @@ fn is_changed_scope(
     scope_range: &Range<usize>,
 ) -> bool {
     match changed_node.kind_id() {
-        FUNCTION_DECLARATION_LEFT => {
+        FUNCTION_DECLARATION_LEFT | LOWER_PATTERN => {
             // We changed the definition site of the name to a new name.
             scope_name == new_name
                 && crate::lib::range::contains_range(
@@ -101,6 +102,8 @@ mod tests {
 
     simulation_test!(change_variable_name_in_let_binding);
     simulation_test!(change_variable_name_defined_in_let_binding);
+    simulation_test!(change_function_argument_name);
+    simulation_test!(change_variable_name_defined_as_function_argument);
     simulation_test!(
         change_variable_name_in_let_binding_to_name_already_in_use
     );

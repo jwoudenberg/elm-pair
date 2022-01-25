@@ -70,6 +70,7 @@ node_constants!(
     EXPOSING_LIST = 90;
     FUNCTION_DECLARATION_LEFT = 103;
     LOWER_CASE_IDENTIFIER = 1;
+    LOWER_PATTERN = 161;
     MODULE_NAME_SEGMENT = 201;
     MODULE_DECLARATION = 87;
     TYPE_IDENTIFIER = 33;
@@ -485,7 +486,7 @@ impl RefactorEngine {
             Change {
                 before: [LOWER_CASE_IDENTIFIER],
                 after: [LOWER_CASE_IDENTIFIER],
-                parent: FUNCTION_DECLARATION_LEFT | VALUE_QID,
+                parent: FUNCTION_DECLARATION_LEFT | VALUE_QID | LOWER_PATTERN,
             } => {
                 let old_name = self
                     .queries
