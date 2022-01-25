@@ -29,16 +29,34 @@ birthYear : Age -> { r | year : Int } -> Int
 birthYear (Age yearsLived) { year } =
   year - yearsLived
 
+
+youngest : List Age -> Age
+youngest ages =
+    case ages of
+        [] -> Debug.todo ""
+        [single] -> single
+        (head :: rest) -> min head (youngest rest)
+
 -- === expected output below ===
 -- name: [10:0] isYoung
--- 
+--
 -- name: [10:8] age
--- 
+--
 -- name: [12:13] ageInYears
--- 
+--
 -- name: [19:0] birthYear
--- 
+--
 -- name: [19:15] yearsLived
--- 
+--
 -- name: [19:29] year
--- 
+--
+-- name: [24:0] youngest
+--
+-- name: [24:9] ages
+--
+-- name: [27:9] single
+--
+-- name: [28:9] head
+--
+-- name: [28:17] rest
+--

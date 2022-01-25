@@ -3,11 +3,20 @@
   (file
     (value_declaration (function_declaration_left)) @scope
   )
+  (case_of_branch) @scope
 ]
 
 === test input below ===
 
 module Main exposing (..)
+
+
+youngest : List Age -> Age
+youngest ages =
+    case ages of
+        [] -> Debug.todo ""
+        [single] -> single
+        (head :: rest) -> min head (youngest rest)
 
 
 isYoung : Int -> Int -> Bool
@@ -19,14 +28,26 @@ isYoung birthYear currentYear =
     age < 30
 
 -- === expected output below ===
--- scope: [6:0] isYoung birthYear currentYear =
+-- scope: [6:0] youngest ages =
+--     case ages of
+--         [] -> Debug.todo ""
+--         [single] -> single
+--         (head :: rest) -> min head (youngest rest)
+--
+-- scope: [8:8] [] -> Debug.todo ""
+--
+-- scope: [9:8] [single] -> single
+--
+-- scope: [10:8] (head :: rest) -> min head (youngest rest)
+--
+-- scope: [14:0] isYoung birthYear currentYear =
 --     let
 --         age =
 --             currentYear - birthYear
 --     in
 --     age < 30
 --
--- scope: [7:4] let
+-- scope: [15:4] let
 --         age =
 --             currentYear - birthYear
 --     in

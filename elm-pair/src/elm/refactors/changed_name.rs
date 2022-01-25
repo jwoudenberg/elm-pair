@@ -140,6 +140,8 @@ mod tests {
     simulation_test!(change_variable_name_defined_in_let_binding_pattern);
     simulation_test!(change_function_argument_name);
     simulation_test!(change_variable_name_defined_as_function_argument);
+    simulation_test!(change_variable_name_in_case_pattern);
+    simulation_test!(change_variable_name_defined_in_case_pattern);
     simulation_test!(
         change_variable_name_in_let_binding_to_name_already_in_use
     );
