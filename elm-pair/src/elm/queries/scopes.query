@@ -4,6 +4,7 @@
     (value_declaration (function_declaration_left)) @scope
   )
   (case_of_branch) @scope
+  (anonymous_function_expr) @scope
 ]
 
 === test input below ===
@@ -17,6 +18,14 @@ youngest ages =
         [] -> Debug.todo ""
         [single] -> single
         (head :: rest) -> min head (youngest rest)
+
+
+safeYoungest : List Age -> Maybe Age
+safeYoungest ageList =
+    ageList
+        |> List.map (\(Age n) -> n)
+        |> List.minimum
+        |> Maybe.map Age
 
 
 isYoung : Int -> Int -> Bool
@@ -40,14 +49,22 @@ isYoung birthYear currentYear =
 --
 -- scope: [10:8] (head :: rest) -> min head (youngest rest)
 --
--- scope: [14:0] isYoung birthYear currentYear =
+-- scope: [14:0] safeYoungest ageList =
+--     ageList
+--         |> List.map (\(Age n) -> n)
+--         |> List.minimum
+--         |> Maybe.map Age
+--
+-- scope: [16:21] \(Age n) -> n
+--
+-- scope: [22:0] isYoung birthYear currentYear =
 --     let
 --         age =
 --             currentYear - birthYear
 --     in
 --     age < 30
 --
--- scope: [15:4] let
+-- scope: [23:4] let
 --         age =
 --             currentYear - birthYear
 --     in

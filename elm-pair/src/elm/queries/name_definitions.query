@@ -30,6 +30,14 @@ birthYear (Age yearsLived) { year } =
   year - yearsLived
 
 
+safeYoungest : List Age -> Maybe Age
+safeYoungest ageList =
+    ageList
+        |> List.map (\(Age n) -> n)
+        |> List.minimum
+        |> Maybe.map Age
+
+
 youngest : List Age -> Age
 youngest ages =
     case ages of
@@ -50,13 +58,18 @@ youngest ages =
 --
 -- name: [19:29] year
 --
--- name: [24:0] youngest
+-- name: [24:0] safeYoungest
 --
--- name: [24:9] ages
+-- name: [24:13] ageList
 --
--- name: [27:9] single
+-- name: [26:27] n
 --
--- name: [28:9] head
+-- name: [32:0] youngest
 --
--- name: [28:17] rest
+-- name: [32:9] ages
 --
+-- name: [35:9] single
+--
+-- name: [36:9] head
+--
+-- name: [36:17] rest

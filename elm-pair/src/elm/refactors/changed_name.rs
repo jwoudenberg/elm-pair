@@ -145,6 +145,8 @@ mod tests {
     simulation_test!(
         change_variable_name_in_let_binding_to_name_already_in_use
     );
+    simulation_test!(change_lambda_argument_name);
+    simulation_test!(change_variable_name_defined_as_lambda_argument);
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);
