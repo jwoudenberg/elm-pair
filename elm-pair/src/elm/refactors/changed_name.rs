@@ -21,6 +21,9 @@ pub fn refactor(
     new_name: Name,
     new_node: &Node,
 ) -> Result<(), Error> {
+    if new_name.name.len_chars() == 0 {
+        return Ok(());
+    }
     let mut cursor = QueryCursor::new();
     let mut cursor2 = QueryCursor::new();
     let (record_pattern, scope) = queries
