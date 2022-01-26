@@ -4,9 +4,9 @@ use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
 use std::collections::HashSet;
 
-const IMPLICIT_ELM_IMPORTS: [&str; 10] = [
-    "Basics", "Char", "Cmd", "List", "Maybe", "Platform", "Result", "String",
-    "Sub", "Tuple",
+const IMPLICIT_ELM_IMPORTS: [&str; 11] = [
+    "Basics", "Char", "Cmd", "Debug", "List", "Maybe", "Platform", "Result",
+    "String", "Sub", "Tuple",
 ];
 
 pub fn refactor(
