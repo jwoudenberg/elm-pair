@@ -150,6 +150,7 @@ mod tests {
     );
     simulation_test!(change_lambda_argument_name);
     simulation_test!(change_variable_name_defined_as_lambda_argument);
+    simulation_test!(change_variable_name_to_already_existing_name_in_scope);
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);
