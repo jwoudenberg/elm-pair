@@ -26,16 +26,22 @@ pub fn refactor(
     }
     let opt_scope = match new_node.kind_id() {
         FUNCTION_DECLARATION_LEFT | LOWER_PATTERN | TYPE_ANNOTATION => {
-            find_scope(queries, code, |scope| {
-                is_name_definition_in_scope(new_node, scope)
-            })
+            if is_record_field_pattern(new_node) {
+                None
+            } else {
+                find_scope(queries, code, |scope| {
+                    scope.contains(&new_node.start_byte())
+                })
+            }
         }
         VALUE_QID => find_scope(queries, code, |scope| {
             let mut cursor = QueryCursor::new();
             let definition_sites: Vec<Node> = queries
                 .query_for_name_definitions
                 .run(&mut cursor, code)
-                .filter(|(name, _)| name == &old_name)
+                .filter(|(name, node)| {
+                    name == &old_name && !is_record_field_pattern(node)
+                })
                 .map(|(_, node)| node)
                 .collect();
             is_variable_usage_in_scope(new_node, definition_sites, scope)
@@ -97,17 +103,9 @@ fn is_variable_usage_in_scope(
     if !scope.contains(&changed_node.start_byte()) {
         return false;
     }
-    definition_sites.iter().any(|definition_node| {
-        is_name_definition_in_scope(definition_node, scope)
-    })
-}
-
-fn is_name_definition_in_scope(
-    changed_node: &Node,
-    scope: &Range<usize>,
-) -> bool {
-    scope.contains(&changed_node.start_byte())
-        && !is_record_field_pattern(changed_node)
+    definition_sites
+        .iter()
+        .any(|definition_node| scope.contains(&definition_node.start_byte()))
 }
 
 fn is_record_field_pattern(node: &Node) -> bool {
