@@ -24,95 +24,90 @@ pub fn refactor(
     if new_name.name.len_chars() == 0 {
         return Ok(());
     }
-    let mut cursor = QueryCursor::new();
-    let mut cursor2 = QueryCursor::new();
-    let (record_pattern, scope) = queries
-        .query_for_scopes
-        .run(&mut cursor, code)
-        .filter_map(|scope| {
-            is_changed_scope(
-                &mut cursor2,
-                queries,
-                new_node,
-                &old_name,
-                code,
-                scope,
-            )
-        })
-        // If the variable definition is in multiple scopes, the innermost
-        // (i.e. shortes) scope will be the one the variable can be used in.
-        .min_by_key(|(_, scope)| scope.len())
-        .ok_or_else(|| {
-            log::mk_err!(
+    let opt_scope = match new_node.kind_id() {
+        FUNCTION_DECLARATION_LEFT | LOWER_PATTERN => {
+            find_scope(queries, code, |scope| {
+                is_name_definition_in_scope(new_node, scope)
+            })
+        }
+        VALUE_QID => find_scope(queries, code, |scope| {
+            let mut cursor = QueryCursor::new();
+            let definition_sites: Vec<Node> = queries
+                .query_for_name_definitions
+                .run(&mut cursor, code)
+                .filter(|(name, _)| name == &old_name)
+                .map(|(_, node)| node)
+                .collect();
+            is_variable_usage_in_scope(new_node, definition_sites, scope)
+        }),
+        kind => {
+            log::error!(
                 "could not find definition site of local var: {:?}",
-                old_name
-            )
-        })?;
+                kind
+            );
+            None
+        }
+    };
 
-    // Suppose the changed variable originates from a record match:
-    //
-    //     nextYear : { date | years : Int } -> Int
-    //     nextYear { years } = years + 1
-    //
-    // In this case we cannot change `years` without also changing the record
-    // type and possibly other functions using that same type, so we do nothing.
-    if record_pattern {
-        return Ok(());
+    if let Some(scope) = opt_scope {
+        renaming::free_names(
+            queries,
+            computation,
+            refactor,
+            code,
+            &HashSet::from_iter(std::iter::once(new_name.clone())),
+            &[&new_node.byte_range()],
+        )?;
+        renaming::rename(
+            queries,
+            refactor,
+            code,
+            &old_name,
+            &new_name,
+            &[&scope],
+            &[],
+        )?;
     }
-
-    renaming::free_names(
-        queries,
-        computation,
-        refactor,
-        code,
-        &HashSet::from_iter(std::iter::once(new_name.clone())),
-        &[&new_node.byte_range()],
-    )?;
-    renaming::rename(
-        queries,
-        refactor,
-        code,
-        &old_name,
-        &new_name,
-        &[&scope],
-        &[],
-    )
+    Ok(())
 }
 
-// Check if a scope (a variable name and the code range in which it can be used)
-// has been affected by the programmar changing a variable name.
-fn is_changed_scope(
-    cursor: &mut QueryCursor,
+fn find_scope<F>(
     queries: &Queries,
-    changed_node: &Node,
-    old_name: &Name,
     code: &SourceFileSnapshot,
-    scope: Range<usize>,
-) -> Option<(bool, Range<usize>)> {
+    in_scope: F,
+) -> Option<Range<usize>>
+where
+    F: FnMut(&Range<usize>) -> bool,
+{
+    let mut cursor = QueryCursor::new();
+    queries
+        .query_for_scopes
+        .run(&mut cursor, code)
+        .filter(in_scope)
+        // If the variable definition is in multiple scopes, the innermost
+        // (i.e. shortes) scope will be the one the variable can be used in.
+        .min_by_key(|scope| scope.len())
+}
+
+fn is_variable_usage_in_scope(
+    changed_node: &Node,
+    definition_sites: Vec<Node>,
+    scope: &Range<usize>,
+) -> bool {
     if !scope.contains(&changed_node.start_byte()) {
-        return None;
+        return false;
     }
-    match changed_node.kind_id() {
-        FUNCTION_DECLARATION_LEFT | LOWER_PATTERN => {
-            // We changed the definition site of the name to a new name.
-            Some((is_record_field_pattern(changed_node), scope))
-        }
-        VALUE_QID => {
-            // We changed a variable at a usage site, not where it is defined.
-            for (name, node) in
-                queries.query_for_name_definitions.run(cursor, code)
-            {
-                if &name == old_name && scope.contains(&node.start_byte()) {
-                    return Some((is_record_field_pattern(&node), scope));
-                }
-            }
-            None
-        }
-        kind => {
-            log::mk_err!("no rename behavior for kind {:?}", kind);
-            None
-        }
-    }
+    definition_sites.iter().any(|definition_node| {
+        is_name_definition_in_scope(definition_node, scope)
+    })
+}
+
+fn is_name_definition_in_scope(
+    changed_node: &Node,
+    scope: &Range<usize>,
+) -> bool {
+    scope.contains(&changed_node.start_byte())
+        && !is_record_field_pattern(changed_node)
 }
 
 fn is_record_field_pattern(node: &Node) -> bool {
