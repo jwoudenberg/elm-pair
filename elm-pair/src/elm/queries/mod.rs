@@ -61,7 +61,7 @@ macro_rules! query {
                 let test_input =
                       match test_str.split_once(&test_separator) {
                           Some((input, _)) => input,
-                          None => panic!("No test input found in query file.")
+                          None => test_str,
                       };
                 let mut cursor = tree_sitter::QueryCursor::new();
                 let tree = $crate::lib::source_code::parse_bytes(test_input).unwrap();

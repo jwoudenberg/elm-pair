@@ -12,6 +12,13 @@
     (lower_pattern
         (lower_case_identifier) @value
     )
+    (module_declaration
+      exposing: (exposing_list
+        (exposed_value
+            (lower_case_identifier) @value
+        )
+      )
+    )
     (type_alias_declaration
         (type_identifier) @type_
     )
@@ -33,7 +40,7 @@
 
 === test input below ===
 
-module Main exposing (..)
+module Main exposing (Beverage, decoder)
 
 import Json.Decode exposing (Decoder, float, succeed)
 
@@ -67,57 +74,59 @@ decoder kind =
         (Json.Decode.field "liters" float)
 
 -- === expected output below ===
+-- value: [2:32] decoder
+-- 
 -- type_: [7:11] Beverage
---
+-- 
 -- type_: [8:12] BeverageKind
---
+-- 
 -- type_: [9:14] Float
---
+-- 
 -- type_: [13:5] BeverageKind
---
+-- 
 -- constructor: [14:6] HotChocolate
---
+-- 
 -- constructor: [15:6] Water
---
+-- 
 -- value: [18:0] enjoyment
---
+-- 
 -- type_: [18:12] Beverage
---
+-- 
 -- type_: [18:24] Float
---
+-- 
 -- value: [19:0] enjoyment
---
+-- 
 -- value: [20:5] beverage
---
+-- 
 -- value: [21:13] beverage
---
+-- 
 -- constructor: [22:12] HotChocolate
---
+-- 
 -- value: [22:28] liters
---
+-- 
 -- constructor: [23:12] Water
---
+-- 
 -- value: [26:0] decoder
---
+-- 
 -- type_: [26:10] BeverageKind
---
+-- 
 -- type_: [26:26] Decoder
---
+-- 
 -- type_: [26:34] Beverage
---
+-- 
 -- value: [27:0] decoder
---
+-- 
 -- value: [27:8] kind
---
+-- 
 -- value: [29:8] kindDecoder
---
+-- 
 -- value: [29:22] succeed
---
+-- 
 -- value: [29:30] kind
---
+-- 
 -- constructor: [31:21] Beverage
---
+-- 
 -- value: [32:34] kindDecoder
---
+-- 
 -- value: [33:36] float
---
+-- 

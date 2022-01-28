@@ -30,7 +30,7 @@ adjective stars =
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 10 adjective
+-- MOVE CURSOR TO LINE 1 adjective
 -- DELETE adjective
 -- INSERT ratingAdjective
 -- END SIMULATION

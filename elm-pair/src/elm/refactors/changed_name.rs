@@ -1,8 +1,8 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
-    Name, Queries, Refactor, FUNCTION_DECLARATION_LEFT, LOWER_PATTERN,
-    RECORD_PATTERN, TYPE_ANNOTATION, VALUE_QID,
+    Name, Queries, Refactor, EXPOSED_VALUE, FUNCTION_DECLARATION_LEFT,
+    LOWER_PATTERN, RECORD_PATTERN, TYPE_ANNOTATION, VALUE_QID,
 };
 use crate::lib::log;
 use crate::lib::log::Error;
@@ -35,7 +35,7 @@ pub fn refactor(
                 })
             }
         }
-        VALUE_QID => find_scope(queries, code, |scope| {
+        VALUE_QID | EXPOSED_VALUE => find_scope(queries, code, |scope| {
             // We've renamed a variable usage. We need to find the definition
             // site of the variable we renamed in order to know its scope, and
             // letting us rename just the names in the same scope.
@@ -144,6 +144,7 @@ mod tests {
     simulation_test!(change_name_of_top_level_function_in_type_definition);
     simulation_test!(change_variable_name_defined_as_top_level_function);
     simulation_test!(change_name_of_function_in_type_definition_in_let_binding);
+    simulation_test!(change_variable_name_in_module_exposing_list);
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);

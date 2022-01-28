@@ -494,16 +494,23 @@ impl RefactorEngine {
                     FUNCTION_DECLARATION_LEFT
                     | VALUE_QID
                     | LOWER_PATTERN
-                    | TYPE_ANNOTATION,
+                    | TYPE_ANNOTATION
+                    | EXPOSED_VALUE,
             } => {
-                let old_name = self
-                    .queries
-                    .query_for_unqualified_values
-                    .parse_single(&diff.old, changes.old_parent)?;
-                let new_name = self
-                    .queries
-                    .query_for_unqualified_values
-                    .parse_single(&diff.new, changes.new_parent)?;
+                let old_name = Name {
+                    name: diff
+                        .old
+                        .slice(&changes.old_removed[0].byte_range())
+                        .into(),
+                    kind: NameKind::Value,
+                };
+                let new_name = Name {
+                    name: diff
+                        .new
+                        .slice(&changes.new_added[0].byte_range())
+                        .into(),
+                    kind: NameKind::Value,
+                };
                 refactors::changed_name::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
