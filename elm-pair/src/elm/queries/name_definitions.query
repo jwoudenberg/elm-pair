@@ -1,9 +1,24 @@
 [
   (function_declaration_left
-    (lower_case_identifier) @name
+    (lower_case_identifier) @value
   )
   (lower_pattern
-    (lower_case_identifier) @name
+    (lower_case_identifier) @value
+  )
+  (type_declaration
+    name: (type_identifier) @type_
+  )
+  (type_alias_declaration
+    name: (type_identifier) @type_
+  )
+  (type_alias_declaration
+    name: (type_identifier) @constructor
+    typeExpression: (type_expression
+      part: (record_type)
+    )
+  )
+  (union_variant
+    name: (constructor_identifier) @constructor
   )
 ]
 
@@ -12,30 +27,36 @@
 module Main exposing (..)
 
 
+type alias Person =
+    { name : String
+    , age : Age
+    }
+
+
 type Age
-    = Age Int
+    = AgeInYears Int
 
 
 isYoung : Age -> Bool
 isYoung age =
     let
-        (Age ageInYears) =
+        (AgeInYears ageInYears) =
             age
     in
     ageInYears < 30
 
 
 birthYear : Age -> { r | year : Int } -> Int
-birthYear (Age yearsLived) { year } =
+birthYear (AgeInYears yearsLived) { year } =
   year - yearsLived
 
 
 safeYoungest : List Age -> Maybe Age
 safeYoungest ageList =
     ageList
-        |> List.map (\(Age n) -> n)
+        |> List.map (\(AgeInYears n) -> n)
         |> List.minimum
-        |> Maybe.map Age
+        |> Maybe.map AgeInYears
 
 
 youngest : List Age -> Age
@@ -46,30 +67,39 @@ youngest ages =
         (head :: rest) -> min head (youngest rest)
 
 -- === expected output below ===
--- name: [10:0] isYoung
+-- type_: [5:11] Person
 --
--- name: [10:8] age
+-- constructor: [5:11] Person
 --
--- name: [12:13] ageInYears
+-- type_: [11:5] Age
 --
--- name: [19:0] birthYear
+-- constructor: [12:6] AgeInYears
 --
--- name: [19:15] yearsLived
+-- value: [16:0] isYoung
 --
--- name: [19:29] year
+-- value: [16:8] age
 --
--- name: [24:0] safeYoungest
+-- value: [18:20] ageInYears
 --
--- name: [24:13] ageList
+-- value: [25:0] birthYear
 --
--- name: [26:27] n
+-- value: [25:22] yearsLived
 --
--- name: [32:0] youngest
+-- value: [25:36] year
 --
--- name: [32:9] ages
+-- value: [30:0] safeYoungest
 --
--- name: [35:9] single
+-- value: [30:13] ageList
 --
--- name: [36:9] head
+-- value: [32:34] n
 --
--- name: [36:17] rest
+-- value: [38:0] youngest
+--
+-- value: [38:9] ages
+--
+-- value: [41:9] single
+--
+-- value: [42:9] head
+--
+-- value: [42:17] rest
+--

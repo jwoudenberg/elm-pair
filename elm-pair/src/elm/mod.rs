@@ -74,9 +74,13 @@ node_constants!(
     MODULE_NAME_SEGMENT = 201;
     MODULE_DECLARATION = 87;
     RECORD_PATTERN = 163;
+    RECORD_TYPE = 115;
+    TYPE_ALIAS_DECLARATION = 108;
     TYPE_ANNOTATION = 118;
+    TYPE_DECLARATION = 104;
     TYPE_IDENTIFIER = 33;
     TYPE_QID = 97;
+    UNION_VARIANT = 106;
     VALUE_QID = 98;
 );
 
@@ -510,6 +514,68 @@ impl RefactorEngine {
                         .slice(&changes.new_added[0].byte_range())
                         .into(),
                     kind: NameKind::Value,
+                };
+                refactors::changed_name::refactor(
+                    &self.queries,
+                    &mut self.dataflow_computation,
+                    &mut refactor,
+                    &diff.new,
+                    old_name,
+                    new_name,
+                    &changes.new_parent,
+                )?;
+            }
+            Change {
+                before: [TYPE_IDENTIFIER],
+                after: [TYPE_IDENTIFIER],
+                parent:
+                    TYPE_DECLARATION
+                    | TYPE_QID
+                    | TYPE_ALIAS_DECLARATION
+                    | EXPOSED_TYPE,
+            } => {
+                let old_name = Name {
+                    name: diff
+                        .old
+                        .slice(&changes.old_removed[0].byte_range())
+                        .into(),
+                    kind: NameKind::Type,
+                };
+                let new_name = Name {
+                    name: diff
+                        .new
+                        .slice(&changes.new_added[0].byte_range())
+                        .into(),
+                    kind: NameKind::Type,
+                };
+                refactors::changed_name::refactor(
+                    &self.queries,
+                    &mut self.dataflow_computation,
+                    &mut refactor,
+                    &diff.new,
+                    old_name,
+                    new_name,
+                    &changes.new_parent,
+                )?;
+            }
+            Change {
+                before: [CONSTRUCTOR_IDENTIFIER],
+                after: [CONSTRUCTOR_IDENTIFIER],
+                parent: UNION_VARIANT | CONSTRUCTOR_QID,
+            } => {
+                let old_name = Name {
+                    name: diff
+                        .old
+                        .slice(&changes.old_removed[0].byte_range())
+                        .into(),
+                    kind: NameKind::Constructor,
+                };
+                let new_name = Name {
+                    name: diff
+                        .new
+                        .slice(&changes.new_added[0].byte_range())
+                        .into(),
+                    kind: NameKind::Constructor,
                 };
                 refactors::changed_name::refactor(
                     &self.queries,

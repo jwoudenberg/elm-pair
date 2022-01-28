@@ -21,14 +21,12 @@ impl Query {
     ) -> Scopes<'a, 'tree> {
         Scopes {
             matches: cursor.matches(&self.query, node, code),
-            query: self,
         }
     }
 }
 
 pub struct Scopes<'a, 'tree> {
     matches: tree_sitter::QueryMatches<'a, 'tree, &'a SourceFileSnapshot>,
-    query: &'a Query,
 }
 
 impl<'a, 'tree> Iterator for Scopes<'a, 'tree> {
@@ -36,13 +34,11 @@ impl<'a, 'tree> Iterator for Scopes<'a, 'tree> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
-        let scope_node = match_.captures[self.query.scope as usize].node;
+        let scope_node = match_.captures[0].node;
         let mut scope = scope_node.byte_range();
         // If we're looking at the scope created by a function that name itself
         // belongs to the scope above.
-        if let Some(function_name_capture) =
-            match_.captures.get(self.query.function_name as usize)
-        {
+        if let Some(function_name_capture) = match_.captures.get(1) {
             scope.start = function_name_capture.node.end_byte();
         }
         Some(scope)

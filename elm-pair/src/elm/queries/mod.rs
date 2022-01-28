@@ -12,6 +12,7 @@ pub mod unqualified_values;
 #[macro_export]
 macro_rules! query {
     ($file:literal $(, $capture:ident )* $(,)? ) => {
+        #[allow(dead_code)]
         pub struct Query {
             query: tree_sitter::Query,
             $($capture: u32,)*
