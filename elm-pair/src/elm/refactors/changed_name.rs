@@ -26,6 +26,7 @@ pub fn refactor(
     }
     let opt_scope = match new_node.kind_id() {
         FUNCTION_DECLARATION_LEFT | LOWER_PATTERN | TYPE_ANNOTATION => {
+            // We've renamed a variable at its definition site.
             if is_record_field_pattern(new_node) {
                 None
             } else {
@@ -35,6 +36,9 @@ pub fn refactor(
             }
         }
         VALUE_QID => find_scope(queries, code, |scope| {
+            // We've renamed a variable usage. We need to find the definition
+            // site of the variable we renamed in order to know its scope, and
+            // letting us rename just the names in the same scope.
             let mut cursor = QueryCursor::new();
             let definition_sites: Vec<Node> = queries
                 .query_for_name_definitions
