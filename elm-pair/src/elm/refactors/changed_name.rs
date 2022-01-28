@@ -36,7 +36,7 @@ pub fn refactor(
                 new_node,
                 &old_name,
                 code,
-                &scope,
+                scope,
             )
         })
         // If the variable definition is in multiple scopes, the innermost
@@ -87,34 +87,26 @@ fn is_changed_scope(
     changed_node: &Node,
     old_name: &Name,
     code: &SourceFileSnapshot,
-    scope_node: &Node,
+    scope: Range<usize>,
 ) -> Option<(bool, Range<usize>)> {
-    if !scope_node.byte_range().contains(&changed_node.start_byte()) {
+    if !scope.contains(&changed_node.start_byte()) {
         return None;
     }
     match changed_node.kind_id() {
         FUNCTION_DECLARATION_LEFT | LOWER_PATTERN => {
             // We changed the definition site of the name to a new name.
-            Some((
-                is_record_field_pattern(changed_node),
-                scope_node.byte_range(),
-            ))
+            Some((is_record_field_pattern(changed_node), scope))
         }
         VALUE_QID => {
             // We changed a variable at a usage site, not where it is defined.
-            queries
-                .query_for_name_definitions
-                .run(cursor, code)
-                .find_map(|(name, node)| {
-                    if &name == old_name {
-                        Some((
-                            is_record_field_pattern(&node),
-                            scope_node.byte_range(),
-                        ))
-                    } else {
-                        None
-                    }
-                })
+            for (name, node) in
+                queries.query_for_name_definitions.run(cursor, code)
+            {
+                if &name == old_name {
+                    return Some((is_record_field_pattern(&node), scope));
+                }
+            }
+            None
         }
         kind => {
             log::mk_err!("no rename behavior for kind {:?}", kind);
@@ -151,6 +143,7 @@ mod tests {
     simulation_test!(change_lambda_argument_name);
     simulation_test!(change_variable_name_defined_as_lambda_argument);
     simulation_test!(change_variable_name_to_already_existing_name_in_scope);
+    simulation_test!(change_name_of_top_level_function);
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);

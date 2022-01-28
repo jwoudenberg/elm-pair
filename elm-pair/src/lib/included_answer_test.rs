@@ -6,9 +6,14 @@
 use std::io::Write;
 use std::path::Path;
 
+const PREFIX: &str = "-- ";
+
+pub fn separator() -> String {
+    format!("{PREFIX}=== expected output below ===\n")
+}
+
 pub fn assert_eq_answer_in(output: &str, path: &Path) {
-    let prefix = "-- ";
-    let separator = prefix.to_owned() + "=== expected output below ===\n";
+    let separator = separator();
     let contents = assert_ok(std::fs::read_to_string(path));
     match contents.split_once(&separator) {
         None => {
@@ -16,7 +21,7 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
                 assert_ok(std::fs::OpenOptions::new().append(true).open(path));
             assert_ok(file.write_all(separator.as_bytes()));
             for line in output.lines() {
-                assert_ok(file.write_all(prefix.as_bytes()));
+                assert_ok(file.write_all(PREFIX.as_bytes()));
                 assert_ok(file.write_all(line.as_bytes()));
                 assert_ok(file.write_all("\n".as_bytes()));
             }
@@ -25,8 +30,8 @@ pub fn assert_eq_answer_in(output: &str, path: &Path) {
             let expected_output = expected_output_prefixed
                 .lines()
                 .map(|x| {
-                    x.strip_prefix(&prefix)
-                        .or_else(|| x.strip_prefix(&prefix.trim_end()))
+                    x.strip_prefix(&PREFIX)
+                        .or_else(|| x.strip_prefix(&PREFIX.trim_end()))
                         .unwrap_or(x)
                         .trim_end()
                 })

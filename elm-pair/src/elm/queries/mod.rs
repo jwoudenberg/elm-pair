@@ -53,10 +53,18 @@ macro_rules! query {
                 let test_str =
                       match include_str!($file).split_once(separator) {
                           Some((_, test)) => test,
+                          None => panic!("No test str found in query file.")
+                      };
+                // Trailing comments
+                // the source tree
+                let test_separator = $crate::lib::included_answer_test::separator();
+                let test_input =
+                      match test_str.split_once(&test_separator) {
+                          Some((input, _)) => input,
                           None => panic!("No test input found in query file.")
                       };
                 let mut cursor = tree_sitter::QueryCursor::new();
-                let tree = $crate::lib::source_code::parse_bytes(test_str).unwrap();
+                let tree = $crate::lib::source_code::parse_bytes(test_input).unwrap();
                 let root_node = tree.root_node();
                 if root_node.has_error() {
                     panic!("Parsing resulted in invalid syntax tree.");
@@ -64,7 +72,7 @@ macro_rules! query {
                 let capture_names = query.query.capture_names();
                 let output: String =
                     cursor
-                      .matches(&query.query, root_node, test_str.as_bytes())
+                      .matches(&query.query, root_node, test_input.as_bytes())
                       .map(|m| {
                           let captures_str: String =
                                 m.captures.into_iter().map(|c| {
@@ -73,7 +81,7 @@ macro_rules! query {
                                         capture_names[c.index as usize],
                                         position.row,
                                         position.column,
-                                        test_str.get(c.node.byte_range()).unwrap(),
+                                        test_input.get(c.node.byte_range()).unwrap(),
                                     )
                                 }).collect();
                           format!("{}\n", captures_str)
