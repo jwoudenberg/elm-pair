@@ -102,7 +102,7 @@ fn is_changed_scope(
             for (name, node) in
                 queries.query_for_name_definitions.run(cursor, code)
             {
-                if &name == old_name {
+                if &name == old_name && scope.contains(&node.start_byte()) {
                     return Some((is_record_field_pattern(&node), scope));
                 }
             }
@@ -144,6 +144,7 @@ mod tests {
     simulation_test!(change_variable_name_defined_as_lambda_argument);
     simulation_test!(change_variable_name_to_already_existing_name_in_scope);
     simulation_test!(change_name_of_top_level_function);
+    simulation_test!(change_variable_name_defined_as_top_level_function);
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);
