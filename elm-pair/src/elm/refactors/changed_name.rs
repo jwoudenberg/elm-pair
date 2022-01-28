@@ -2,7 +2,7 @@ use crate::elm::dependencies::DataflowComputation;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
     Name, Queries, Refactor, FUNCTION_DECLARATION_LEFT, LOWER_PATTERN,
-    RECORD_PATTERN, VALUE_QID,
+    RECORD_PATTERN, TYPE_ANNOTATION, VALUE_QID,
 };
 use crate::lib::log;
 use crate::lib::log::Error;
@@ -25,7 +25,7 @@ pub fn refactor(
         return Ok(());
     }
     let opt_scope = match new_node.kind_id() {
-        FUNCTION_DECLARATION_LEFT | LOWER_PATTERN => {
+        FUNCTION_DECLARATION_LEFT | LOWER_PATTERN | TYPE_ANNOTATION => {
             find_scope(queries, code, |scope| {
                 is_name_definition_in_scope(new_node, scope)
             })
@@ -139,7 +139,9 @@ mod tests {
     simulation_test!(change_variable_name_defined_as_lambda_argument);
     simulation_test!(change_variable_name_to_already_existing_name_in_scope);
     simulation_test!(change_name_of_top_level_function);
+    simulation_test!(change_name_of_top_level_function_in_type_definition);
     simulation_test!(change_variable_name_defined_as_top_level_function);
+    simulation_test!(change_name_of_function_in_type_definition_in_let_binding);
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);
