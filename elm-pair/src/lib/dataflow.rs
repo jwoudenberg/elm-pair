@@ -28,6 +28,7 @@ pub type Scope<'a> = timely::dataflow::scopes::child::Child<
 
 pub type Probe = timely::dataflow::operators::probe::Handle<Timestamp>;
 
+#[allow(dead_code)]
 pub type KeyTrace<K, V> = differential_dataflow::operators::arrange::TraceAgent<
     differential_dataflow::trace::implementations::spine_fueled::Spine<
         K,

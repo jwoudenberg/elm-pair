@@ -1,6 +1,6 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::refactors::lib::qualify_value::qualify_value;
-use crate::elm::{Name, NameKind, Queries, Refactor};
+use crate::elm::{Name, Queries, Refactor};
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
@@ -172,6 +172,7 @@ fn names_with_digit(reference: &Name) -> NamesWithDigit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elm::NameKind;
 
     #[test]
     fn iterator_returns_values_with_increasing_trailing_digit() {
