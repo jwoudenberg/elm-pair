@@ -7,7 +7,7 @@ set -euo pipefail
 # elm-pair binary downloaded, then starts that binary.
 
 ELM_VERSION="0.19.1"
-ELM_PAIR_VERSION="release-1"
+ELM_PAIR_VERSION="release-4"
 
 function main {
   # Redirect stdout to stderr for the duration of this script. The editor plugin
@@ -22,7 +22,7 @@ function main {
   PLATFORM="$(uname -m)-$(uname)"
   case "$PLATFORM" in
     "x86_64-Darwin") download_binaries_for "mac-64-bit" "x86_64-darwin";;
-    "aarch64-Darwin") download_binaries_for "mac-64-bit" "x86_64-darwin";;
+    "arm64-Darwin") download_binaries_for "mac-64-bit" "x86_64-darwin";;
     "x86_64-Linux") download_binaries_for "linux-64-bit" "x86_64-linux";;
     *) no_binaries_for "$PLATFORM";;
   esac
