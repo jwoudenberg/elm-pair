@@ -12,10 +12,18 @@
     <email>elm-pair@jasperwoudenberg.com</email>
   </author>
   <entry>
+    <title>Release 5</title>
+    <link href="https://elm-pair.jasperwoudenberg.com/#news" />
+    <updated>2022-01-31T00:00:00Z</updated>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-5/</id>
+    <content type="html">
+      <p>Elm-pair supports work on Elm packages.</p>
+    </content>
+  </entry><entry>
     <title>Release 4</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
     <updated>2022-01-31T00:00:00Z</updated>
-    <id>https://elm-pair.jasperwoudenberg.com#news-release-3/</id>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-4/</id>
     <content type="html">
       <p>Fixes elm-pair installation script bundled with Neovim plugin on MacOS.</p>
     </content>

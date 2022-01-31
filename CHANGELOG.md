@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-01-31: Release 5
+
+- Elm-pair supports work on Elm packages.
+
 ## 2022-01-31: Release 4
 
 - Fixes elm-pair installation script bundled with Neovim plugin on MacOS.
