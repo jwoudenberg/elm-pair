@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-01-31: Release 4
+
+- Fixes elm-pair installation script bundled with Neovim plugin on MacOS.
+
 ## 2022-01-31: Release 3
 
 - Support for renaming within a single module. Change the name of any variable, type, or constructor and Elm-pair will update other usages of the name within the same module. No support for renames across multiple modules yet.
