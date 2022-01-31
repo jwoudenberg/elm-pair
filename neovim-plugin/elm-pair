@@ -19,11 +19,11 @@ function main {
   pushd "$(dirname "${BASH_SOURCE[0]}")" > /dev/null
 
   # Download the right binaries for this platform.
-  PLATFORM="$(uname -m)-$(uname -o)"
+  PLATFORM="$(uname -m)-$(uname)"
   case "$PLATFORM" in
     "x86_64-Darwin") download_binaries_for "mac-64-bit" "x86_64-darwin";;
     "aarch64-Darwin") download_binaries_for "mac-64-bit" "x86_64-darwin";;
-    "x86_64-GNU/Linux") download_binaries_for "linux-64-bit" "x86_64-linux";;
+    "x86_64-Linux") download_binaries_for "linux-64-bit" "x86_64-linux";;
     *) no_binaries_for "$PLATFORM";;
   esac
 
