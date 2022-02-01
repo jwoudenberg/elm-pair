@@ -11,11 +11,6 @@ function fail {
 
 release="$1"
 
-# check repository does not contain uncomitted changes
-if git status --porcelain | grep . ; then
-  fail "Stash any changes before starting the release script."
-fi
-
 # check Cargo.toml contains the expected version
 grep "^version = \"0.$release.0\"$" < elm-pair/Cargo.toml
 
@@ -39,6 +34,11 @@ grep "^ELM_PAIR_VERSION=\"release-$release\"$" < neovim-plugin/elm-pair
 
 # Check nix-build runs (runs tests too)
 nix build
+
+# check repository does not contain uncomitted changes
+if git status --porcelain | grep . ; then
+  fail "Stash any changes before starting the release script."
+fi
 
 # check github release tag exists
 git fetch --tags
