@@ -37,28 +37,13 @@ pub fn free_names(
         .run_in(&mut cursor, code, code.tree.root_node())
         .map(|r| r.map(|(_, name)| name))
         .collect::<Result<HashSet<Name>, Error>>()?;
-
-    let mut names_from_other_modules: HashMap<Name, Rope> = HashMap::new();
-    let imports = queries.query_for_imports.run(&mut cursor, code);
-    for import in imports {
-        if skip_byteranges.iter().any(|skip_range| {
-            skip_range.contains(&import.root_node.start_byte())
-        }) {
-            continue;
-        } else {
-            for res in import.exposing_list() {
-                let (_, exposed) = res?;
-                let mut cursor = computation.exports_cursor(
-                    code.buffer,
-                    import.unaliased_name().to_string(),
-                );
-                exposed.for_each_name(cursor.iter(), |name| {
-                    names_from_other_modules
-                        .insert(name, import.aliased_name().into());
-                });
-            }
-        }
-    }
+    let names_from_other_modules = imported_names(
+        queries,
+        &mut cursor,
+        computation,
+        code,
+        skip_byteranges,
+    )?;
 
     for name in names_in_use.intersection(names) {
         // if another module is exposing a variable by this name, un-expose it
@@ -97,6 +82,37 @@ pub fn free_names(
         }
     }
     Ok(())
+}
+
+pub fn imported_names(
+    queries: &Queries,
+    cursor: &mut QueryCursor,
+    computation: &mut DataflowComputation,
+    code: &SourceFileSnapshot,
+    skip_byteranges: &[&Range<usize>],
+) -> Result<HashMap<Name, Rope>, Error> {
+    let mut names_from_other_modules: HashMap<Name, Rope> = HashMap::new();
+    let imports = queries.query_for_imports.run(cursor, code);
+    for import in imports {
+        if skip_byteranges.iter().any(|skip_range| {
+            skip_range.contains(&import.root_node.start_byte())
+        }) {
+            continue;
+        } else {
+            for res in import.exposing_list() {
+                let (_, exposed) = res?;
+                let mut cursor = computation.exports_cursor(
+                    code.buffer,
+                    import.unaliased_name().to_string(),
+                );
+                exposed.for_each_name(cursor.iter(), |name| {
+                    names_from_other_modules
+                        .insert(name, import.aliased_name().into());
+                });
+            }
+        }
+    }
+    Ok(names_from_other_modules)
 }
 
 // Give an unqualied variable another name.

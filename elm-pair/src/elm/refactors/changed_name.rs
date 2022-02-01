@@ -9,6 +9,7 @@ use crate::elm::{
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
+use ropey::Rope;
 use std::collections::HashSet;
 use std::iter::FromIterator;
 use std::ops::Range;
@@ -48,10 +49,23 @@ pub fn refactor(
             // site of the variable we renamed in order to know its scope, and
             // letting us rename just the names in the same scope.
             let mut cursor = QueryCursor::new();
+            let mut new_name_already_exists = renaming::imported_names(
+                queries,
+                &mut cursor,
+                computation,
+                code,
+                &[],
+            )?
+            .keys()
+            .chain(standard_in_scope_elm_names().iter())
+            .any(|name| name == &new_name);
             let definition_sites: Vec<(RenameKind, Node)> = queries
                 .query_for_name_definitions
                 .run(&mut cursor, code)
                 .filter_map(|(name, node)| {
+                    if name == new_name {
+                        new_name_already_exists = true;
+                    }
                     if name == old_name {
                         Some((
                             rename_kind(&node.parent().unwrap_or(node)),
@@ -62,6 +76,18 @@ pub fn refactor(
                     }
                 })
                 .collect();
+
+            // If the new name already exists we could rename the existing
+            // usage to something else, then go forward with the rename.
+            // The programmer though might be trying to only call a different
+            // function, or use a different constructor, and not rename the
+            // type. Because Elm-pair can't know which it is, do nothing.
+            // If the programmer intents to rename they can change the
+            // definition site of the name to override this exemption.
+            if new_name_already_exists {
+                return Ok(());
+            }
+
             find_scope(queries, code, move |scope| {
                 is_variable_usage_in_scope(new_node, &definition_sites, scope)
             })
@@ -219,6 +245,102 @@ fn is_record_type_alias(node: &Node) -> bool {
     kind == RECORD_TYPE
 }
 
+fn standard_in_scope_elm_names() -> Vec<Name> {
+    let type_ = |name| Name {
+        name: Rope::from_str(name),
+        kind: NameKind::Type,
+    };
+    let constructor = |name| Name {
+        name: Rope::from_str(name),
+        kind: NameKind::Constructor,
+    };
+    let operator = |name| Name {
+        name: Rope::from_str(name),
+        kind: NameKind::Operator,
+    };
+    let value = |name| Name {
+        name: Rope::from_str(name),
+        kind: NameKind::Value,
+    };
+    vec![
+        // Basics
+        type_("Int"),
+        type_("Float"),
+        operator("+"),
+        operator("-"),
+        operator("*"),
+        operator("/"),
+        operator("//"),
+        value("toFloat"),
+        value("round"),
+        value("floor"),
+        value("ceiling"),
+        value("truncate"),
+        operator("=="),
+        operator("/="),
+        operator("<"),
+        operator(">"),
+        operator("<="),
+        operator(">="),
+        value("max"),
+        value("min"),
+        value("compare"),
+        type_("Order"),
+        constructor("LT"),
+        constructor("EQ"),
+        constructor("GQ"),
+        type_("Bool"),
+        constructor("True"),
+        constructor("False"),
+        value("not"),
+        operator("&&"),
+        operator("||"),
+        value("xor"),
+        operator("++"),
+        value("modBy"),
+        value("remainderBy"),
+        value("negate"),
+        value("abs"),
+        value("clamp"),
+        value("sqrt"),
+        value("logBase"),
+        value("e"),
+        value("degrees"),
+        value("radians"),
+        value("turns"),
+        value("pi"),
+        value("cos"),
+        value("sin"),
+        value("tan"),
+        value("acos"),
+        value("asin"),
+        value("atan"),
+        value("atan2"),
+        value("toPolar"),
+        value("fromPolar"),
+        value("isNaN"),
+        value("isInfinite"),
+        value("identity"),
+        value("always"),
+        operator("<|"),
+        operator("|>"),
+        operator("<<"),
+        operator(">>"),
+        type_("Never"),
+        value("never"),
+        // Other types that are in scope by default.
+        type_("String"),
+        type_("List"),
+        type_("Maybe"),
+        constructor("Just"),
+        constructor("Nothing"),
+        type_("Result"),
+        constructor("Err"),
+        constructor("Ok"),
+        type_("Program"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use crate::elm::refactors::lib::simulations::simulation_test;
@@ -230,6 +352,9 @@ mod tests {
     simulation_test!(change_variable_name_defined_in_let_binding_pattern);
     simulation_test!(
         change_variable_name_in_let_binding_to_name_already_in_use
+    );
+    simulation_test!(
+        change_variable_name_defined_in_let_binding_to_name_already_in_use
     );
     simulation_test!(change_name_of_function_in_type_definition_in_let_binding);
 
@@ -250,6 +375,7 @@ mod tests {
     simulation_test!(change_name_of_top_level_function);
     simulation_test!(change_name_of_top_level_function_in_type_definition);
     simulation_test!(change_variable_name_defined_as_top_level_function);
+    simulation_test!(change_variable_name_defined_as_top_level_function_to_name_of_implicit_import);
     simulation_test!(change_variable_name_in_module_exposing_list);
 
     // Changing the name of a type.
@@ -270,6 +396,7 @@ mod tests {
     simulation_test!(change_record_type_alias_name);
     simulation_test!(change_record_type_alias_name_type_usage);
     simulation_test!(change_record_type_alias_name_constructor_usage);
+    simulation_test!(change_record_type_alias_name_constructor_usage_to_name_that_already_exists);
     simulation_test!(change_record_type_alias_name_in_module_exposing_list);
 
     // Changing a field record requires changing the record type and all other

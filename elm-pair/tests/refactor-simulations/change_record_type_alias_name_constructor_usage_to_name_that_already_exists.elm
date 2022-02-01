@@ -1,6 +1,12 @@
 module Main exposing (Boardgame, mkGame)
 
 
+type Fun
+    = Hiking
+    | Reading
+    | Game
+
+
 type alias Boardgame =
     { name : String
     , maxPlayers : Int
@@ -14,20 +20,9 @@ mkGame =
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 12 Boardgame
+-- MOVE CURSOR TO LINE 18 Boardgame
 -- DELETE Boardgame
 -- INSERT Game
 -- END SIMULATION
 -- === expected output below ===
--- module Main exposing (Game, mkGame)
---
---
--- type alias Game =
---     { name : String
---     , maxPlayers : Int
---     }
---
---
--- mkGame : String -> Int -> Game
--- mkGame =
---     Game
+-- No refactor for this change.
