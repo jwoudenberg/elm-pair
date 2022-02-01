@@ -1,5 +1,10 @@
 # Changelog
 
+## 2022-02-01: Release 6
+
+- Fixed a but where Elm-pair would sometimes crash if specific dependencies were included in the `elm.json` file of a project.
+- Make Elm-pair less eager to rename. When it's unclear whether the programmer intent is to rename or, for example, call a function with a different name, Elm-pair will do nothing.
+
 ## 2022-01-31: Release 5
 
 - Elm-pair supports work on Elm packages.

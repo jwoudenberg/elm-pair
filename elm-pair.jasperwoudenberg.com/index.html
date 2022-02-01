@@ -27,14 +27,21 @@
 
     <section>
       <h2 id="news">News</h2>
+      <h3>2022-02-01: Release 6</h3>
+      <ul>
+        <li>Fixed a but where Elm-pair would sometimes crash if specific dependencies were included in the `elm.json` file of a project.</li>
+        <li>Elm-pair no longer reparses the entire project when a single Elm module changes.</li>
+        <li>Make Elm-pair less eager to rename. When it's unclear whether the programmer intent is to rename or, for example, call a function with a different name, Elm-pair will do nothing.</li>
+      </ul>
+
       <h3>2022-01-31: Release 5</h3>
-        <p>Elm-pair supports work on Elm packages.</p>
+      <p>Elm-pair supports work on Elm packages.</p>
 
       <h3>2022-01-31: Release 4</h3>
-        <p>Fixes elm-pair installation script bundled with Neovim plugin on MacOS.</p>
+      <p>Fixes elm-pair installation script bundled with Neovim plugin on MacOS.</p>
 
       <h3>2022-01-31: Release 3</h3>
-        <p>Support for renaming within a single module. Change the name of any variable, type, or constructor and Elm-pair will update other usages of the name within the same module. No support for renames across multiple modules yet.</p>
+      <p>Support for renaming within a single module. Change the name of any variable, type, or constructor and Elm-pair will update other usages of the name within the same module. No support for renames across multiple modules yet.</p>
 
       <h3>2022-01-17: Release 2</h3>
       <ul>
