@@ -401,8 +401,8 @@ impl<R: Read> IdatParser<R> {
             4 => {
                 let a = self.elm_type()?;
                 let b = self.elm_type()?;
-                let name = self.data_binary_maybe(Self::elm_name)?;
-                Ok(Type::Tuple(Box::new(a), Box::new(b), name))
+                let opt_c = self.data_binary_maybe(Self::elm_type)?;
+                Ok(Type::Tuple(Box::new(a), Box::new(b), Box::new(opt_c)))
             }
             // Alias
             5 => {
@@ -525,7 +525,7 @@ enum Type {
     Type(CanonicalModuleName, Name, Vec<Type>),
     Record(DataMap<Name, FieldType>, Option<Name>),
     Unit,
-    Tuple(Box<Type>, Box<Type>, Option<Name>),
+    Tuple(Box<Type>, Box<Type>, Box<Option<Type>>),
     Alias(CanonicalModuleName, Name, Vec<(Name, Type)>, AliasType),
 }
 
