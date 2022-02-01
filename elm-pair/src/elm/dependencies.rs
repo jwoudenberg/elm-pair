@@ -368,9 +368,7 @@ where
         .reduce(move |_project_id, input, output| {
             let idat_path = input[0].0;
             match elm_io4.parse_elm_stuff_idat(idat_path) {
-                Ok(modules) => {
-                    output.extend(modules.into_iter().map(|module| (module, 1)))
-                }
+                Ok(modules) => output.extend(modules.map(|module| (module, 1))),
                 Err(err) => {
                     log::error!("could not read i.dat file: {:?}", err);
                 }

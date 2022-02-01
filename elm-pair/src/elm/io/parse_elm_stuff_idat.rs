@@ -12,7 +12,7 @@ use std::path::Path;
 pub fn parse_elm_stuff_idat(
     compiler: &Compiler,
     path: &Path,
-) -> Result<Vec<(String, ExportedName)>, Error> {
+) -> Result<impl Iterator<Item = (String, ExportedName)>, Error> {
     let file = std::fs::File::open(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             let project_root = project::root_from_idat_path(path)?;
@@ -30,13 +30,19 @@ pub fn parse_elm_stuff_idat(
     let reader = BufReader::new(file);
     let exports = parse(reader)?
         .into_iter()
+        .filter_map(|(canonical_name, dep_i)| {
+            if let DependencyInterface::Public(interface) = dep_i {
+                Some((canonical_name, interface))
+            } else {
+                None
+            }
+        })
         .flat_map(|(canonical_name, i)| {
             let Name(name) = canonical_name.module;
             elm_module_from_interface(i)
                 .into_iter()
                 .map(move |export| (name.clone(), export))
-        })
-        .collect();
+        });
     Ok(exports)
 }
 
@@ -70,16 +76,14 @@ fn create_elm_stuff(
     }
 }
 
-fn elm_module_from_interface(dep_i: DependencyInterface) -> Vec<ExportedName> {
-    if let DependencyInterface::Public(interface) = dep_i {
-        // TODO: add binops
-        let values = interface.values.into_iter().map(elm_export_from_value);
-        let unions = interface.unions.into_iter().map(elm_export_from_union);
-        let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
-        Vec::from_iter(values.chain(unions).chain(aliases))
-    } else {
-        Vec::new()
-    }
+fn elm_module_from_interface(
+    interface: Interface,
+) -> impl Iterator<Item = ExportedName> {
+    // TODO: add binops
+    let values = interface.values.into_iter().map(elm_export_from_value);
+    let unions = interface.unions.into_iter().map(elm_export_from_union);
+    let aliases = interface.aliases.into_iter().map(elm_export_from_alias);
+    values.chain(unions).chain(aliases)
 }
 
 fn elm_export_from_value(
@@ -89,15 +93,14 @@ fn elm_export_from_value(
 }
 
 fn elm_export_from_union((Name(name), union): (Name, Union)) -> ExportedName {
-    let constructor_names = |canonical_union: CanonicalUnion| {
-        let iter = canonical_union
-            .alts
-            .into_iter()
-            .map(|Ctor(Name(name), _, _, _)| name);
-        Vec::from_iter(iter)
-    };
     let constructors = match union {
-        Union::Open(canonical_union) => constructor_names(canonical_union),
+        Union::Open(canonical_union) => {
+            let iter = canonical_union
+                .alts
+                .into_iter()
+                .map(|Ctor(Name(name), _, _, _)| name);
+            Vec::from_iter(iter)
+        }
         // We're reading this information for use by other modules.
         // These external modules can't see private constructors,
         // so we don't need to return them here.

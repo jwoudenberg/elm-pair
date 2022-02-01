@@ -22,11 +22,10 @@ pub trait ElmIO: Clone {
     fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error>;
     fn parse_elm_module(&self, path: &Path)
         -> Result<Vec<ExportedName>, Error>;
-    // TODO: Don't allocate the response Vec. Return an interator to dataflow.
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
-    ) -> Result<Vec<(String, ExportedName)>, Error>;
+    ) -> Result<Box<dyn Iterator<Item = (String, ExportedName)>>, Error>;
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
@@ -91,8 +90,9 @@ impl ElmIO for RealElmIO {
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
-    ) -> Result<Vec<(String, ExportedName)>, Error> {
-        parse_elm_stuff_idat(&self.compiler, path)
+    ) -> Result<Box<dyn Iterator<Item = (String, ExportedName)>>, Error> {
+        let iterator = parse_elm_stuff_idat(&self.compiler, path)?;
+        Ok(Box::new(iterator))
     }
 
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir {
@@ -185,7 +185,8 @@ pub mod mock {
         fn parse_elm_stuff_idat(
             &self,
             path: &Path,
-        ) -> Result<Vec<(String, ExportedName)>, Error> {
+        ) -> Result<Box<dyn Iterator<Item = (String, ExportedName)>>, Error>
+        {
             let projects = self.projects.lock().unwrap();
             let project_root = project::root_from_idat_path(path)?;
             let project = projects.get(project_root).ok_or_else(|| {
@@ -194,7 +195,7 @@ pub mod mock {
             let mut elm_idats_parsed = self.elm_idats_parsed.lock().unwrap();
             *elm_idats_parsed += 1;
             let dependencies = project.dependencies.clone();
-            Ok(dependencies)
+            Ok(Box::new(dependencies.into_iter()))
         }
 
         fn find_files_recursively(&self, dir: &Path) -> Self::FilesInDir {
