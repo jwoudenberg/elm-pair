@@ -53,6 +53,7 @@ impl Compiler {
         std::process::Command::new(&self.elm_binary_path)
             .arg("make")
             .arg("--report=json")
+            .arg("--output=/dev/null")
             .arg(temp_path)
             .current_dir(project_root)
             .output()
