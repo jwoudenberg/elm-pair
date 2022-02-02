@@ -94,7 +94,6 @@ pub struct Queries {
     query_for_unqualified_values: queries::unqualified_values::Query,
     query_for_qualified_values: queries::qualified_values::Query,
     query_for_scopes: queries::scopes::Query,
-    query_for_name_definitions: queries::name_definitions::Query,
 }
 
 pub struct Refactor {
@@ -148,8 +147,6 @@ impl RefactorEngine {
                 query_for_qualified_values:
                     queries::qualified_values::Query::init(language)?,
                 query_for_scopes: queries::scopes::Query::init(language)?,
-                query_for_name_definitions:
-                    queries::name_definitions::Query::init(language)?,
             },
         };
 
@@ -495,11 +492,7 @@ impl RefactorEngine {
                 before: [LOWER_CASE_IDENTIFIER],
                 after: [LOWER_CASE_IDENTIFIER],
                 parent:
-                    FUNCTION_DECLARATION_LEFT
-                    | VALUE_QID
-                    | LOWER_PATTERN
-                    | TYPE_ANNOTATION
-                    | EXPOSED_VALUE,
+                    FUNCTION_DECLARATION_LEFT | LOWER_PATTERN | TYPE_ANNOTATION,
             } => {
                 let old_name = Name {
                     name: diff
@@ -528,11 +521,7 @@ impl RefactorEngine {
             Change {
                 before: [TYPE_IDENTIFIER],
                 after: [TYPE_IDENTIFIER],
-                parent:
-                    TYPE_DECLARATION
-                    | TYPE_QID
-                    | TYPE_ALIAS_DECLARATION
-                    | EXPOSED_TYPE,
+                parent: TYPE_DECLARATION | TYPE_ALIAS_DECLARATION,
             } => {
                 let old_name = Name {
                     name: diff

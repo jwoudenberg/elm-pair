@@ -12,7 +12,7 @@ birthYear (Age ageInYears) { year } =
 
 
 -- START SIMULATION
--- MOVE CURSOR TO LINE 10 year
+-- MOVE CURSOR TO LINE 9 year
 -- DELETE year
 -- INSERT current_year
 -- END SIMULATION
