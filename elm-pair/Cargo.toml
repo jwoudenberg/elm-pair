@@ -1,6 +1,6 @@
 [package]
 name = "elm-pair"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["Jasper Woudenberg <mail@jasperwoudenberg.com>"]
 edition = "2018"
 

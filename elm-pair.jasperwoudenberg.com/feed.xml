@@ -11,19 +11,34 @@
     <name>Jasper Woudenberg</name>
     <email>elm-pair@jasperwoudenberg.com</email>
   </author>
+
+  <entry>
+    <title>Release 7</title>
+    <link href="https://elm-pair.jasperwoudenberg.com/#news" />
+    <updated>2022-02-02T00:00:00Z</updated>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-7/</id>
+    <content type="html">
+      <ul>
+        <li>Elm-pair no longer generates index.html files when running `elm-make`.</li>
+        <li>Elm-pair now responds with a rename refactor when the programmer changes the name where it is defined, no longer when the programmer changes a usage of the name. The old behavior sometimes misinterpreted programmer intent.</li>
+      </ul>
+    </content>
+  </entry>
+
   <entry>
     <title>Release 6</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
     <updated>2022-02-01T00:00:00Z</updated>
-    <id>https://elm-pair.jasperwoudenberg.com#news-release-4/</id>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-6/</id>
     <content type="html">
       <ul>
-        <li>Fixed a but where Elm-pair would sometimes crash if specific dependencies were included in the `elm.json` file of a project.</li>
+        <li>Fixed a bug where Elm-pair would sometimes crash if specific dependencies were included in the `elm.json` file of a project.</li>
         <li>Elm-pair no longer reparses the entire project when a single Elm module changes.</li>
         <li>Make Elm-pair less eager to rename. When it's unclear whether the programmer intent is to rename or, for example, call a function with a different name, Elm-pair will do nothing.</li>
       </ul>
     </content>
   </entry>
+
   <entry>
     <title>Release 5</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
@@ -33,6 +48,7 @@
       <p>Elm-pair supports work on Elm packages.</p>
     </content>
   </entry>
+
   <entry>
     <title>Release 4</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
@@ -42,6 +58,7 @@
       <p>Fixes elm-pair installation script bundled with Neovim plugin on MacOS.</p>
     </content>
   </entry>
+
   <entry>
     <title>Release 3</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
@@ -51,6 +68,7 @@
       <p>Support for renaming within a single module. Change the name of any variable, type, or constructor and Elm-pair will update other usages of the name within the same module. No support for renames across multiple modules yet.</p>
     </content>
   </entry>
+
   <entry>
     <title>Release 2</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
@@ -66,6 +84,7 @@
       </ul>
     </content>
   </entry>
+
   <entry>
     <title>Release 1</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
@@ -81,4 +100,5 @@
       here</a>.</p>
     </content>
   </entry>
+
 </feed>

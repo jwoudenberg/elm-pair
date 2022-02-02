@@ -1,8 +1,13 @@
 # Changelog
 
+## 2022-02-02: Release 7
+
+- Elm-pair no longer generates index.html files when running `elm-make`.
+- Elm-pair now responds with a rename refactor when the programmer changes the name where it is defined, no longer when the programmer changes a usage of the name. The old behavior sometimes misinterpreted programmer intent.
+
 ## 2022-02-01: Release 6
 
-- Fixed a but where Elm-pair would sometimes crash if specific dependencies were included in the `elm.json` file of a project.
+- Fixed a bug where Elm-pair would sometimes crash if specific dependencies were included in the `elm.json` file of a project.
 - Make Elm-pair less eager to rename. When it's unclear whether the programmer intent is to rename or, for example, call a function with a different name, Elm-pair will do nothing.
 
 ## 2022-01-31: Release 5
