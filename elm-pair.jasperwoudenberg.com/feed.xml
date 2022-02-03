@@ -13,6 +13,18 @@
   </author>
 
   <entry>
+    <title>Release 8</title>
+    <link href="https://elm-pair.jasperwoudenberg.com/#news" />
+    <updated>2022-02-03T00:00:00Z</updated>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-8/</id>
+    <content type="html">
+      <ul>
+        <li>Elm-pair no longer starts a rename refactor when the programmer changes the name of a constructor at a usage site, as opposed to where the constructor is defined.</li>
+      </ul>
+    </content>
+  </entry>
+
+  <entry>
     <title>Release 7</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
     <updated>2022-02-02T00:00:00Z</updated>

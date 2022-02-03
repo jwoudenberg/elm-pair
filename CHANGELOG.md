@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-02-03: Release 8
+
+- Elm-pair no longer starts a rename refactor when the programmer changes the name of a constructor at a usage site, as opposed to where the constructor is defined.
+
 ## 2022-02-02: Release 7
 
 - Elm-pair no longer generates index.html files when running `elm-make`.
