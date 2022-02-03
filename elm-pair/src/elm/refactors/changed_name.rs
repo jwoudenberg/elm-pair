@@ -170,6 +170,9 @@ mod tests {
     simulation_test!(change_type_alias_name);
     simulation_test!(change_record_type_alias_name);
 
+    // Using a different constructor in a function should not trigger a rename.
+    simulation_test!(use_different_constructor);
+
     // Changing a field record requires changing the record type and all other
     // uses of that type. We don't support that yet, so for now we do nothing!
     simulation_test!(change_variable_name_of_record_field_pattern);

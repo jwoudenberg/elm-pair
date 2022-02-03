@@ -550,7 +550,7 @@ impl RefactorEngine {
             Change {
                 before: [CONSTRUCTOR_IDENTIFIER],
                 after: [CONSTRUCTOR_IDENTIFIER],
-                parent: UNION_VARIANT | CONSTRUCTOR_QID,
+                parent: UNION_VARIANT,
             } => {
                 let old_name = Name {
                     name: diff
