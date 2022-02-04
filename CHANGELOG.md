@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-02-03: Release 9
+
+- Fixes a bug where undo-ing a refactor made by Elm-pair would result in a new refactor, preventing the programmer from moving further back into their undo history.
+
 ## 2022-02-03: Release 8
 
 - Elm-pair no longer starts a rename refactor when the programmer changes the name of a constructor at a usage site, as opposed to where the constructor is defined.
