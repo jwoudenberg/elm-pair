@@ -5,6 +5,7 @@ use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
@@ -34,6 +35,7 @@ pub fn run(
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new(compiler)?,
+        code_before_prev_refactor: None,
     }
     .start(analysis_receiver)
 }
@@ -43,36 +45,46 @@ struct AnalysisLoop<'a> {
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
+    code_before_prev_refactor: Option<SourceFileSnapshot>,
 }
 
 impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
-        if let Some(mut diff) = self.source_file_diff() {
-            let AnalysisLoop {
-                editor_driver,
-                refactor_engine,
-                ..
-            } = self;
+        if let Some(diff) = self.source_file_diff() {
+            log::info!(
+                "diffing revision {:?} against {:?} for buffer {:?}",
+                diff.new.revision,
+                diff.old.revision,
+                diff.old.buffer,
+            );
+            let tree_changes = diff_trees(&diff);
+            if self.is_undo(&diff, &tree_changes) {
+                log::info!("undo of previous refactor detected");
+                // The programmer undo-ed a refactor by Elm-pair, so Elm-pair
+                // must have done the wrong thing! Because of the undo the code
+                // diff is now back at what it was before Elm-pair refactored,
+                // so if we're not careful Elm-pair will perform the same
+                // refactor again. By unsetting the last compiling code version
+                // Elm-pair won't be able to diff, and so it will stay out of
+                // the programmers way until they get the code compiling again.
+                self.last_compiling_code.remove(&diff.new.buffer);
+                return Ok(());
+            }
             if let Some(editor_driver) =
-                editor_driver.get(&diff.new.buffer.editor_id)
+                self.editor_driver.get(&diff.new.buffer.editor_id)
             {
-                log::info!(
-                    "diffing revision {:?} against {:?} for buffer {:?}",
-                    diff.new.revision,
-                    diff.old.revision,
-                    diff.old.buffer,
-                );
-                let tree_changes = diff_trees(&diff);
-                let current_revision = diff.new.revision;
-                let result = refactor_engine
+                let mut refactored_code = diff.new.clone();
+                let result = self
+                    .refactor_engine
                     .respond_to_change(&diff, tree_changes)
-                    .and_then(|refactor| refactor.edits(&mut diff.new));
+                    .and_then(|refactor| refactor.edits(&mut refactored_code));
                 match result {
                     Ok(edits) if !diff.new.tree.root_node().has_error() => {
                         if !edits.is_empty() {
                             log::info!("applying refactor to editor");
+
                             if editor_driver.apply_edits(edits) {
                                 // Increment the revision by one compared to the
                                 // unrefactored code. Code revisions coming from
@@ -82,7 +94,8 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                                 // The next revision coming from the editor,
                                 // being the next even number, will take
                                 // precendence over this one.
-                                diff.new.revision = 1 + current_revision;
+                                refactored_code.revision =
+                                    diff.new.revision + 1;
 
                                 // Set the refactored code as the 'last
                                 // compiling version'. We're assuming here that
@@ -93,8 +106,20 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                                 // communicates the changes made by the refactor
                                 // back to us _and_ the compilation thread
                                 // compiles that version (which may be never).
-                                self.last_compiling_code
-                                    .insert(diff.new.buffer, diff.new);
+                                self.last_compiling_code.insert(
+                                    refactored_code.buffer,
+                                    refactored_code,
+                                );
+
+                                // When the programmer later undoes a refactor
+                                // we do not want that undo change to trigger a
+                                // new refactor, because that would cause the
+                                // programmer to get stuck in an undo-loop.
+                                //
+                                // We store the version of the code before this
+                                // refactor to help check if future changes
+                                // might be undo's.
+                                self.code_before_prev_refactor = Some(diff.new);
                             }
                         }
                     }
@@ -161,6 +186,55 @@ impl<'a> AnalysisLoop<'a> {
         }
         let diff = SourceFileDiff { old, new };
         Some(diff)
+    }
+
+    // Detect if a change is an undo of a refactor performed by Elm-pair.
+    fn is_undo(&self, diff: &SourceFileDiff, changes: &TreeChanges) -> bool {
+        if let Some(code_before_refactor) = &self.code_before_prev_refactor {
+            let changed_range = changed_range(changes);
+            // Check whether we're undoing the refactored version of the code:
+            //
+            // - revision X    : Code before refactor
+            // - revision X + 1: Revision created by Elm-pair after refactor
+            // - revision X + 2: Revision received from editor for code change
+            //                   resulting from refactor.
+            //
+            // If we're comparing against a newer revision that X + 2 then we've
+            // moved beyond the original change and this undo is no longer
+            // relevant.
+            diff.old.revision - code_before_refactor.revision <= 2
+                // Now we check the change is an undo, by testing that it brings
+                // us back to the code we had before the previous refactor.
+                // Comparing just the slices of code that changed should be
+                // enough.
+                && diff.new.slice(&changed_range)
+                    == code_before_refactor.slice(&changed_range)
+        } else {
+            false
+        }
+    }
+}
+
+fn changed_range(changes: &TreeChanges) -> Range<usize> {
+    match (
+        nodes_range(&changes.old_removed),
+        nodes_range(&changes.new_added),
+    ) {
+        (None, None) => 0..0,
+        (Some(range), None) => range,
+        (None, Some(range)) => range,
+        (Some(range1), Some(range2)) => {
+            std::cmp::min(range1.start, range2.start)
+                ..std::cmp::max(range1.end, range2.end)
+        }
+    }
+}
+
+fn nodes_range(nodes: &[Node]) -> Option<Range<usize>> {
+    match nodes {
+        [] => None,
+        [single] => Some(single.byte_range()),
+        [first, .., last] => Some(first.start_byte()..last.end_byte()),
     }
 }
 

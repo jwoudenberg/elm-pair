@@ -63,8 +63,14 @@ impl SourceFileSnapshot {
     }
 
     pub fn slice(&self, range: &Range<usize>) -> RopeSlice {
-        let start = self.bytes.byte_to_char(range.start);
-        let end = self.bytes.byte_to_char(range.end);
+        let start = self
+            .bytes
+            .try_byte_to_char(range.start)
+            .unwrap_or_else(|_| self.bytes.len_bytes());
+        let end = self
+            .bytes
+            .try_byte_to_char(range.end)
+            .unwrap_or_else(|_| self.bytes.len_bytes());
         self.bytes.slice(start..end)
     }
 }
