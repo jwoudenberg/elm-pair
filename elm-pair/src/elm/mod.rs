@@ -20,6 +20,7 @@ pub mod module_name;
 pub mod project;
 pub mod queries;
 pub mod refactors;
+pub mod type_checking;
 
 // Macro for defining constants for the elm tree-sitter node kinds. This macro
 // ensures a test is added checking each constant is correct.
@@ -43,9 +44,10 @@ macro_rules! node_constants {
             fn check_kind_constants() {
                 let language = tree_sitter_elm::language();
                 $(
+                    let name = stringify!($name);
                     assert_eq!(
-                        $name,
-                        node_constants!(@id language, $name $(,$kind_name)?),
+                        (name, $name),
+                        (name, node_constants!(@id language, $name $(,$kind_name)?)),
                     );
                 )+
             }
@@ -68,19 +70,26 @@ node_constants!(
     EXPOSED_UNION_CONSTRUCTORS = 93;
     EXPOSED_VALUE = 91;
     EXPOSING_LIST = 90;
+    FILE = 85;
     FUNCTION_DECLARATION_LEFT = 103;
+    IMPORT_CLAUSE = 100;
+    INFIX_DECLARATION = 170;
+    LINE_COMMENT = 4;
     LOWER_CASE_IDENTIFIER = 1;
     LOWER_PATTERN = 161;
-    MODULE_NAME_SEGMENT = 201;
     MODULE_DECLARATION = 87;
+    MODULE_NAME_SEGMENT = 201;
+    PORT_ANNOTATION = 119;
     RECORD_PATTERN = 163;
     RECORD_TYPE = 115;
     TYPE_ALIAS_DECLARATION = 108;
     TYPE_ANNOTATION = 118;
     TYPE_DECLARATION = 104;
     TYPE_IDENTIFIER = 33;
+    TYPE_REF = 111;
     TYPE_QID = 97;
     UNION_VARIANT = 106;
+    VALUE_DECLARATION = 102;
     VALUE_QID = 98;
 );
 
@@ -188,23 +197,17 @@ impl RefactorEngine {
                     | [],
                 parent: _,
             } => {
-                let old_import_node =
-                    changes.old_parent.parent().ok_or_else(|| {
-                        log::mk_err!(
-                        "could not find parent import node of exposing list"
-                    )
-                    })?;
+                let old_import_node = changes.old_parent.parent().ok_or_else(|| {
+                    log::mk_err!("could not find parent import node of exposing list")
+                })?;
                 let old_import = parse_import_node(
                     &self.queries,
                     &diff.old,
                     old_import_node,
                 )?;
-                let new_import_node =
-                    changes.new_parent.parent().ok_or_else(|| {
-                        log::mk_err!(
-            "could not find import node as parent of exposing list node"
-        )
-                    })?;
+                let new_import_node = changes.new_parent.parent().ok_or_else(|| {
+                    log::mk_err!("could not find import node as parent of exposing list node")
+                })?;
                 let new_import = parse_import_node(
                     &self.queries,
                     &diff.new,
@@ -349,8 +352,8 @@ impl RefactorEngine {
                 parent: _,
             } => {
                 let type_name_node = changes.new_parent.child(0).ok_or_else(|| {
-        log::mk_err!("did not find node with type name of exposed constructor")
-    })?;
+                    log::mk_err!("did not find node with type name of exposed constructor")
+                })?;
                 let type_name = diff.new.slice(&type_name_node.byte_range());
                 let import_node = changes
                     .new_parent
@@ -389,9 +392,7 @@ impl RefactorEngine {
                     .parent()
                     .and_then(|n| n.parent())
                     .ok_or_else(|| {
-                        log::mk_err!(
-                "could not find import parent node of exposed type node"
-            )
+                        log::mk_err!("could not find import parent node of exposed type node")
                     })?;
                 let old_import = parse_import_node(
                     &self.queries,
