@@ -58,6 +58,7 @@ macro_rules! node_constants {
 // These constants come from the tree-sitter-elm grammar. They might need to
 // be changed when tree-sitter-elm updates.
 node_constants!(
+    ARROW = 51;
     AS_CLAUSE = 101;
     BLOCK_COMMENT = 86;
     COMMA (",") = 6;
@@ -71,6 +72,7 @@ node_constants!(
     EXPOSED_VALUE = 91;
     EXPOSING_LIST = 90;
     FILE = 85;
+    FUNCTION_CALL_EXPR = 126;
     FUNCTION_DECLARATION_LEFT = 103;
     IMPORT_CLAUSE = 100;
     INFIX_DECLARATION = 170;
