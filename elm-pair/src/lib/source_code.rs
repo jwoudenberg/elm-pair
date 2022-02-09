@@ -135,7 +135,7 @@ impl<'a> Iterator for Chunks<'a> {
 }
 
 // A change made by the user reported by the editor.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edit {
     // The buffer that was changed.
     pub buffer: Buffer,
