@@ -13,10 +13,22 @@
   </author>
 
   <entry>
+    <title>Release 10</title>
+    <link href="https://elm-pair.jasperwoudenberg.com/#news" />
+    <updated>2022-02-09T00:00:00Z</updated>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-10/</id>
+    <content type="html">
+      <ul>
+        <li>Fixes a bug where typing fast would cause Elm-pair to loose the thread on a rename refactor.</li>
+      </ul>
+    </content>
+  </entry>
+
+  <entry>
     <title>Release 9</title>
     <link href="https://elm-pair.jasperwoudenberg.com/#news" />
     <updated>2022-02-04T00:00:00Z</updated>
-    <id>https://elm-pair.jasperwoudenberg.com#news-release-7/</id>
+    <id>https://elm-pair.jasperwoudenberg.com#news-release-9/</id>
     <content type="html">
       <ul>
         <li>Fixes a bug where undo-ing a refactor made by Elm-pair would result in a new refactor, preventing the programmer from moving further back into their undo history.</li>

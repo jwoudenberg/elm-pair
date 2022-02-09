@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-02-09: Release 10
+
+- Fixes a bug where typing fast would cause Elm-pair to loose the thread on a rename refactor.
+
 ## 2022-02-03: Release 9
 
 - Fixes a bug where undo-ing a refactor made by Elm-pair would result in a new refactor, preventing the programmer from moving further back into their undo history.
