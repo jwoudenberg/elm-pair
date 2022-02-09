@@ -60,6 +60,12 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 diff.old.buffer,
             );
             let tree_changes = diff_trees(&diff);
+            if tree_changes.old_removed.is_empty()
+                && tree_changes.new_added.is_empty()
+            {
+                // No changes were detected!
+                return Ok(());
+            }
             if self.is_undo(&diff, &tree_changes) {
                 log::info!("undo of previous refactor detected");
                 // The programmer undo-ed a refactor by Elm-pair, so Elm-pair
