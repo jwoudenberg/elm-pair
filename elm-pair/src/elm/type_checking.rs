@@ -1,4 +1,6 @@
 use crate::elm;
+use crate::lib::dataflow;
+use abomonation_derive::Abomonation;
 use std::collections::HashMap;
 use tree_sitter::{Node, Tree, TreeCursor};
 
@@ -10,7 +12,9 @@ pub enum SrcLocCrumb {
     LambdaRes,
 }
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Abomonation, Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct SrcLoc(usize);
 
 #[derive(Debug)]
@@ -31,6 +35,23 @@ impl SrcLocs {
         let len = self.0.len();
         *self.0.entry((parent, child)).or_insert(SrcLoc(len))
     }
+}
+
+#[derive(
+    Abomonation, Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
+pub enum Type {
+    Int,
+    String,
+}
+
+pub fn dataflow_graph<'a>(
+    starter_types: dataflow::Collection<'a, (SrcLoc, Type)>,
+    same_as: dataflow::Collection<'a, (SrcLoc, SrcLoc)>,
+    arg_to: dataflow::Collection<'a, (SrcLoc, SrcLoc)>,
+    result_of: dataflow::Collection<'a, (SrcLoc, SrcLoc)>,
+) -> dataflow::Collection<'a, (SrcLoc, Type)> {
+    starter_types
 }
 
 pub fn scan_tree(
@@ -209,7 +230,11 @@ mod tests {
     use super::*;
     use crate::lib::included_answer_test::assert_eq_answer_in;
     use crate::lib::source_code::parse_bytes;
+    use differential_dataflow::operators::arrange::ArrangeByKey;
+    use differential_dataflow::trace::cursor::CursorDebug;
+    use differential_dataflow::trace::TraceReader;
     use std::path::PathBuf;
+    use timely::dataflow::operators::Probe;
 
     fn mk_loc_lookup(
         locs: SrcLocs,
@@ -247,6 +272,89 @@ mod tests {
                 rel,
                 loc_as_str(&to, &loc_lookup)
             ));
+        }
+        assert_eq_answer_in(&output, &path);
+    }
+
+    #[test]
+    fn dataflow_test() {
+        let path = PathBuf::from("./tests/type-checking/Test2.elm");
+        let bytes = std::fs::read(&path).unwrap();
+        let tree = parse_bytes(bytes.clone()).unwrap();
+        let mut relations = Vec::new();
+        let mut src_locs = SrcLocs::new();
+        scan_tree(tree, &bytes, &mut src_locs, &mut relations);
+
+        let alloc = timely::communication::allocator::thread::Thread::new();
+        let mut worker =
+            timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
+        let mut starter_types_input =
+            differential_dataflow::input::InputSession::new();
+        let mut same_as_input =
+            differential_dataflow::input::InputSession::new();
+        let mut arg_to_input =
+            differential_dataflow::input::InputSession::new();
+        let mut result_of_input =
+            differential_dataflow::input::InputSession::new();
+        let (mut types_trace, mut probe) = worker.dataflow(|scope| {
+            let starter_types = starter_types_input.to_collection(scope);
+            let same_as = same_as_input.to_collection(scope);
+            let arg_to = arg_to_input.to_collection(scope);
+            let result_of = result_of_input.to_collection(scope);
+            let types =
+                dataflow_graph(starter_types, same_as, arg_to, result_of);
+            let types_agg = types.arrange_by_key();
+            (types_agg.trace, types_agg.stream.probe())
+        });
+
+        let root_loc = src_locs.from(None, SrcLocCrumb::ModuleRoot);
+        let int_loc =
+            src_locs.from(Some(root_loc), SrcLocCrumb::Name("Int".to_string()));
+        let string_loc = src_locs
+            .from(Some(root_loc), SrcLocCrumb::Name("String".to_string()));
+        starter_types_input.insert((int_loc, Type::Int));
+        starter_types_input.insert((string_loc, Type::String));
+        for (from, rel, to) in relations.into_iter() {
+            match rel {
+                TypeRelation::SameAs => same_as_input.insert((from, to)),
+                TypeRelation::ArgTo => arg_to_input.insert((from, to)),
+                TypeRelation::ResultOf => result_of_input.insert((from, to)),
+            }
+        }
+
+        dataflow::Advancable::advance(
+            &mut (
+                &mut types_trace,
+                &mut probe,
+                &mut starter_types_input,
+                &mut same_as_input,
+                &mut arg_to_input,
+                &mut result_of_input,
+            ),
+            &mut worker,
+        );
+
+        let (mut cursor, storage) = types_trace.cursor();
+
+        let mut types: Vec<(SrcLoc, Type)> = cursor
+            .to_vec(&storage)
+            .into_iter()
+            .filter_map(|(i, counts)| {
+                let total: isize =
+                    counts.into_iter().map(|(_, count)| count).sum();
+                if total > 0 {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        types.sort();
+        let mut output = String::new();
+        let loc_lookup = mk_loc_lookup(src_locs);
+        for (loc, type_) in types.into_iter() {
+            let loc_str = loc_as_str(&loc, &loc_lookup);
+            output.push_str(&format!("{loc_str} : {type_:?}\n"));
         }
         assert_eq_answer_in(&output, &path);
     }
