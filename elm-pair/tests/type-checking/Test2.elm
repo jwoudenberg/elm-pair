@@ -8,5 +8,8 @@ foo str =
 
 
 -- === expected output below ===
--- /ModuleRoot/Name("String") : String
--- /ModuleRoot/Name("Int") : Int
+-- Int : Int
+-- String : String
+-- String.length : String -> Int
+-- foo : String -> Int
+-- str : String
