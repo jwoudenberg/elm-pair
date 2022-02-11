@@ -1,15 +1,14 @@
 module Main exposing (..)
 
 
-foo : String -> Int
-foo str =
-    String.length str
+foo : String -> String -> Int
+foo strA strB =
+    String.length (strA ++ strB)
 
 
 
 -- === expected output below ===
--- foo : String -> Int
+-- foo : String -> String -> Int
 -- String : String
 -- Int : Int
--- str : String
--- String.length : String -> Int
+-- strA : String

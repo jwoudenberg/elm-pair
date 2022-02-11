@@ -1,5 +1,6 @@
 use crate::elm;
 use crate::lib::dataflow;
+use crate::lib::log;
 use abomonation_derive::Abomonation;
 use bimap::BiMap;
 use differential_dataflow::operators::iterate::Iterate;
@@ -271,42 +272,61 @@ fn scan_type_annotation(
     let loc = Loc::Name(name);
     let type_node = node.child_by_field_name("typeExpression").unwrap();
     let mut cursor = type_node.walk();
-    let children: Vec<Node> = type_node.children(&mut cursor).collect();
-    match children
-        .iter()
-        .map(|n| n.kind_id())
-        .collect::<Vec<u16>>()
-        .as_slice()
-    {
-        [elm::TYPE_REF] => {
-            let type_name = node_name(names, bytes, &type_node);
-            let type_loc = Loc::Name(type_name);
-            relations.push((loc, TypeRelation::SameAs, type_loc));
-        }
-        [elm::TYPE_REF, elm::ARROW, elm::TYPE_REF] => {
-            let arg_name = node_name(names, bytes, &children[0]);
-            let arg_loc = loc_refs.arg_to(loc);
-            relations.push((
-                arg_loc,
-                TypeRelation::SameAs,
-                Loc::Name(arg_name),
-            ));
-            relations.push((arg_loc, TypeRelation::ArgTo, loc));
 
-            let res_name = node_name(names, bytes, &children[2]);
-            let res_loc = loc_refs.result_of(loc);
-            relations.push((
-                res_loc,
-                TypeRelation::SameAs,
-                Loc::Name(res_name),
-            ));
-            relations.push((res_loc, TypeRelation::ResultOf, loc));
+    fn to_next_arg_node(c: &mut TreeCursor) -> bool {
+        proceed_to_sibling(c, |c_| c_.field_name() == Some("part"))
+    }
+
+    if !cursor.goto_first_child() {
+        log::error!("found empty type expression");
+        return;
+    }
+
+    let mut type_segment_node = cursor.node();
+    let mut parent_loc = loc;
+
+    // Keep the cursor one argument ahead of `type_segment_node` to detect when
+    // a node segment is the final one, i.e. not an argument but a return type.
+    while to_next_arg_node(&mut cursor) {
+        if type_segment_node.kind_id() != elm::TYPE_REF {
+            log::error!(
+                "unexpected kind {} in type expression",
+                type_segment_node.kind_id()
+            );
+            return;
         }
-        child_kinds => {
-            dbg!(child_kinds);
-            todo!();
+        let arg_name = node_name(names, bytes, &type_segment_node);
+        let arg_loc = loc_refs.arg_to(parent_loc);
+        relations.push((arg_loc, TypeRelation::SameAs, Loc::Name(arg_name)));
+        relations.push((arg_loc, TypeRelation::ArgTo, parent_loc));
+        let res_loc = loc_refs.result_of(parent_loc);
+        relations.push((res_loc, TypeRelation::ResultOf, parent_loc));
+        parent_loc = res_loc;
+        type_segment_node = cursor.node();
+    }
+
+    if parent_loc == loc {
+        // No arguments. The single type segment is the type of the definition.
+        let type_name = node_name(names, bytes, &type_segment_node);
+        let type_loc = Loc::Name(type_name);
+        relations.push((loc, TypeRelation::SameAs, type_loc));
+    } else {
+        // We've seen arguments. This final type segment is the return type.
+        let res_name = node_name(names, bytes, &type_segment_node);
+        relations.push((parent_loc, TypeRelation::SameAs, Loc::Name(res_name)));
+    }
+}
+
+fn proceed_to_sibling<F>(cursor: &mut TreeCursor, predicate: F) -> bool
+where
+    F: Fn(&TreeCursor) -> bool,
+{
+    while cursor.goto_next_sibling() {
+        if predicate(cursor) {
+            return true;
         }
     }
+    false
 }
 
 #[cfg(test)]
