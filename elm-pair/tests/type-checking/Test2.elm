@@ -12,3 +12,4 @@ foo strA strB =
 -- String : String
 -- Int : Int
 -- strA : String
+-- strB : String

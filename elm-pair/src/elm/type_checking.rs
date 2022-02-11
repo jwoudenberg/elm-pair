@@ -228,16 +228,29 @@ fn scan_value_declaration(
 ) {
     let func_node =
         node.child_by_field_name("functionDeclarationLeft").unwrap();
-    let name_node = func_node.child(0).unwrap();
-    let name = node_name(names, bytes, &name_node);
+    let mut cursor = func_node.walk();
+
+    if !cursor.goto_first_child() {
+        log::error!("found empty function declaration");
+        return;
+    }
+
+    let name = node_name(names, bytes, &cursor.node());
     let loc = Loc::Name(name);
+    let mut parent_loc = loc;
 
-    let arg_node = func_node.child(1).unwrap();
-    let arg_name = node_name(names, bytes, &arg_node);
-    let arg_loc = Loc::Name(arg_name);
-    relations.push((arg_loc, TypeRelation::ArgTo, loc));
-
-    let res_loc = loc_refs.result_of(loc);
+    // Scan the function argument list.
+    while cursor.goto_next_sibling() {
+        let arg_node = cursor.node();
+        if arg_node.kind_id() != elm::LOWER_PATTERN {
+            log::error!("unexpected kind {} in argument list", node.kind_id());
+            return;
+        }
+        let arg_name = node_name(names, bytes, &arg_node);
+        let arg_loc = Loc::Name(arg_name);
+        relations.push((arg_loc, TypeRelation::ArgTo, parent_loc));
+        parent_loc = loc_refs.result_of(parent_loc);
+    }
 
     let body_node = node.child_by_field_name("body").unwrap();
     match body_node.kind_id() {
@@ -253,8 +266,8 @@ fn scan_value_declaration(
             let fn_res_loc = loc_refs.result_of(fn_name_loc);
 
             relations.push((fn_arg_loc, TypeRelation::ArgTo, fn_name_loc));
-            relations.push((res_loc, TypeRelation::SameAs, fn_res_loc));
-            relations.push((res_loc, TypeRelation::ResultOf, fn_name_loc));
+            relations.push((parent_loc, TypeRelation::SameAs, fn_res_loc));
+            relations.push((parent_loc, TypeRelation::ResultOf, fn_name_loc));
         }
         _ => todo!(),
     }
