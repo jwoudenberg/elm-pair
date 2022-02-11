@@ -252,22 +252,151 @@ fn scan_value_declaration(
         parent_loc = loc_refs.result_of(parent_loc);
     }
 
-    let body_node = node.child_by_field_name("body").unwrap();
-    match body_node.kind_id() {
+    scan_expression(
+        parent_loc,
+        &node.child_by_field_name("body").unwrap(),
+        bytes,
+        names,
+        loc_refs,
+        relations,
+    );
+}
+
+fn scan_expression(
+    parent_loc: Loc,
+    node: &Node,
+    bytes: &[u8],
+    names: &mut Names,
+    loc_refs: &mut LocRefs,
+    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+) {
+    match node.kind_id() {
         elm::FUNCTION_CALL_EXPR => {
-            let fn_name_node = body_node.child_by_field_name("target").unwrap();
-            let fn_name = node_name(names, bytes, &fn_name_node);
-            let fn_name_loc = Loc::Name(fn_name);
+            let mut cursor = node.walk();
+            if !cursor.goto_first_child() {
+                log::error!("found empty type expression");
+                return;
+            }
 
-            let fn_arg_node = body_node.child_by_field_name("arg").unwrap();
-            let fn_arg_name = node_name(names, bytes, &fn_arg_node);
-            let fn_arg_loc = Loc::Name(fn_arg_name);
+            if cursor.field_name() != Some("target") {
+                log::error!(
+                    "unexpected kind {} in function call expression",
+                    cursor.node().kind_id()
+                );
+                return;
+            }
 
-            let fn_res_loc = loc_refs.result_of(fn_name_loc);
+            // TODO: Don't create Name loc here, because we don't know for sure
+            // this is a name. It could be an expression, like: `(add 4)`.
+            let fn_node = cursor.node();
+            let fn_name = node_name(names, bytes, &fn_node);
+            let mut fn_loc = Loc::Name(fn_name);
 
-            relations.push((fn_arg_loc, TypeRelation::ArgTo, fn_name_loc));
-            relations.push((parent_loc, TypeRelation::SameAs, fn_res_loc));
-            relations.push((parent_loc, TypeRelation::ResultOf, fn_name_loc));
+            // Scan expression representing function to be called.
+            scan_expression(
+                fn_loc,
+                &cursor.node(),
+                bytes,
+                names,
+                loc_refs,
+                relations,
+            );
+
+            fn to_next_arg_node(c: &mut TreeCursor) -> bool {
+                proceed_to_sibling(c, |c_| c_.field_name() == Some("arg"))
+            }
+
+            while to_next_arg_node(&mut cursor) {
+                let fn_arg_loc = loc_refs.arg_to(fn_loc);
+                relations.push((fn_arg_loc, TypeRelation::ArgTo, fn_loc));
+
+                scan_expression(
+                    fn_arg_loc,
+                    &cursor.node(),
+                    bytes,
+                    names,
+                    loc_refs,
+                    relations,
+                );
+
+                fn_loc = loc_refs.result_of(fn_loc);
+            }
+
+            relations.push((parent_loc, TypeRelation::SameAs, fn_loc));
+        }
+        elm::BIN_OP_EXPR => {
+            let mut cursor = node.walk();
+
+            fn to_next_part_node(c: &mut TreeCursor) -> bool {
+                proceed_to_sibling(c, |c_| c_.field_name() == Some("part"))
+            }
+
+            // First argument
+            if !(cursor.goto_first_child()) {
+                log::error!("found empty binop expression");
+                return;
+            }
+            let arg1_node = cursor.node();
+
+            // Operator
+            if !to_next_part_node(&mut cursor) {
+                log::error!("missing operator in binop expression");
+                return;
+            }
+            let op_node = cursor.node();
+            if op_node.kind_id() != elm::OPERATOR {
+                log::error!(
+                    "unexpected kind {} in operator position",
+                    op_node.kind_id()
+                );
+                return;
+            }
+
+            // Second argument
+            if !to_next_part_node(&mut cursor) {
+                log::error!("missing second arg in binop expression");
+                return;
+            }
+            let arg2_node = cursor.node();
+
+            // Add relations between nodes.
+            let op_slice = &bytes[op_node.byte_range()];
+            let op_str =
+                format!("({})", std::str::from_utf8(op_slice).unwrap());
+            let op_name = names.from_str(&op_str);
+            let op_loc = Loc::Name(op_name);
+            let arg1_loc = loc_refs.arg_to(op_loc);
+            let partial_res_loc = loc_refs.result_of(op_loc);
+            let arg2_loc = loc_refs.arg_to(partial_res_loc);
+            let res_loc = loc_refs.result_of(partial_res_loc);
+            relations.push((arg1_loc, TypeRelation::ArgTo, op_loc));
+            relations.push((partial_res_loc, TypeRelation::ResultOf, op_loc));
+            relations.push((arg2_loc, TypeRelation::ArgTo, partial_res_loc));
+            relations.push((res_loc, TypeRelation::ResultOf, partial_res_loc));
+            relations.push((res_loc, TypeRelation::SameAs, parent_loc));
+
+            scan_expression(
+                arg1_loc, &arg1_node, bytes, names, loc_refs, relations,
+            );
+
+            scan_expression(
+                arg2_loc, &arg2_node, bytes, names, loc_refs, relations,
+            );
+        }
+        elm::VALUE_EXPR => {
+            let name = node_name(names, bytes, node);
+            let loc = Loc::Name(name);
+            relations.push((parent_loc, TypeRelation::SameAs, loc));
+        }
+        elm::PARENTHESIZED_EXPR => {
+            scan_expression(
+                parent_loc,
+                &node.child_by_field_name("expression").unwrap(),
+                bytes,
+                names,
+                loc_refs,
+                relations,
+            );
         }
         _ => todo!(),
     }
@@ -362,15 +491,19 @@ mod tests {
         let mut loc_refs = LocRefs::new();
         let mut relations = Vec::new();
         scan_tree(tree, &bytes, &mut names, &mut loc_refs, &mut relations);
-        let mut output = String::new();
-        for (from, rel, to) in relations.into_iter() {
-            output.push_str(&format!(
-                "{} `{:?}` {}\n",
-                print_loc(&names, &loc_refs, from),
-                rel,
-                print_loc(&names, &loc_refs, to),
-            ));
-        }
+        let mut relation_strs: Vec<String> = relations
+            .into_iter()
+            .map(|(from, rel, to)| {
+                format!(
+                    "{} `{:?}` {}\n",
+                    print_loc(&names, &loc_refs, from),
+                    rel,
+                    print_loc(&names, &loc_refs, to),
+                )
+            })
+            .collect();
+        relation_strs.sort();
+        let output: String = relation_strs.into_iter().collect();
         assert_eq_answer_in(&output, &path);
     }
 
@@ -408,8 +541,13 @@ mod tests {
 
         let int_loc = Loc::Name(names.from_str("Int"));
         let string_loc = Loc::Name(names.from_str("String"));
+        let append_loc = Loc::Name(names.from_str("(++)"));
+        let length_loc = Loc::Name(names.from_str("List.length"));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
+        starter_types_input.insert((length_loc, "String -> Int".to_string()));
+        // starter_types_input
+        //     .insert((append_loc, "String -> String -> String".to_string()));
         for (from, rel, to) in relations.into_iter() {
             match rel {
                 TypeRelation::SameAs => same_as_input.insert((from, to)),
@@ -456,9 +594,7 @@ mod tests {
 
     fn print_loc(names: &Names, loc_refs: &LocRefs, loc: Loc) -> String {
         match loc {
-            Loc::Name(name) => {
-                format!("Name({})", names.0.get_by_right(&name).unwrap())
-            }
+            Loc::Name(name) => names.0.get_by_right(&name).unwrap().to_string(),
             Loc::ArgTo(ref_) => {
                 format!(
                     "ArgTo({})",

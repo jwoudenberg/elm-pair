@@ -8,15 +8,22 @@ foo strA strB =
 
 
 -- === expected output below ===
--- ArgTo(Name(foo)) `SameAs` Name(String)
--- ArgTo(Name(foo)) `ArgTo` Name(foo)
--- ResultOf(Name(foo)) `ResultOf` Name(foo)
--- ArgTo(ResultOf(Name(foo))) `SameAs` Name(String)
--- ArgTo(ResultOf(Name(foo))) `ArgTo` ResultOf(Name(foo))
--- ResultOf(ResultOf(Name(foo))) `ResultOf` ResultOf(Name(foo))
--- ResultOf(ResultOf(Name(foo))) `SameAs` Name(Int)
--- Name(strA) `ArgTo` Name(foo)
--- Name(strB) `ArgTo` ResultOf(Name(foo))
--- Name((strA ++ strB)) `ArgTo` Name(String.length)
--- ResultOf(ResultOf(Name(foo))) `SameAs` ResultOf(Name(String.length))
--- ResultOf(ResultOf(Name(foo))) `ResultOf` Name(String.length)
+-- ArgTo((++)) `ArgTo` (++)
+-- ArgTo((++)) `SameAs` strA
+-- ArgTo(ResultOf((++))) `ArgTo` ResultOf((++))
+-- ArgTo(ResultOf((++))) `SameAs` strB
+-- ArgTo(ResultOf(foo)) `ArgTo` ResultOf(foo)
+-- ArgTo(ResultOf(foo)) `SameAs` String
+-- ArgTo(String.length) `ArgTo` String.length
+-- ArgTo(foo) `ArgTo` foo
+-- ArgTo(foo) `SameAs` String
+-- ResultOf((++)) `ResultOf` (++)
+-- ResultOf(ResultOf((++))) `ResultOf` ResultOf((++))
+-- ResultOf(ResultOf((++))) `SameAs` ArgTo(String.length)
+-- ResultOf(ResultOf(foo)) `ResultOf` ResultOf(foo)
+-- ResultOf(ResultOf(foo)) `SameAs` Int
+-- ResultOf(ResultOf(foo)) `SameAs` ResultOf(String.length)
+-- ResultOf(foo) `ResultOf` foo
+-- String.length `SameAs` String.length
+-- strA `ArgTo` foo
+-- strB `ArgTo` ResultOf(foo)

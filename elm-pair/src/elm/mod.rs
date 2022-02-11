@@ -60,6 +60,7 @@ macro_rules! node_constants {
 node_constants!(
     ARROW = 51;
     AS_CLAUSE = 101;
+    BIN_OP_EXPR = 121;
     BLOCK_COMMENT = 86;
     COMMA (",") = 6;
     CONSTRUCTOR_IDENTIFIER = 8;
@@ -81,6 +82,8 @@ node_constants!(
     LOWER_PATTERN = 161;
     MODULE_DECLARATION = 87;
     MODULE_NAME_SEGMENT = 201;
+    OPERATOR = 122;
+    PARENTHESIZED_EXPR = 133;
     PORT_ANNOTATION = 119;
     RECORD_PATTERN = 163;
     RECORD_TYPE = 115;
@@ -91,6 +94,7 @@ node_constants!(
     TYPE_REF = 111;
     TYPE_QID = 97;
     UNION_VARIANT = 106;
+    VALUE_EXPR = 139;
     VALUE_DECLARATION = 102;
     VALUE_QID = 98;
 );
