@@ -14,3 +14,4 @@ foo strA strB =
 -- strA : String
 -- strB : String
 -- List.length : String -> Int
+-- (++) : String -> String -> String

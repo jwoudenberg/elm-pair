@@ -88,6 +88,23 @@ pub enum TypeRelation {
     ResultOf,
 }
 
+fn new_rel(
+    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    loc_refs: &mut LocRefs,
+    from: Loc,
+    rel: TypeRelation,
+    to: Loc,
+) {
+    let (from_, to_) = match rel {
+        TypeRelation::ArgTo => (from, Loc::ArgTo(loc_refs.get_ref(to))),
+        TypeRelation::ResultOf => (from, Loc::ResultOf(loc_refs.get_ref(to))),
+        _ => (from, to),
+    };
+    if to_ != from_ {
+        relations.push((from_, TypeRelation::SameAs, to_));
+    }
+}
+
 type Type = String;
 
 pub fn dataflow_graph<'a>(
@@ -105,10 +122,12 @@ pub fn dataflow_graph<'a>(
         let result_of_local = result_of.enter(&transative.scope());
 
         let arg_types = arg_to_local
-            .join_map(transative, |_, k, type_| (*k, type_.clone()));
+            .join_map(transative, |_, k, type_| (*k, type_.clone()))
+            .distinct();
 
         let res_types = result_of_local
-            .join_map(transative, |_, k, type_| (*k, type_.clone()));
+            .join_map(transative, |_, k, type_| (*k, type_.clone()))
+            .distinct();
 
         let new_fn_types = arg_types.join_map(&res_types, |k, arg, res| {
             (*k, format!("{arg} -> {res}"))
@@ -248,7 +267,13 @@ fn scan_value_declaration(
         }
         let arg_name = node_name(names, bytes, &arg_node);
         let arg_loc = Loc::Name(arg_name);
-        relations.push((arg_loc, TypeRelation::ArgTo, parent_loc));
+        new_rel(
+            relations,
+            loc_refs,
+            arg_loc,
+            TypeRelation::ArgTo,
+            parent_loc,
+        );
         parent_loc = loc_refs.result_of(parent_loc);
     }
 
@@ -308,7 +333,13 @@ fn scan_expression(
 
             while to_next_arg_node(&mut cursor) {
                 let fn_arg_loc = loc_refs.arg_to(fn_loc);
-                relations.push((fn_arg_loc, TypeRelation::ArgTo, fn_loc));
+                new_rel(
+                    relations,
+                    loc_refs,
+                    fn_arg_loc,
+                    TypeRelation::ArgTo,
+                    fn_loc,
+                );
 
                 scan_expression(
                     fn_arg_loc,
@@ -322,7 +353,13 @@ fn scan_expression(
                 fn_loc = loc_refs.result_of(fn_loc);
             }
 
-            relations.push((parent_loc, TypeRelation::SameAs, fn_loc));
+            new_rel(
+                relations,
+                loc_refs,
+                parent_loc,
+                TypeRelation::SameAs,
+                fn_loc,
+            );
         }
         elm::BIN_OP_EXPR => {
             let mut cursor = node.walk();
@@ -369,11 +406,35 @@ fn scan_expression(
             let partial_res_loc = loc_refs.result_of(op_loc);
             let arg2_loc = loc_refs.arg_to(partial_res_loc);
             let res_loc = loc_refs.result_of(partial_res_loc);
-            relations.push((arg1_loc, TypeRelation::ArgTo, op_loc));
-            relations.push((partial_res_loc, TypeRelation::ResultOf, op_loc));
-            relations.push((arg2_loc, TypeRelation::ArgTo, partial_res_loc));
-            relations.push((res_loc, TypeRelation::ResultOf, partial_res_loc));
-            relations.push((res_loc, TypeRelation::SameAs, parent_loc));
+            new_rel(relations, loc_refs, arg1_loc, TypeRelation::ArgTo, op_loc);
+            new_rel(
+                relations,
+                loc_refs,
+                partial_res_loc,
+                TypeRelation::ResultOf,
+                op_loc,
+            );
+            new_rel(
+                relations,
+                loc_refs,
+                arg2_loc,
+                TypeRelation::ArgTo,
+                partial_res_loc,
+            );
+            new_rel(
+                relations,
+                loc_refs,
+                res_loc,
+                TypeRelation::ResultOf,
+                partial_res_loc,
+            );
+            new_rel(
+                relations,
+                loc_refs,
+                res_loc,
+                TypeRelation::SameAs,
+                parent_loc,
+            );
 
             scan_expression(
                 arg1_loc, &arg1_node, bytes, names, loc_refs, relations,
@@ -386,7 +447,7 @@ fn scan_expression(
         elm::VALUE_EXPR => {
             let name = node_name(names, bytes, node);
             let loc = Loc::Name(name);
-            relations.push((parent_loc, TypeRelation::SameAs, loc));
+            new_rel(relations, loc_refs, parent_loc, TypeRelation::SameAs, loc);
         }
         elm::PARENTHESIZED_EXPR => {
             scan_expression(
@@ -439,10 +500,28 @@ fn scan_type_annotation(
         }
         let arg_name = node_name(names, bytes, &type_segment_node);
         let arg_loc = loc_refs.arg_to(parent_loc);
-        relations.push((arg_loc, TypeRelation::SameAs, Loc::Name(arg_name)));
-        relations.push((arg_loc, TypeRelation::ArgTo, parent_loc));
+        new_rel(
+            relations,
+            loc_refs,
+            arg_loc,
+            TypeRelation::SameAs,
+            Loc::Name(arg_name),
+        );
+        new_rel(
+            relations,
+            loc_refs,
+            arg_loc,
+            TypeRelation::ArgTo,
+            parent_loc,
+        );
         let res_loc = loc_refs.result_of(parent_loc);
-        relations.push((res_loc, TypeRelation::ResultOf, parent_loc));
+        new_rel(
+            relations,
+            loc_refs,
+            res_loc,
+            TypeRelation::ResultOf,
+            parent_loc,
+        );
         parent_loc = res_loc;
         type_segment_node = cursor.node();
     }
@@ -451,11 +530,17 @@ fn scan_type_annotation(
         // No arguments. The single type segment is the type of the definition.
         let type_name = node_name(names, bytes, &type_segment_node);
         let type_loc = Loc::Name(type_name);
-        relations.push((loc, TypeRelation::SameAs, type_loc));
+        new_rel(relations, loc_refs, loc, TypeRelation::SameAs, type_loc);
     } else {
         // We've seen arguments. This final type segment is the return type.
         let res_name = node_name(names, bytes, &type_segment_node);
-        relations.push((parent_loc, TypeRelation::SameAs, Loc::Name(res_name)));
+        new_rel(
+            relations,
+            loc_refs,
+            parent_loc,
+            TypeRelation::SameAs,
+            Loc::Name(res_name),
+        );
     }
 }
 
