@@ -1,16 +1,47 @@
 use crate::elm;
 use crate::lib::dataflow;
 use abomonation_derive::Abomonation;
+use bimap::BiMap;
 use differential_dataflow::operators::iterate::Iterate;
 use differential_dataflow::operators::join::Join;
 use differential_dataflow::operators::Threshold;
 use tree_sitter::{Node, Tree, TreeCursor};
 
-#[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Abomonation, Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum SrcLoc {
-    Name(String),
-    ArgTo(String),
-    ResultOf(String),
+    Name(Name),
+    ArgTo(Name),
+    ResultOf(Name),
+}
+
+#[derive(
+    Abomonation, Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
+pub struct Name(usize);
+
+pub struct Names(BiMap<String, Name>);
+
+impl Names {
+    pub fn new() -> Names {
+        Names(BiMap::new())
+    }
+
+    pub fn from_str(&mut self, str: &str) -> Name {
+        if let Some(name) = self.0.get_by_left(str) {
+            return *name;
+        }
+        let name = Name(self.0.len());
+        self.0.insert(str.to_string(), name);
+        name
+    }
+}
+
+pub fn node_name(names: &mut Names, bytes: &[u8], node: &Node) -> Name {
+    let slice = &bytes[node.byte_range()];
+    let str = std::str::from_utf8(slice).unwrap();
+    names.from_str(str)
 }
 
 #[derive(Debug)]
@@ -27,7 +58,7 @@ pub fn dataflow_graph<'a>(
     same_as: dataflow::Collection<'a, (SrcLoc, SrcLoc)>,
     arg_to: dataflow::Collection<'a, (SrcLoc, SrcLoc)>,
     result_of: dataflow::Collection<'a, (SrcLoc, SrcLoc)>,
-) -> dataflow::Collection<'a, (String, Type)> {
+) -> dataflow::Collection<'a, (Name, Type)> {
     let same_as_bidirectional =
         same_as.concat(&same_as.map(|(x, y)| (y, x))).distinct();
 
@@ -37,20 +68,20 @@ pub fn dataflow_graph<'a>(
         let result_of_local = result_of.enter(&transative.scope());
 
         let arg_types = arg_to_local
-            .join_map(transative, |_, k, type_| (k.clone(), type_.clone()));
+            .join_map(transative, |_, k, type_| (*k, type_.clone()));
 
         let res_types = result_of_local
-            .join_map(transative, |_, k, type_| (k.clone(), type_.clone()));
+            .join_map(transative, |_, k, type_| (*k, type_.clone()));
 
         let new_fn_types = arg_types.join_map(&res_types, |k, arg, res| {
-            (k.clone(), format!("{arg} -> {res}"))
+            (*k, format!("{arg} -> {res}"))
         });
 
         let new_arg_types = arg_to_local.map(|(arg, f)| (f, arg)).join_map(
             transative,
             |_, arg, f_type| {
                 (
-                    arg.clone(),
+                    *arg,
                     f_type.split_once("->").unwrap().0.trim_end().to_string(),
                 )
             },
@@ -60,14 +91,14 @@ pub fn dataflow_graph<'a>(
             .map(|(result, f)| (f, result))
             .join_map(transative, |_, result, f_type| {
                 (
-                    result.clone(),
+                    *result,
                     f_type.split_once("->").unwrap().1.trim_start().to_string(),
                 )
             });
 
         let new_from_same_as = transative
             .join_map(&same_as_local, |_, type_, same_as| {
-                (same_as.clone(), type_.clone())
+                (*same_as, type_.clone())
             });
 
         transative
@@ -88,15 +119,17 @@ pub fn dataflow_graph<'a>(
 pub fn scan_tree(
     tree: Tree,
     bytes: &[u8],
+    names: &mut Names,
     relations: &mut Vec<(SrcLoc, TypeRelation, SrcLoc)>,
 ) {
     let mut cursor = tree.walk();
-    scan_root(&mut cursor, bytes, relations)
+    scan_root(&mut cursor, bytes, names, relations)
 }
 
 pub fn scan_root(
     cursor: &mut TreeCursor,
     bytes: &[u8],
+    names: &mut Names,
     relations: &mut Vec<(SrcLoc, TypeRelation, SrcLoc)>,
 ) {
     // TODO: Remove asserts in favor of logging errors.
@@ -104,7 +137,7 @@ pub fn scan_root(
     assert_eq!(node.kind_id(), elm::FILE);
     if cursor.goto_first_child() {
         loop {
-            scan_node(cursor, bytes, relations);
+            scan_node(cursor, bytes, names, relations);
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -115,6 +148,7 @@ pub fn scan_root(
 pub fn scan_node(
     cursor: &mut TreeCursor,
     bytes: &[u8],
+    names: &mut Names,
     relations: &mut Vec<(SrcLoc, TypeRelation, SrcLoc)>,
 ) {
     let node = cursor.node();
@@ -122,12 +156,12 @@ pub fn scan_node(
         elm::MODULE_DECLARATION => {}
         elm::IMPORT_CLAUSE => {}
         elm::VALUE_DECLARATION => {
-            scan_value_declaration(&cursor.node(), bytes, relations)
+            scan_value_declaration(&cursor.node(), bytes, names, relations)
         }
         elm::TYPE_ALIAS_DECLARATION => todo!(),
         elm::TYPE_DECLARATION => todo!(),
         elm::TYPE_ANNOTATION => {
-            scan_type_annotation(&cursor.node(), bytes, relations)
+            scan_type_annotation(&cursor.node(), bytes, names, relations)
         }
         elm::PORT_ANNOTATION => todo!(),
         elm::INFIX_DECLARATION => todo!(),
@@ -140,17 +174,17 @@ pub fn scan_node(
 fn scan_value_declaration(
     node: &Node,
     bytes: &[u8],
+    names: &mut Names,
     relations: &mut Vec<(SrcLoc, TypeRelation, SrcLoc)>,
 ) {
     let func_node =
         node.child_by_field_name("functionDeclarationLeft").unwrap();
     let name_node = func_node.child(0).unwrap();
-    let name = String::from_utf8(bytes[name_node.byte_range()].into()).unwrap();
-    let loc = SrcLoc::Name(name.clone());
+    let name = node_name(names, bytes, &name_node);
+    let loc = SrcLoc::Name(name);
 
     let arg_node = func_node.child(1).unwrap();
-    let arg_name =
-        String::from_utf8(bytes[arg_node.byte_range()].into()).unwrap();
+    let arg_name = node_name(names, bytes, &arg_node);
     let arg_loc = SrcLoc::Name(arg_name);
     relations.push((arg_loc, TypeRelation::ArgTo, loc));
 
@@ -160,25 +194,17 @@ fn scan_value_declaration(
     match body_node.kind_id() {
         elm::FUNCTION_CALL_EXPR => {
             let fn_name_node = body_node.child_by_field_name("target").unwrap();
-            let fn_name =
-                String::from_utf8(bytes[fn_name_node.byte_range()].into())
-                    .unwrap();
-            let fn_name_loc = SrcLoc::Name(fn_name.clone());
+            let fn_name = node_name(names, bytes, &fn_name_node);
+            let fn_name_loc = SrcLoc::Name(fn_name);
 
             let fn_arg_node = body_node.child_by_field_name("arg").unwrap();
-            let fn_arg_name =
-                String::from_utf8(bytes[fn_arg_node.byte_range()].into())
-                    .unwrap();
+            let fn_arg_name = node_name(names, bytes, &fn_arg_node);
             let fn_arg_loc = SrcLoc::Name(fn_arg_name);
 
             let fn_res_loc = SrcLoc::ResultOf(fn_name);
 
-            relations.push((
-                fn_arg_loc,
-                TypeRelation::ArgTo,
-                fn_name_loc.clone(),
-            ));
-            relations.push((res_loc.clone(), TypeRelation::SameAs, fn_res_loc));
+            relations.push((fn_arg_loc, TypeRelation::ArgTo, fn_name_loc));
+            relations.push((res_loc, TypeRelation::SameAs, fn_res_loc));
             relations.push((res_loc, TypeRelation::ResultOf, fn_name_loc));
         }
         _ => todo!(),
@@ -188,11 +214,12 @@ fn scan_value_declaration(
 fn scan_type_annotation(
     node: &Node,
     bytes: &[u8],
+    names: &mut Names,
     relations: &mut Vec<(SrcLoc, TypeRelation, SrcLoc)>,
 ) {
     let name_node = node.child_by_field_name("name").unwrap();
-    let name = String::from_utf8(bytes[name_node.byte_range()].into()).unwrap();
-    let loc = SrcLoc::Name(name.clone());
+    let name = node_name(names, bytes, &name_node);
+    let loc = SrcLoc::Name(name);
     let type_node = node.child_by_field_name("typeExpression").unwrap();
     let mut cursor = type_node.walk();
     let children: Vec<Node> = type_node.children(&mut cursor).collect();
@@ -203,30 +230,24 @@ fn scan_type_annotation(
         .as_slice()
     {
         [elm::TYPE_REF] => {
-            let type_name =
-                String::from_utf8(bytes[type_node.byte_range()].into())
-                    .unwrap();
+            let type_name = node_name(names, bytes, &type_node);
             let type_loc = SrcLoc::Name(type_name);
             relations.push((loc, TypeRelation::SameAs, type_loc));
         }
         [elm::TYPE_REF, elm::ARROW, elm::TYPE_REF] => {
-            let arg_name =
-                String::from_utf8(bytes[children[0].byte_range()].into())
-                    .unwrap();
-            let arg_loc = SrcLoc::ArgTo(name.clone());
+            let arg_name = node_name(names, bytes, &children[0]);
+            let arg_loc = SrcLoc::ArgTo(name);
             relations.push((
-                arg_loc.clone(),
+                arg_loc,
                 TypeRelation::SameAs,
                 SrcLoc::Name(arg_name),
             ));
-            relations.push((arg_loc, TypeRelation::ArgTo, loc.clone()));
+            relations.push((arg_loc, TypeRelation::ArgTo, loc));
 
-            let res_name =
-                String::from_utf8(bytes[children[2].byte_range()].into())
-                    .unwrap();
+            let res_name = node_name(names, bytes, &children[2]);
             let res_loc = SrcLoc::ResultOf(name);
             relations.push((
-                res_loc.clone(),
+                res_loc,
                 TypeRelation::SameAs,
                 SrcLoc::Name(res_name),
             ));
@@ -255,11 +276,28 @@ mod tests {
         let path = PathBuf::from("./tests/type-checking/Test.elm");
         let bytes = std::fs::read(&path).unwrap();
         let tree = parse_bytes(bytes.clone()).unwrap();
+        let mut names = Names::new();
         let mut relations = Vec::new();
-        scan_tree(tree, &bytes, &mut relations);
+        scan_tree(tree, &bytes, &mut names, &mut relations);
         let mut output = String::new();
+        let print_loc = |loc| match loc {
+            SrcLoc::Name(name) => {
+                format!("Name({})", names.0.get_by_right(&name).unwrap())
+            }
+            SrcLoc::ArgTo(name) => {
+                format!("ArgTo({})", names.0.get_by_right(&name).unwrap())
+            }
+            SrcLoc::ResultOf(name) => {
+                format!("ResultOf({})", names.0.get_by_right(&name).unwrap())
+            }
+        };
         for (from, rel, to) in relations.into_iter() {
-            output.push_str(&format!("{:?} `{:?}` {:?}\n", &from, rel, &to,));
+            output.push_str(&format!(
+                "{} `{:?}` {}\n",
+                print_loc(from),
+                rel,
+                print_loc(to),
+            ));
         }
         assert_eq_answer_in(&output, &path);
     }
@@ -269,8 +307,9 @@ mod tests {
         let path = PathBuf::from("./tests/type-checking/Test2.elm");
         let bytes = std::fs::read(&path).unwrap();
         let tree = parse_bytes(bytes.clone()).unwrap();
+        let mut names = Names::new();
         let mut relations = Vec::new();
-        scan_tree(tree, &bytes, &mut relations);
+        scan_tree(tree, &bytes, &mut names, &mut relations);
 
         let alloc = timely::communication::allocator::thread::Thread::new();
         let mut worker =
@@ -294,8 +333,8 @@ mod tests {
             (types_agg.trace, types_agg.stream.probe())
         });
 
-        let int_loc = SrcLoc::Name("Int".to_string());
-        let string_loc = SrcLoc::Name("String".to_string());
+        let int_loc = SrcLoc::Name(names.from_str("Int"));
+        let string_loc = SrcLoc::Name(names.from_str("String"));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
         for (from, rel, to) in relations.into_iter() {
@@ -320,7 +359,7 @@ mod tests {
 
         let (mut cursor, storage) = types_trace.cursor();
 
-        let mut types: Vec<(String, Type)> = cursor
+        let mut types: Vec<(Name, Type)> = cursor
             .to_vec(&storage)
             .into_iter()
             .filter_map(|(i, counts)| {
@@ -335,8 +374,9 @@ mod tests {
             .collect();
         types.sort();
         let mut output = String::new();
-        for (loc, type_) in types.into_iter() {
-            output.push_str(&format!("{loc} : {type_}\n"));
+        for (name, type_) in types.into_iter() {
+            let name_str = names.0.get_by_right(&name).unwrap();
+            output.push_str(&format!("{name_str} : {type_}\n"));
         }
         assert_eq_answer_in(&output, &path);
     }

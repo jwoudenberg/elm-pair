@@ -8,8 +8,8 @@ foo str =
 
 
 -- === expected output below ===
--- Int : Int
--- String : String
--- String.length : String -> Int
 -- foo : String -> Int
+-- String : String
+-- Int : Int
 -- str : String
+-- String.length : String -> Int
