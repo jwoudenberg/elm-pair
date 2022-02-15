@@ -8,12 +8,14 @@ foo strA strB =
 
 
 -- === expected output below ===
--- ArgTo((++)) `SameAs` strA
--- ArgTo(ResultOf((++))) `SameAs` strB
--- ArgTo(ResultOf(foo)) `SameAs` String
--- ArgTo(foo) `SameAs` String
--- ResultOf(ResultOf((++))) `SameAs` ArgTo(String.length)
--- ResultOf(ResultOf(foo)) `SameAs` Int
--- ResultOf(ResultOf(foo)) `SameAs` ResultOf(String.length)
--- strA `SameAs` ArgTo(foo)
--- strB `SameAs` ArgTo(ResultOf(foo))
+-- strict graph {
+-- "ArgTo((++))" -- "strA"
+-- "ArgTo(ResultOf((++)))" -- "strB"
+-- "ArgTo(ResultOf(foo))" -- "String"
+-- "ArgTo(foo)" -- "String"
+-- "ResultOf(ResultOf((++)))" -- "ArgTo(String.length)"
+-- "ResultOf(ResultOf(foo))" -- "Int"
+-- "ResultOf(ResultOf(foo))" -- "ResultOf(String.length)"
+-- "strA" -- "ArgTo(foo)"
+-- "strB" -- "ArgTo(ResultOf(foo))"
+-- }

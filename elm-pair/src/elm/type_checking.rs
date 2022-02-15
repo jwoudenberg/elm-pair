@@ -81,88 +81,24 @@ pub fn node_name(names: &mut Names, bytes: &[u8], node: &Node) -> Name {
     names.from_str(str)
 }
 
-#[derive(Debug)]
-pub enum TypeRelation {
-    SameAs,
-    ArgTo,
-    ResultOf,
-}
-
-fn new_rel(
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
-    loc_refs: &mut LocRefs,
-    from: Loc,
-    rel: TypeRelation,
-    to: Loc,
-) {
-    let (from_, to_) = match rel {
-        TypeRelation::ArgTo => (from, Loc::ArgTo(loc_refs.get_ref(to))),
-        TypeRelation::ResultOf => (from, Loc::ResultOf(loc_refs.get_ref(to))),
-        _ => (from, to),
-    };
-    if to_ != from_ {
-        relations.push((from_, TypeRelation::SameAs, to_));
-    }
-}
-
 type Type = String;
 
 pub fn dataflow_graph<'a>(
     starter_types: dataflow::Collection<'a, (Loc, Type)>,
     same_as: dataflow::Collection<'a, (Loc, Loc)>,
-    arg_to: dataflow::Collection<'a, (Loc, Loc)>,
-    result_of: dataflow::Collection<'a, (Loc, Loc)>,
 ) -> dataflow::Collection<'a, (Name, Type)> {
     let same_as_bidirectional =
         same_as.concat(&same_as.map(|(x, y)| (y, x))).distinct();
 
     let types = starter_types.iterate(|transative| {
         let same_as_local = same_as_bidirectional.enter(&transative.scope());
-        let arg_to_local = arg_to.enter(&transative.scope());
-        let result_of_local = result_of.enter(&transative.scope());
-
-        let arg_types = arg_to_local
-            .join_map(transative, |_, k, type_| (*k, type_.clone()))
-            .distinct();
-
-        let res_types = result_of_local
-            .join_map(transative, |_, k, type_| (*k, type_.clone()))
-            .distinct();
-
-        let new_fn_types = arg_types.join_map(&res_types, |k, arg, res| {
-            (*k, format!("{arg} -> {res}"))
-        });
-
-        let new_arg_types = arg_to_local.map(|(arg, f)| (f, arg)).join_map(
-            transative,
-            |_, arg, f_type| {
-                (
-                    *arg,
-                    f_type.split_once("->").unwrap().0.trim_end().to_string(),
-                )
-            },
-        );
-
-        let new_result_types = result_of_local
-            .map(|(result, f)| (f, result))
-            .join_map(transative, |_, result, f_type| {
-                (
-                    *result,
-                    f_type.split_once("->").unwrap().1.trim_start().to_string(),
-                )
-            });
 
         let new_from_same_as = transative
             .join_map(&same_as_local, |_, type_, same_as| {
                 (*same_as, type_.clone())
             });
 
-        transative
-            .concat(&new_from_same_as)
-            .concat(&new_fn_types)
-            .concat(&new_arg_types)
-            .concat(&new_result_types)
-            .distinct()
+        transative.concat(&new_from_same_as).distinct()
     });
 
     types.flat_map(|(loc, type_)| match loc {
@@ -177,7 +113,7 @@ pub fn scan_tree(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    relations: &mut Vec<(Loc, Loc)>,
 ) {
     let mut cursor = tree.walk();
     scan_root(&mut cursor, bytes, names, loc_refs, relations)
@@ -188,7 +124,7 @@ pub fn scan_root(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    relations: &mut Vec<(Loc, Loc)>,
 ) {
     // TODO: Remove asserts in favor of logging errors.
     let node = cursor.node();
@@ -208,7 +144,7 @@ pub fn scan_node(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    relations: &mut Vec<(Loc, Loc)>,
 ) {
     let node = cursor.node();
     match node.kind_id() {
@@ -243,7 +179,7 @@ fn scan_value_declaration(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    relations: &mut Vec<(Loc, Loc)>,
 ) {
     let func_node =
         node.child_by_field_name("functionDeclarationLeft").unwrap();
@@ -267,13 +203,7 @@ fn scan_value_declaration(
         }
         let arg_name = node_name(names, bytes, &arg_node);
         let arg_loc = Loc::Name(arg_name);
-        new_rel(
-            relations,
-            loc_refs,
-            arg_loc,
-            TypeRelation::ArgTo,
-            parent_loc,
-        );
+        relations.push((arg_loc, loc_refs.arg_to(parent_loc)));
         parent_loc = loc_refs.result_of(parent_loc);
     }
 
@@ -293,7 +223,7 @@ fn scan_expression(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    relations: &mut Vec<(Loc, Loc)>,
 ) {
     match node.kind_id() {
         elm::FUNCTION_CALL_EXPR => {
@@ -333,13 +263,7 @@ fn scan_expression(
 
             while to_next_arg_node(&mut cursor) {
                 let fn_arg_loc = loc_refs.arg_to(fn_loc);
-                new_rel(
-                    relations,
-                    loc_refs,
-                    fn_arg_loc,
-                    TypeRelation::ArgTo,
-                    fn_loc,
-                );
+                relations.push((fn_arg_loc, loc_refs.arg_to(fn_loc)));
 
                 scan_expression(
                     fn_arg_loc,
@@ -353,13 +277,7 @@ fn scan_expression(
                 fn_loc = loc_refs.result_of(fn_loc);
             }
 
-            new_rel(
-                relations,
-                loc_refs,
-                parent_loc,
-                TypeRelation::SameAs,
-                fn_loc,
-            );
+            relations.push((parent_loc, fn_loc));
         }
         elm::BIN_OP_EXPR => {
             let mut cursor = node.walk();
@@ -406,35 +324,11 @@ fn scan_expression(
             let partial_res_loc = loc_refs.result_of(op_loc);
             let arg2_loc = loc_refs.arg_to(partial_res_loc);
             let res_loc = loc_refs.result_of(partial_res_loc);
-            new_rel(relations, loc_refs, arg1_loc, TypeRelation::ArgTo, op_loc);
-            new_rel(
-                relations,
-                loc_refs,
-                partial_res_loc,
-                TypeRelation::ResultOf,
-                op_loc,
-            );
-            new_rel(
-                relations,
-                loc_refs,
-                arg2_loc,
-                TypeRelation::ArgTo,
-                partial_res_loc,
-            );
-            new_rel(
-                relations,
-                loc_refs,
-                res_loc,
-                TypeRelation::ResultOf,
-                partial_res_loc,
-            );
-            new_rel(
-                relations,
-                loc_refs,
-                res_loc,
-                TypeRelation::SameAs,
-                parent_loc,
-            );
+            relations.push((arg1_loc, loc_refs.arg_to(op_loc)));
+            relations.push((partial_res_loc, loc_refs.result_of(op_loc)));
+            relations.push((arg2_loc, loc_refs.arg_to(partial_res_loc)));
+            relations.push((res_loc, loc_refs.result_of(partial_res_loc)));
+            relations.push((res_loc, parent_loc));
 
             scan_expression(
                 arg1_loc, &arg1_node, bytes, names, loc_refs, relations,
@@ -447,7 +341,7 @@ fn scan_expression(
         elm::VALUE_EXPR => {
             let name = node_name(names, bytes, node);
             let loc = Loc::Name(name);
-            new_rel(relations, loc_refs, parent_loc, TypeRelation::SameAs, loc);
+            relations.push((parent_loc, loc));
         }
         elm::PARENTHESIZED_EXPR => {
             scan_expression(
@@ -468,7 +362,7 @@ fn scan_type_annotation(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
-    relations: &mut Vec<(Loc, TypeRelation, Loc)>,
+    relations: &mut Vec<(Loc, Loc)>,
 ) {
     let name_node = node.child_by_field_name("name").unwrap();
     let name = node_name(names, bytes, &name_node);
@@ -500,28 +394,10 @@ fn scan_type_annotation(
         }
         let arg_name = node_name(names, bytes, &type_segment_node);
         let arg_loc = loc_refs.arg_to(parent_loc);
-        new_rel(
-            relations,
-            loc_refs,
-            arg_loc,
-            TypeRelation::SameAs,
-            Loc::Name(arg_name),
-        );
-        new_rel(
-            relations,
-            loc_refs,
-            arg_loc,
-            TypeRelation::ArgTo,
-            parent_loc,
-        );
+        relations.push((arg_loc, Loc::Name(arg_name)));
+        relations.push((arg_loc, loc_refs.arg_to(parent_loc)));
         let res_loc = loc_refs.result_of(parent_loc);
-        new_rel(
-            relations,
-            loc_refs,
-            res_loc,
-            TypeRelation::ResultOf,
-            parent_loc,
-        );
+        relations.push((res_loc, loc_refs.result_of(parent_loc)));
         parent_loc = res_loc;
         type_segment_node = cursor.node();
     }
@@ -530,17 +406,11 @@ fn scan_type_annotation(
         // No arguments. The single type segment is the type of the definition.
         let type_name = node_name(names, bytes, &type_segment_node);
         let type_loc = Loc::Name(type_name);
-        new_rel(relations, loc_refs, loc, TypeRelation::SameAs, type_loc);
+        relations.push((loc, type_loc));
     } else {
         // We've seen arguments. This final type segment is the return type.
         let res_name = node_name(names, bytes, &type_segment_node);
-        new_rel(
-            relations,
-            loc_refs,
-            parent_loc,
-            TypeRelation::SameAs,
-            Loc::Name(res_name),
-        );
+        relations.push((parent_loc, Loc::Name(res_name)));
     }
 }
 
@@ -578,17 +448,18 @@ mod tests {
         scan_tree(tree, &bytes, &mut names, &mut loc_refs, &mut relations);
         let mut relation_strs: Vec<String> = relations
             .into_iter()
-            .map(|(from, rel, to)| {
+            .filter(|(from, to)| from != to)
+            .map(|(from, to)| {
                 format!(
-                    "{} `{:?}` {}\n",
+                    "\"{}\" -- \"{}\"\n",
                     print_loc(&names, &loc_refs, from),
-                    rel,
                     print_loc(&names, &loc_refs, to),
                 )
             })
             .collect();
         relation_strs.sort();
-        let output: String = relation_strs.into_iter().collect();
+        let relations_string: String = relation_strs.into_iter().collect();
+        let output = format!("strict graph {{\n{relations_string}}}");
         assert_eq_answer_in(&output, &path);
     }
 
@@ -609,36 +480,25 @@ mod tests {
             differential_dataflow::input::InputSession::new();
         let mut same_as_input =
             differential_dataflow::input::InputSession::new();
-        let mut arg_to_input =
-            differential_dataflow::input::InputSession::new();
-        let mut result_of_input =
-            differential_dataflow::input::InputSession::new();
         let (mut types_trace, mut probe) = worker.dataflow(|scope| {
             let starter_types = starter_types_input.to_collection(scope);
             let same_as = same_as_input.to_collection(scope);
-            let arg_to = arg_to_input.to_collection(scope);
-            let result_of = result_of_input.to_collection(scope);
-            let types =
-                dataflow_graph(starter_types, same_as, arg_to, result_of);
+            let types = dataflow_graph(starter_types, same_as);
             let types_agg = types.arrange_by_key();
             (types_agg.trace, types_agg.stream.probe())
         });
 
         let int_loc = Loc::Name(names.from_str("Int"));
         let string_loc = Loc::Name(names.from_str("String"));
-        let append_loc = Loc::Name(names.from_str("(++)"));
+        let _append_loc = Loc::Name(names.from_str("(++)"));
         let length_loc = Loc::Name(names.from_str("List.length"));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
         starter_types_input.insert((length_loc, "String -> Int".to_string()));
         // starter_types_input
         //     .insert((append_loc, "String -> String -> String".to_string()));
-        for (from, rel, to) in relations.into_iter() {
-            match rel {
-                TypeRelation::SameAs => same_as_input.insert((from, to)),
-                TypeRelation::ArgTo => arg_to_input.insert((from, to)),
-                TypeRelation::ResultOf => result_of_input.insert((from, to)),
-            }
+        for (from, to) in relations.into_iter() {
+            same_as_input.insert((from, to));
         }
 
         dataflow::Advancable::advance(
@@ -647,8 +507,6 @@ mod tests {
                 &mut probe,
                 &mut starter_types_input,
                 &mut same_as_input,
-                &mut arg_to_input,
-                &mut result_of_input,
             ),
             &mut worker,
         );
