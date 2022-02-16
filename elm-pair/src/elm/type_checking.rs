@@ -322,11 +322,7 @@ fn scan_expression(
                 relations,
             );
 
-            fn to_next_arg_node(c: &mut TreeCursor) -> bool {
-                proceed_to_sibling(c, |c_| c_.field_name() == Some("arg"))
-            }
-
-            while to_next_arg_node(&mut cursor) {
+            while to_next_field(&mut cursor, "arg") {
                 let fn_arg_loc = loc_refs.arg_to(fn_loc);
                 relations.push((fn_arg_loc, loc_refs.arg_to(fn_loc)));
 
@@ -347,19 +343,15 @@ fn scan_expression(
         elm::BIN_OP_EXPR => {
             let mut cursor = node.walk();
 
-            fn to_next_part_node(c: &mut TreeCursor) -> bool {
-                proceed_to_sibling(c, |c_| c_.field_name() == Some("part"))
-            }
-
             // First argument
-            if !cursor.goto_first_child() {
+            if !(cursor.goto_first_child() && to_field(&mut cursor, "part")) {
                 log::error!("found empty binop expression");
                 return;
             }
             let arg1_node = cursor.node();
 
             // Operator
-            if !to_next_part_node(&mut cursor) {
+            if !to_next_field(&mut cursor, "part") {
                 log::error!("missing operator in binop expression");
                 return;
             }
@@ -373,7 +365,7 @@ fn scan_expression(
             }
 
             // Second argument
-            if !to_next_part_node(&mut cursor) {
+            if !to_next_field(&mut cursor, "part") {
                 log::error!("missing second arg in binop expression");
                 return;
             }
@@ -424,23 +416,20 @@ fn scan_expression(
         elm::IF_ELSE_EXPR => {
             let mut cursor = node.walk();
 
-            fn to_next_expr_node(c: &mut TreeCursor) -> bool {
-                proceed_to_sibling(c, |c_| c_.field_name() == Some("exprList"))
-            }
-
-            if !(cursor.goto_first_child() && to_next_expr_node(&mut cursor)) {
+            if !(cursor.goto_first_child() && to_field(&mut cursor, "exprList"))
+            {
                 log::error!("found empty if expression");
                 return;
             }
             let cond_node = cursor.node();
 
-            if !to_next_expr_node(&mut cursor) {
+            if !to_next_field(&mut cursor, "exprList") {
                 log::error!("if expression without true or false branch");
                 return;
             }
             let true_node = cursor.node();
 
-            if !to_next_expr_node(&mut cursor) {
+            if !to_next_field(&mut cursor, "exprList") {
                 log::error!("if expression without false branch");
                 return;
             }
@@ -490,10 +479,6 @@ fn scan_type_annotation(
     let type_node = node.child_by_field_name("typeExpression").unwrap();
     let mut cursor = type_node.walk();
 
-    fn to_next_arg_node(c: &mut TreeCursor) -> bool {
-        proceed_to_sibling(c, |c_| c_.field_name() == Some("part"))
-    }
-
     if !cursor.goto_first_child() {
         log::error!("found empty type expression");
         return;
@@ -504,7 +489,7 @@ fn scan_type_annotation(
 
     // Keep the cursor one argument ahead of `type_segment_node` to detect when
     // a node segment is the final one, i.e. not an argument but a return type.
-    while to_next_arg_node(&mut cursor) {
+    while to_next_field(&mut cursor, "part") {
         if type_segment_node.kind_id() != elm::TYPE_REF {
             log::error!(
                 "unexpected kind {} in type expression",
@@ -534,16 +519,26 @@ fn scan_type_annotation(
     }
 }
 
-fn proceed_to_sibling<F>(cursor: &mut TreeCursor, predicate: F) -> bool
-where
-    F: Fn(&TreeCursor) -> bool,
-{
-    while cursor.goto_next_sibling() {
-        if predicate(cursor) {
+fn to_field(cursor: &mut TreeCursor, field: &str) -> bool {
+    loop {
+        if cursor.field_name() == Some(field) {
+            return true;
+        }
+        if !cursor.goto_next_sibling() {
+            return false;
+        }
+    }
+}
+
+fn to_next_field(cursor: &mut TreeCursor, field: &str) -> bool {
+    loop {
+        if !cursor.goto_next_sibling() {
+            return false;
+        }
+        if cursor.field_name() == Some(field) {
             return true;
         }
     }
-    false
 }
 
 #[cfg(test)]
