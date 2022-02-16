@@ -5,7 +5,9 @@ use abomonation_derive::Abomonation;
 use bimap::BiMap;
 use differential_dataflow::operators::iterate::Iterate;
 use differential_dataflow::operators::join::Join;
+use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
+use std::rc::Rc;
 use tree_sitter::{Node, Tree, TreeCursor};
 
 #[derive(
@@ -51,6 +53,18 @@ impl LocRefs {
     fn get_loc(&self, ref_: LocRef) -> Loc {
         *self.0.get_by_right(&ref_).unwrap()
     }
+
+    fn print(&self, names: &Names, loc: Loc) -> String {
+        match loc {
+            Loc::Name(name) => names.0.get_by_right(&name).unwrap().to_string(),
+            Loc::ArgTo(ref_) => {
+                format!("ArgTo({})", self.print(names, self.get_loc(ref_)))
+            }
+            Loc::ResultOf(ref_) => {
+                format!("ResultOf({})", self.print(names, self.get_loc(ref_)))
+            }
+        }
+    }
 }
 
 #[derive(
@@ -84,13 +98,15 @@ pub fn node_name(names: &mut Names, bytes: &[u8], node: &Node) -> Name {
 type Type = String;
 
 pub fn dataflow_graph<'a>(
+    loc_refs: Rc<LocRefs>,
+    _names: Rc<Names>,
     starter_types: dataflow::Collection<'a, (Loc, Type)>,
     same_as: dataflow::Collection<'a, (Loc, Loc)>,
 ) -> dataflow::Collection<'a, (Name, Type)> {
     let same_as_bidirectional =
         same_as.concat(&same_as.map(|(x, y)| (y, x))).distinct();
 
-    let types = starter_types.iterate(|transative| {
+    let base_types = starter_types.iterate(|transative| {
         let same_as_local = same_as_bidirectional.enter(&transative.scope());
 
         let new_from_same_as = transative
@@ -101,11 +117,89 @@ pub fn dataflow_graph<'a>(
         transative.concat(&new_from_same_as).distinct()
     });
 
-    types.flat_map(|(loc, type_)| match loc {
+    let function_types = base_types.iterate(|transative| {
+        let loc_refs2 = loc_refs.clone();
+        let arg_types = transative.flat_map(move |(loc, type_)| {
+            if let Loc::ArgTo(loc_ref) = loc {
+                Some((loc_refs2.get_loc(loc_ref), type_))
+            } else {
+                None
+            }
+        });
+
+        let loc_refs3 = loc_refs.clone();
+        let result_types = transative.flat_map(move |(loc, type_)| {
+            if let Loc::ResultOf(loc_ref) = loc {
+                Some((loc_refs3.get_loc(loc_ref), type_))
+            } else {
+                None
+            }
+        });
+        let new_function_types = arg_types
+            .join_map(&result_types, |loc, arg, result| {
+                (*loc, format!("{arg} -> {result}"))
+            });
+
+        transative.concat(&new_function_types).distinct()
+    });
+
+    let all_types = base_types.concat(&function_types);
+
+    // debug_dataflow_typechecking(loc_refs, names, &all_types, &same_as).inspect(
+    //     |(x, _, _)| {
+    //         println!("{x}");
+    //     },
+    // );
+
+    all_types.flat_map(|(loc, type_)| match loc {
         Loc::Name(name) => Some((name, type_)),
         Loc::ArgTo(_) => None,
         Loc::ResultOf(_) => None,
     })
+}
+
+// A dataflow computation that returns graphviz dot graphs of type-checking
+// progress.
+#[allow(dead_code)]
+pub fn debug_dataflow_typechecking<'a>(
+    loc_refs: Rc<LocRefs>,
+    names: Rc<Names>,
+    types: &dataflow::Collection<'a, (Loc, Type)>,
+    same_as: &dataflow::Collection<'a, (Loc, Loc)>,
+) -> dataflow::Collection<'a, String> {
+    let names2 = names.clone();
+    let loc_refs2 = loc_refs.clone();
+
+    let relation_lines = same_as.flat_map(move |(from, to)| {
+        if from == to {
+            None
+        } else {
+            Some((
+                (),
+                format!(
+                    "\"{}\" -- \"{}\"\n",
+                    loc_refs.print(&names, from),
+                    loc_refs.print(&names, to)
+                ),
+            ))
+        }
+    });
+
+    let typed_lines = types.map(move |(loc, _type)| {
+        (
+            (),
+            format!("\"{}\" [color = red]\n", loc_refs2.print(&names2, loc),),
+        )
+    });
+
+    relation_lines
+        .concat(&typed_lines)
+        .reduce(|_, input, output| {
+            let relations_string: String =
+                input.iter().map(|(line, _)| (*line).to_string()).collect();
+            output.push((format!("strict graph {{\n{relations_string}}}"), 1))
+        })
+        .map(|((), graph)| graph)
 }
 
 pub fn scan_tree(
@@ -452,8 +546,8 @@ mod tests {
             .map(|(from, to)| {
                 format!(
                     "\"{}\" -- \"{}\"\n",
-                    print_loc(&names, &loc_refs, from),
-                    print_loc(&names, &loc_refs, to),
+                    loc_refs.print(&names, from),
+                    loc_refs.print(&names, to),
                 )
             })
             .collect();
@@ -473,33 +567,41 @@ mod tests {
         let mut relations = Vec::new();
         scan_tree(tree, &bytes, &mut names, &mut loc_refs, &mut relations);
 
-        let alloc = timely::communication::allocator::thread::Thread::new();
-        let mut worker =
-            timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
         let mut starter_types_input =
             differential_dataflow::input::InputSession::new();
-        let mut same_as_input =
-            differential_dataflow::input::InputSession::new();
-        let (mut types_trace, mut probe) = worker.dataflow(|scope| {
-            let starter_types = starter_types_input.to_collection(scope);
-            let same_as = same_as_input.to_collection(scope);
-            let types = dataflow_graph(starter_types, same_as);
-            let types_agg = types.arrange_by_key();
-            (types_agg.trace, types_agg.stream.probe())
-        });
-
         let int_loc = Loc::Name(names.from_str("Int"));
         let string_loc = Loc::Name(names.from_str("String"));
-        let _append_loc = Loc::Name(names.from_str("(++)"));
-        let length_loc = Loc::Name(names.from_str("List.length"));
+        let length_loc = Loc::Name(names.from_str("String.length"));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
-        starter_types_input.insert((length_loc, "String -> Int".to_string()));
-        // starter_types_input
-        //     .insert((append_loc, "String -> String -> String".to_string()));
+        starter_types_input
+            .insert((loc_refs.arg_to(length_loc), "String".to_string()));
+        starter_types_input
+            .insert((loc_refs.result_of(length_loc), "Int".to_string()));
+
+        let mut same_as_input =
+            differential_dataflow::input::InputSession::new();
         for (from, to) in relations.into_iter() {
             same_as_input.insert((from, to));
         }
+
+        let alloc = timely::communication::allocator::thread::Thread::new();
+        let mut worker =
+            timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
+
+        let names_rc = Rc::new(names);
+        let (mut types_trace, mut probe) = worker.dataflow(|scope| {
+            let starter_types = starter_types_input.to_collection(scope);
+            let same_as = same_as_input.to_collection(scope);
+            let types = dataflow_graph(
+                Rc::new(loc_refs),
+                names_rc.clone(),
+                starter_types,
+                same_as,
+            );
+            let types_agg = types.arrange_by_key();
+            (types_agg.trace, types_agg.stream.probe())
+        });
 
         dataflow::Advancable::advance(
             &mut (
@@ -529,27 +631,9 @@ mod tests {
         types.sort();
         let mut output = String::new();
         for (name, type_) in types.into_iter() {
-            let name_str = names.0.get_by_right(&name).unwrap();
+            let name_str = names_rc.0.get_by_right(&name).unwrap();
             output.push_str(&format!("{name_str} : {type_}\n"));
         }
         assert_eq_answer_in(&output, &path);
-    }
-
-    fn print_loc(names: &Names, loc_refs: &LocRefs, loc: Loc) -> String {
-        match loc {
-            Loc::Name(name) => names.0.get_by_right(&name).unwrap().to_string(),
-            Loc::ArgTo(ref_) => {
-                format!(
-                    "ArgTo({})",
-                    print_loc(names, loc_refs, loc_refs.get_loc(ref_))
-                )
-            }
-            Loc::ResultOf(ref_) => {
-                format!(
-                    "ResultOf({})",
-                    print_loc(names, loc_refs, loc_refs.get_loc(ref_))
-                )
-            }
-        }
     }
 }
