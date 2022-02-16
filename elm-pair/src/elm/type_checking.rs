@@ -17,6 +17,9 @@ pub enum Loc {
     Name(Name),
     ArgTo(LocRef),
     ResultOf(LocRef),
+    IfCond(LocRef),
+    IfTrue(LocRef),
+    IfFalse(LocRef),
 }
 
 #[derive(
@@ -41,6 +44,21 @@ impl LocRefs {
         Loc::ResultOf(ref_)
     }
 
+    fn if_cond(&mut self, src_loc: Loc) -> Loc {
+        let ref_ = self.get_ref(src_loc);
+        Loc::IfCond(ref_)
+    }
+
+    fn if_true(&mut self, src_loc: Loc) -> Loc {
+        let ref_ = self.get_ref(src_loc);
+        Loc::IfTrue(ref_)
+    }
+
+    fn if_false(&mut self, src_loc: Loc) -> Loc {
+        let ref_ = self.get_ref(src_loc);
+        Loc::IfFalse(ref_)
+    }
+
     fn get_ref(&mut self, src_loc: Loc) -> LocRef {
         if let Some(ref_) = self.0.get_by_left(&src_loc) {
             return *ref_;
@@ -63,6 +81,15 @@ impl LocRefs {
             }
             Loc::ResultOf(ref_) => {
                 format!("ResultOf({})", self.print(names, self.get_loc(ref_)))
+            }
+            Loc::IfCond(ref_) => {
+                format!("IfCond({})", self.print(names, self.get_loc(ref_)))
+            }
+            Loc::IfTrue(ref_) => {
+                format!("IfTrue({})", self.print(names, self.get_loc(ref_)))
+            }
+            Loc::IfFalse(ref_) => {
+                format!("IfFalse({})", self.print(names, self.get_loc(ref_)))
             }
         }
     }
@@ -325,7 +352,7 @@ fn scan_expression(
             }
 
             // First argument
-            if !(cursor.goto_first_child()) {
+            if !cursor.goto_first_child() {
                 log::error!("found empty binop expression");
                 return;
             }
@@ -381,6 +408,9 @@ fn scan_expression(
             let loc = Loc::Name(name);
             relations.push((parent_loc, loc));
         }
+        elm::NUMBER_CONSTANT_EXPR => {
+            // TODO: Use knowledge that this literal is a `num`.
+        }
         elm::PARENTHESIZED_EXPR => {
             scan_expression(
                 parent_loc,
@@ -391,7 +421,59 @@ fn scan_expression(
                 relations,
             );
         }
-        _ => todo!(),
+        elm::IF_ELSE_EXPR => {
+            let mut cursor = node.walk();
+
+            fn to_next_expr_node(c: &mut TreeCursor) -> bool {
+                proceed_to_sibling(c, |c_| c_.field_name() == Some("exprList"))
+            }
+
+            if !(cursor.goto_first_child() && to_next_expr_node(&mut cursor)) {
+                log::error!("found empty if expression");
+                return;
+            }
+            let cond_node = cursor.node();
+
+            if !to_next_expr_node(&mut cursor) {
+                log::error!("if expression without true or false branch");
+                return;
+            }
+            let true_node = cursor.node();
+
+            if !to_next_expr_node(&mut cursor) {
+                log::error!("if expression without false branch");
+                return;
+            }
+            let false_node = cursor.node();
+
+            let cond_loc = loc_refs.if_cond(parent_loc);
+            let true_loc = loc_refs.if_true(parent_loc);
+            let false_loc = loc_refs.if_false(parent_loc);
+            let bool_loc = Loc::Name(names.from_str("Bool"));
+            relations.push((cond_loc, bool_loc));
+            relations.push((true_loc, parent_loc));
+            relations.push((false_loc, parent_loc));
+
+            scan_expression(
+                cond_loc, &cond_node, bytes, names, loc_refs, relations,
+            );
+            scan_expression(
+                true_loc, &true_node, bytes, names, loc_refs, relations,
+            );
+            scan_expression(
+                false_loc,
+                &false_node,
+                bytes,
+                names,
+                loc_refs,
+                relations,
+            );
+        }
+        kind_id => {
+            let language = tree_sitter_elm::language();
+            let kind = language.node_kind_for_id(kind_id).unwrap();
+            todo!("unimplemented expression kind {kind}")
+        }
     }
 }
 
@@ -487,9 +569,11 @@ mod tests {
 
         let mut starter_types_input =
             differential_dataflow::input::InputSession::new();
+        let bool_loc = Loc::Name(names.from_str("Bool"));
         let int_loc = Loc::Name(names.from_str("Int"));
         let string_loc = Loc::Name(names.from_str("String"));
         let length_loc = Loc::Name(names.from_str("String.length"));
+        starter_types_input.insert((bool_loc, "Bool".to_string()));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
         starter_types_input
