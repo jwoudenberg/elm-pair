@@ -54,6 +54,7 @@ impl LocRefs {
         *self.0.get_by_right(&ref_).unwrap()
     }
 
+    #[cfg(test)]
     fn print(&self, names: &Names, loc: Loc) -> String {
         match loc {
             Loc::Name(name) => names.0.get_by_right(&name).unwrap().to_string(),
@@ -99,10 +100,9 @@ type Type = String;
 
 pub fn dataflow_graph<'a>(
     loc_refs: Rc<LocRefs>,
-    _names: Rc<Names>,
-    starter_types: dataflow::Collection<'a, (Loc, Type)>,
-    same_as: dataflow::Collection<'a, (Loc, Loc)>,
-) -> dataflow::Collection<'a, (Name, Type)> {
+    starter_types: &dataflow::Collection<'a, (Loc, Type)>,
+    same_as: &dataflow::Collection<'a, (Loc, Loc)>,
+) -> dataflow::Collection<'a, (Loc, Type)> {
     let same_as_bidirectional =
         same_as.concat(&same_as.map(|(x, y)| (y, x))).distinct();
 
@@ -143,63 +143,7 @@ pub fn dataflow_graph<'a>(
         transative.concat(&new_function_types).distinct()
     });
 
-    let all_types = base_types.concat(&function_types);
-
-    // debug_dataflow_typechecking(loc_refs, names, &all_types, &same_as).inspect(
-    //     |(x, _, _)| {
-    //         println!("{x}");
-    //     },
-    // );
-
-    all_types.flat_map(|(loc, type_)| match loc {
-        Loc::Name(name) => Some((name, type_)),
-        Loc::ArgTo(_) => None,
-        Loc::ResultOf(_) => None,
-    })
-}
-
-// A dataflow computation that returns graphviz dot graphs of type-checking
-// progress.
-#[allow(dead_code)]
-pub fn debug_dataflow_typechecking<'a>(
-    loc_refs: Rc<LocRefs>,
-    names: Rc<Names>,
-    types: &dataflow::Collection<'a, (Loc, Type)>,
-    same_as: &dataflow::Collection<'a, (Loc, Loc)>,
-) -> dataflow::Collection<'a, String> {
-    let names2 = names.clone();
-    let loc_refs2 = loc_refs.clone();
-
-    let relation_lines = same_as.flat_map(move |(from, to)| {
-        if from == to {
-            None
-        } else {
-            Some((
-                (),
-                format!(
-                    "\"{}\" -- \"{}\"\n",
-                    loc_refs.print(&names, from),
-                    loc_refs.print(&names, to)
-                ),
-            ))
-        }
-    });
-
-    let typed_lines = types.map(move |(loc, _type)| {
-        (
-            (),
-            format!("\"{}\" [color = red]\n", loc_refs2.print(&names2, loc),),
-        )
-    });
-
-    relation_lines
-        .concat(&typed_lines)
-        .reduce(|_, input, output| {
-            let relations_string: String =
-                input.iter().map(|(line, _)| (*line).to_string()).collect();
-            output.push((format!("strict graph {{\n{relations_string}}}"), 1))
-        })
-        .map(|((), graph)| graph)
+    base_types.concat(&function_types)
 }
 
 pub fn scan_tree(
@@ -525,41 +469,15 @@ mod tests {
     use super::*;
     use crate::lib::included_answer_test::assert_eq_answer_in;
     use crate::lib::source_code::parse_bytes;
-    use differential_dataflow::operators::arrange::ArrangeByKey;
+    use differential_dataflow::operators::arrange::ArrangeBySelf;
     use differential_dataflow::trace::cursor::CursorDebug;
     use differential_dataflow::trace::TraceReader;
     use std::path::PathBuf;
     use timely::dataflow::operators::Probe;
 
     #[test]
-    fn first_test() {
-        let path = PathBuf::from("./tests/type-checking/Test.elm");
-        let bytes = std::fs::read(&path).unwrap();
-        let tree = parse_bytes(bytes.clone()).unwrap();
-        let mut names = Names::new();
-        let mut loc_refs = LocRefs::new();
-        let mut relations = Vec::new();
-        scan_tree(tree, &bytes, &mut names, &mut loc_refs, &mut relations);
-        let mut relation_strs: Vec<String> = relations
-            .into_iter()
-            .filter(|(from, to)| from != to)
-            .map(|(from, to)| {
-                format!(
-                    "\"{}\" -- \"{}\"\n",
-                    loc_refs.print(&names, from),
-                    loc_refs.print(&names, to),
-                )
-            })
-            .collect();
-        relation_strs.sort();
-        let relations_string: String = relation_strs.into_iter().collect();
-        let output = format!("strict graph {{\n{relations_string}}}");
-        assert_eq_answer_in(&output, &path);
-    }
-
-    #[test]
     fn dataflow_test() {
-        let path = PathBuf::from("./tests/type-checking/Test2.elm");
+        let path = PathBuf::from("./tests/type-checking/Test.elm");
         let bytes = std::fs::read(&path).unwrap();
         let tree = parse_bytes(bytes.clone()).unwrap();
         let mut names = Names::new();
@@ -589,23 +507,26 @@ mod tests {
         let mut worker =
             timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
+        let loc_refs_rc = Rc::new(loc_refs);
         let names_rc = Rc::new(names);
-        let (mut types_trace, mut probe) = worker.dataflow(|scope| {
+        let (mut graph_trace, mut probe) = worker.dataflow(|scope| {
             let starter_types = starter_types_input.to_collection(scope);
             let same_as = same_as_input.to_collection(scope);
-            let types = dataflow_graph(
-                Rc::new(loc_refs),
+            let types =
+                dataflow_graph(loc_refs_rc.clone(), &starter_types, &same_as);
+            let types_graph = debug_dataflow_typechecking(
+                loc_refs_rc,
                 names_rc.clone(),
-                starter_types,
-                same_as,
+                &types,
+                &same_as,
             );
-            let types_agg = types.arrange_by_key();
-            (types_agg.trace, types_agg.stream.probe())
+            let graph_agg = types_graph.arrange_by_self();
+            (graph_agg.trace, graph_agg.stream.probe())
         });
 
         dataflow::Advancable::advance(
             &mut (
-                &mut types_trace,
+                &mut graph_trace,
                 &mut probe,
                 &mut starter_types_input,
                 &mut same_as_input,
@@ -613,12 +534,12 @@ mod tests {
             &mut worker,
         );
 
-        let (mut cursor, storage) = types_trace.cursor();
+        let (mut cursor, storage) = graph_trace.cursor();
 
-        let mut types: Vec<(Name, Type)> = cursor
+        let graph: String = cursor
             .to_vec(&storage)
             .into_iter()
-            .filter_map(|(i, counts)| {
+            .find_map(|(i, counts)| {
                 let total: isize =
                     counts.into_iter().map(|(_, count)| count).sum();
                 if total > 0 {
@@ -627,13 +548,58 @@ mod tests {
                     None
                 }
             })
-            .collect();
-        types.sort();
-        let mut output = String::new();
-        for (name, type_) in types.into_iter() {
-            let name_str = names_rc.0.get_by_right(&name).unwrap();
-            output.push_str(&format!("{name_str} : {type_}\n"));
-        }
-        assert_eq_answer_in(&output, &path);
+            .unwrap()
+            .0;
+        assert_eq_answer_in(&graph, &path);
+    }
+
+    // A dataflow computation that returns graphviz dot graphs of type-checking
+    // progress.
+    #[allow(dead_code)]
+    pub fn debug_dataflow_typechecking<'a>(
+        loc_refs: Rc<LocRefs>,
+        names: Rc<Names>,
+        types: &dataflow::Collection<'a, (Loc, Type)>,
+        same_as: &dataflow::Collection<'a, (Loc, Loc)>,
+    ) -> dataflow::Collection<'a, String> {
+        let names2 = names.clone();
+        let loc_refs2 = loc_refs.clone();
+
+        let relation_lines = same_as.flat_map(move |(from, to)| {
+            if from == to {
+                None
+            } else {
+                Some((
+                    (),
+                    format!(
+                        "\"{}\" -> \"{}\" [dir=none]\n",
+                        loc_refs.print(&names, from),
+                        loc_refs.print(&names, to)
+                    ),
+                ))
+            }
+        });
+
+        let typed_lines = types.map(move |(loc, type_)| {
+            (
+                (),
+                format!(
+                    "\"{}\" -> \"{type_}\" [color = red]\n",
+                    loc_refs2.print(&names2, loc),
+                ),
+            )
+        });
+
+        relation_lines
+            .concat(&typed_lines)
+            .reduce(|_, input, output| {
+                let mut relation_strings: Vec<String> =
+                    input.iter().map(|(line, _)| (*line).to_string()).collect();
+                relation_strings.sort();
+                let relations_string: String =
+                    relation_strings.into_iter().collect();
+                output.push((format!("digraph {{\n{relations_string}}}"), 1))
+            })
+            .map(|((), graph)| graph)
     }
 }
