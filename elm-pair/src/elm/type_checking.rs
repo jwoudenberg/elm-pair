@@ -549,12 +549,28 @@ mod tests {
     use differential_dataflow::operators::arrange::ArrangeBySelf;
     use differential_dataflow::trace::cursor::CursorDebug;
     use differential_dataflow::trace::TraceReader;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use timely::dataflow::operators::Probe;
 
-    #[test]
-    fn dataflow_test() {
-        let path = PathBuf::from("./tests/type-checking/Test.elm");
+    macro_rules! type_test {
+        ($name:ident) => {
+            #[test]
+            fn $name() {
+                let mut path = std::path::PathBuf::new();
+                path.push("./tests/type-checking");
+                let module_name = stringify!($name);
+                path.push(module_name.to_owned() + ".elm");
+                println!("Run type-checking test {:?}", &path);
+                typing_test(&path);
+            }
+        };
+    }
+
+    type_test!(nested_function_calls);
+    type_test!(if_statement);
+
+    fn typing_test(path: &Path) {
+        let path = PathBuf::from(path);
         let bytes = std::fs::read(&path).unwrap();
         let tree = parse_bytes(bytes.clone()).unwrap();
         let mut names = Names::new();
