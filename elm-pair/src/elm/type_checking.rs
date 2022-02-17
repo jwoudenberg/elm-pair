@@ -302,6 +302,7 @@ pub fn scan_node(
             bytes,
             names,
             loc_refs,
+            scopes,
             relations,
         ),
         elm::PORT_ANNOTATION => todo!(),
@@ -332,7 +333,7 @@ fn scan_value_declaration(
     let name = node_name(names, bytes, &cursor.node());
     let loc = Loc::Name {
         name,
-        scope: Scope::Module,
+        scope: scopes[0],
     };
     let function_scope = Scope::Local(loc_refs.get_ref(loc));
     let mut parent_loc = loc;
@@ -580,6 +581,56 @@ fn scan_expression(
                 relations,
             );
         }
+        elm::LET_IN_EXPR => {
+            let let_scope = Scope::Local(loc_refs.get_ref(parent_loc));
+            let child_scopes: Vec<Scope> = std::iter::once(let_scope)
+                .chain(scopes.iter().copied())
+                .collect();
+            let mut cursor = node.walk();
+            if !cursor.goto_first_child() {
+                log::error!("found empty let expression");
+                return;
+            }
+
+            // Scan let bindings.
+            while cursor.field_name() != Some("body") {
+                if cursor.field_name() == Some("valueDeclaration") {
+                    scan_value_declaration(
+                        &cursor.node(),
+                        bytes,
+                        names,
+                        loc_refs,
+                        &child_scopes,
+                        relations,
+                    );
+                } else if cursor.node().kind_id() == elm::TYPE_ANNOTATION {
+                    scan_type_annotation(
+                        &cursor.node(),
+                        bytes,
+                        names,
+                        loc_refs,
+                        &child_scopes,
+                        relations,
+                    );
+                }
+                cursor.goto_next_sibling();
+            }
+
+            // Scan 'in' expression.
+            if !to_field(&mut cursor, "body") {
+                log::error!("let statement misses in expression");
+                return;
+            }
+            scan_expression(
+                parent_loc,
+                &cursor.node(),
+                bytes,
+                names,
+                loc_refs,
+                &child_scopes,
+                relations,
+            );
+        }
         kind_id => {
             let language = tree_sitter_elm::language();
             let kind = language.node_kind_for_id(kind_id).unwrap();
@@ -593,13 +644,14 @@ fn scan_type_annotation(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
+    scopes: &[Scope],
     relations: &mut Vec<(Loc, Loc)>,
 ) {
     let name_node = node.child_by_field_name("name").unwrap();
     let name = node_name(names, bytes, &name_node);
     let loc = Loc::Name {
         name,
-        scope: Scope::Module,
+        scope: scopes[0],
     };
     let type_node = node.child_by_field_name("typeExpression").unwrap();
     let mut cursor = type_node.walk();
@@ -628,7 +680,7 @@ fn scan_type_annotation(
             arg_loc,
             Loc::Name {
                 name: arg_name,
-                scope: Scope::Module,
+                scope: scopes[0],
             },
         ));
         relations.push((arg_loc, loc_refs.arg_to(parent_loc)));
@@ -643,7 +695,7 @@ fn scan_type_annotation(
         let type_name = node_name(names, bytes, &type_segment_node);
         let type_loc = Loc::Name {
             name: type_name,
-            scope: Scope::Module,
+            scope: scopes[0],
         };
         relations.push((loc, type_loc));
     } else {
@@ -653,7 +705,7 @@ fn scan_type_annotation(
             parent_loc,
             Loc::Name {
                 name: res_name,
-                scope: Scope::Module,
+                scope: scopes[0],
             },
         ));
     }
@@ -709,6 +761,7 @@ mod tests {
     type_test!(nested_function_calls);
     type_test!(if_statement);
     type_test!(same_name_in_different_scopes);
+    type_test!(let_in_statement);
 
     fn typing_test(path: &Path) {
         let path = PathBuf::from(path);
