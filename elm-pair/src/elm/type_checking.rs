@@ -21,6 +21,8 @@ pub enum Loc {
     IfCond(LocRef),
     IfTrue(LocRef),
     IfFalse(LocRef),
+    CaseExpr(LocRef),
+    CaseBranch(LocRef, usize),
 }
 
 #[derive(
@@ -112,6 +114,15 @@ impl LocRefs {
             Loc::IfFalse(ref_) => {
                 format!("IfFalse({})", self.print(names, self.get_loc(ref_)))
             }
+            Loc::CaseExpr(ref_) => {
+                format!("CaseExpr({})", self.print(names, self.get_loc(ref_)))
+            }
+            Loc::CaseBranch(ref_, i) => {
+                format!(
+                    "CaseBranch({}).{i}",
+                    self.print(names, self.get_loc(ref_))
+                )
+            }
         }
     }
 }
@@ -161,6 +172,8 @@ pub fn equivalences<'a>(
                 Loc::IfCond(ref_) => Some(loc_refs.get_loc(*ref_)),
                 Loc::IfTrue(ref_) => Some(loc_refs.get_loc(*ref_)),
                 Loc::IfFalse(ref_) => Some(loc_refs.get_loc(*ref_)),
+                Loc::CaseExpr(ref_) => Some(loc_refs.get_loc(*ref_)),
+                Loc::CaseBranch(ref_, _) => Some(loc_refs.get_loc(*ref_)),
             })
             .concat(locs)
             .distinct()
@@ -631,10 +644,113 @@ fn scan_expression(
                 relations,
             );
         }
+        elm::CASE_OF_EXPR => {
+            let mut cursor = node.walk();
+            if !cursor.goto_first_child() {
+                log::error!("found empty case statement node");
+                return;
+            }
+
+            if !to_field(&mut cursor, "expr") {
+                log::error!("case statement without case expression");
+                return;
+            }
+            let case_expr_loc = Loc::CaseExpr(loc_refs.get_ref(parent_loc));
+            scan_expression(
+                case_expr_loc,
+                &cursor.node(),
+                bytes,
+                names,
+                loc_refs,
+                scopes,
+                relations,
+            );
+
+            let mut branch_no = 0;
+            while to_next_field(&mut cursor, "branch") {
+                let parent_loc_ref = loc_refs.get_ref(parent_loc);
+                let branch_loc = Loc::CaseBranch(parent_loc_ref, branch_no);
+                let branch_scope = Scope::Local(loc_refs.get_ref(branch_loc));
+                let child_scopes: Vec<Scope> = std::iter::once(branch_scope)
+                    .chain(scopes.iter().copied())
+                    .collect();
+                let branch_node = cursor.node();
+                let pattern_node =
+                    branch_node.child_by_field_name("pattern").unwrap();
+                scan_pattern(
+                    case_expr_loc,
+                    &pattern_node,
+                    bytes,
+                    names,
+                    loc_refs,
+                    &child_scopes,
+                    relations,
+                );
+                let expr_node =
+                    branch_node.child_by_field_name("expr").unwrap();
+                scan_expression(
+                    branch_loc,
+                    &expr_node,
+                    bytes,
+                    names,
+                    loc_refs,
+                    &child_scopes,
+                    relations,
+                );
+                relations.push((branch_loc, parent_loc));
+                branch_no += 1;
+            }
+        }
         kind_id => {
             let language = tree_sitter_elm::language();
             let kind = language.node_kind_for_id(kind_id).unwrap();
             todo!("unimplemented expression kind {kind}")
+        }
+    }
+}
+
+fn scan_pattern(
+    parent_loc: Loc,
+    node: &Node,
+    bytes: &[u8],
+    names: &mut Names,
+    loc_refs: &mut LocRefs,
+    scopes: &[Scope],
+    relations: &mut Vec<(Loc, Loc)>,
+) {
+    match node.kind_id() {
+        elm::PATTERN => scan_pattern(
+            parent_loc,
+            &node.child_by_field_name("child").unwrap(),
+            bytes,
+            names,
+            loc_refs,
+            scopes,
+            relations,
+        ),
+        elm::NUMBER_CONSTANT_EXPR => {
+            // TODO: Use knowledge that this literal is a `num`.
+        }
+        elm::STRING_CONSTANT_EXPR => {
+            let string_name = names.from_str("String");
+            let string_loc = Loc::Name {
+                name: string_name,
+                scope: Scope::Module,
+            };
+            relations.push((parent_loc, string_loc));
+        }
+        elm::LOWER_PATTERN => {
+            let name = node_name(names, bytes, node);
+            let loc = Loc::Name {
+                name,
+                scope: scopes[0],
+            };
+            relations.push((loc, parent_loc));
+        }
+        kind_id => {
+            let language = tree_sitter_elm::language();
+            let kind = language.node_kind_for_id(kind_id).unwrap();
+            todo!("unimplemented pattern kind {kind}")
         }
     }
 }
@@ -762,6 +878,7 @@ mod tests {
     type_test!(if_statement);
     type_test!(same_name_in_different_scopes);
     type_test!(let_in_statement);
+    type_test!(case_statement);
 
     fn typing_test(path: &Path) {
         let path = PathBuf::from(path);

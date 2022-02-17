@@ -62,6 +62,7 @@ node_constants!(
     AS_CLAUSE = 101;
     BIN_OP_EXPR = 121;
     BLOCK_COMMENT = 86;
+    CASE_OF_EXPR = 152;
     COMMA (",") = 6;
     CONSTRUCTOR_IDENTIFIER = 8;
     CONSTRUCTOR_QID = 96;
@@ -87,6 +88,7 @@ node_constants!(
     NUMBER_CONSTANT_EXPR = 136;
     OPERATOR = 122;
     PARENTHESIZED_EXPR = 133;
+    PATTERN = 157;
     PORT_ANNOTATION = 119;
     RECORD_PATTERN = 163;
     RECORD_TYPE = 115;
