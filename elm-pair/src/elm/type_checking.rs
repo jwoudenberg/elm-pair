@@ -14,12 +14,21 @@ use tree_sitter::{Node, Tree, TreeCursor};
     Abomonation, Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
 )]
 pub enum Loc {
-    Name(Name),
+    Name { name: Name, scope: Scope },
+    Hypothetical { name: Name, scope: Scope },
     ArgTo(LocRef),
     ResultOf(LocRef),
     IfCond(LocRef),
     IfTrue(LocRef),
     IfFalse(LocRef),
+}
+
+#[derive(
+    Abomonation, Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
+pub enum Scope {
+    Module,        // Top-level names. TODO: add the module name here.
+    Local(LocRef), // Local names, defined in arguments, let-bindings, etc.
 }
 
 #[derive(
@@ -75,7 +84,19 @@ impl LocRefs {
     #[cfg(test)]
     fn print(&self, names: &Names, loc: Loc) -> String {
         match loc {
-            Loc::Name(name) => names.0.get_by_right(&name).unwrap().to_string(),
+            Loc::Hypothetical { name, scope } => {
+                format!("{}?", self.print(names, Loc::Name { name, scope }),)
+            }
+            Loc::Name { name, scope } => match scope {
+                Scope::Module => {
+                    names.0.get_by_right(&name).unwrap().to_string()
+                }
+                Scope::Local(ref_) => format!(
+                    "{}.{}",
+                    self.print(names, self.get_loc(ref_)),
+                    names.0.get_by_right(&name).unwrap(),
+                ),
+            },
             Loc::ArgTo(ref_) => {
                 format!("ArgTo({})", self.print(names, self.get_loc(ref_)))
             }
@@ -125,16 +146,64 @@ pub fn node_name(names: &mut Names, bytes: &[u8], node: &Node) -> Name {
 
 type Type = String;
 
-pub fn dataflow_graph<'a>(
+pub fn equivalences<'a>(
+    loc_refs: Rc<LocRefs>,
+    relations: &dataflow::Collection<'a, (Loc, Loc)>,
+) -> dataflow::Collection<'a, (Loc, Loc)> {
+    let names = relations
+        .flat_map(|(x, y)| [x, y])
+        .iterate(|locs| {
+            locs.flat_map(move |loc| match &loc {
+                Loc::Name { .. } => None,
+                Loc::Hypothetical { .. } => None,
+                Loc::ArgTo(ref_) => Some(loc_refs.get_loc(*ref_)),
+                Loc::ResultOf(ref_) => Some(loc_refs.get_loc(*ref_)),
+                Loc::IfCond(ref_) => Some(loc_refs.get_loc(*ref_)),
+                Loc::IfTrue(ref_) => Some(loc_refs.get_loc(*ref_)),
+                Loc::IfFalse(ref_) => Some(loc_refs.get_loc(*ref_)),
+            })
+            .concat(locs)
+            .distinct()
+        })
+        .filter(|x| matches!(x, Loc::Name { .. }));
+
+    let same_as_from_hypotheticals = relations
+        .flat_map(|(x, y)| {
+            if let Loc::Hypothetical { name, scope } = x {
+                Some((Loc::Name { name, scope }, y))
+            } else if let Loc::Hypothetical { name, scope } = y {
+                Some((Loc::Name { name, scope }, x))
+            } else {
+                None
+            }
+        })
+        .semijoin(&names);
+
+    let same_as_without_hypotheticals = relations.flat_map(|(x, y)| {
+        if matches!(x, Loc::Hypothetical { .. })
+            || matches!(y, Loc::Hypothetical { .. })
+        {
+            None
+        } else {
+            Some((x, y))
+        }
+    });
+
+    let same_as_all =
+        same_as_from_hypotheticals.concat(&same_as_without_hypotheticals);
+
+    same_as_all
+        .concat(&same_as_all.map(|(x, y)| (y, x)))
+        .distinct()
+}
+
+pub fn propagate_types<'a>(
     loc_refs: Rc<LocRefs>,
     starter_types: &dataflow::Collection<'a, (Loc, Type)>,
     same_as: &dataflow::Collection<'a, (Loc, Loc)>,
 ) -> dataflow::Collection<'a, (Loc, Type)> {
-    let same_as_bidirectional =
-        same_as.concat(&same_as.map(|(x, y)| (y, x))).distinct();
-
     let base_types = starter_types.iterate(|transative| {
-        let same_as_local = same_as_bidirectional.enter(&transative.scope());
+        let same_as_local = same_as.enter(&transative.scope());
 
         let new_from_same_as = transative
             .join_map(&same_as_local, |_, type_, same_as| {
@@ -181,7 +250,8 @@ pub fn scan_tree(
     relations: &mut Vec<(Loc, Loc)>,
 ) {
     let mut cursor = tree.walk();
-    scan_root(&mut cursor, bytes, names, loc_refs, relations)
+    let scopes = vec![Scope::Module];
+    scan_root(&mut cursor, bytes, names, loc_refs, &scopes, relations)
 }
 
 pub fn scan_root(
@@ -189,6 +259,7 @@ pub fn scan_root(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
+    scopes: &[Scope],
     relations: &mut Vec<(Loc, Loc)>,
 ) {
     // TODO: Remove asserts in favor of logging errors.
@@ -196,7 +267,7 @@ pub fn scan_root(
     assert_eq!(node.kind_id(), elm::FILE);
     if cursor.goto_first_child() {
         loop {
-            scan_node(cursor, bytes, names, loc_refs, relations);
+            scan_node(cursor, bytes, names, loc_refs, scopes, relations);
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -209,6 +280,7 @@ pub fn scan_node(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
+    scopes: &[Scope],
     relations: &mut Vec<(Loc, Loc)>,
 ) {
     let node = cursor.node();
@@ -220,6 +292,7 @@ pub fn scan_node(
             bytes,
             names,
             loc_refs,
+            scopes,
             relations,
         ),
         elm::TYPE_ALIAS_DECLARATION => todo!(),
@@ -244,6 +317,7 @@ fn scan_value_declaration(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
+    scopes: &[Scope],
     relations: &mut Vec<(Loc, Loc)>,
 ) {
     let func_node =
@@ -256,7 +330,11 @@ fn scan_value_declaration(
     }
 
     let name = node_name(names, bytes, &cursor.node());
-    let loc = Loc::Name(name);
+    let loc = Loc::Name {
+        name,
+        scope: Scope::Module,
+    };
+    let function_scope = Scope::Local(loc_refs.get_ref(loc));
     let mut parent_loc = loc;
 
     // Scan the function argument list.
@@ -267,10 +345,17 @@ fn scan_value_declaration(
             return;
         }
         let arg_name = node_name(names, bytes, &arg_node);
-        let arg_loc = Loc::Name(arg_name);
+        let arg_loc = Loc::Name {
+            name: arg_name,
+            scope: function_scope,
+        };
         relations.push((arg_loc, loc_refs.arg_to(parent_loc)));
         parent_loc = loc_refs.result_of(parent_loc);
     }
+
+    let child_scopes: Vec<Scope> = std::iter::once(function_scope)
+        .chain(scopes.iter().copied())
+        .collect();
 
     scan_expression(
         parent_loc,
@@ -278,6 +363,7 @@ fn scan_value_declaration(
         bytes,
         names,
         loc_refs,
+        &child_scopes,
         relations,
     );
 }
@@ -288,6 +374,7 @@ fn scan_expression(
     bytes: &[u8],
     names: &mut Names,
     loc_refs: &mut LocRefs,
+    scopes: &[Scope],
     relations: &mut Vec<(Loc, Loc)>,
 ) {
     match node.kind_id() {
@@ -310,7 +397,10 @@ fn scan_expression(
             // this is a name. It could be an expression, like: `(add 4)`.
             let fn_node = cursor.node();
             let fn_name = node_name(names, bytes, &fn_node);
-            let mut fn_loc = Loc::Name(fn_name);
+            let mut fn_loc = Loc::Name {
+                name: fn_name,
+                scope: scopes[0],
+            };
 
             // Scan expression representing function to be called.
             scan_expression(
@@ -319,6 +409,7 @@ fn scan_expression(
                 bytes,
                 names,
                 loc_refs,
+                scopes,
                 relations,
             );
 
@@ -332,6 +423,7 @@ fn scan_expression(
                     bytes,
                     names,
                     loc_refs,
+                    scopes,
                     relations,
                 );
 
@@ -376,7 +468,10 @@ fn scan_expression(
             let op_str =
                 format!("({})", std::str::from_utf8(op_slice).unwrap());
             let op_name = names.from_str(&op_str);
-            let op_loc = Loc::Name(op_name);
+            let op_loc = Loc::Name {
+                name: op_name,
+                scope: Scope::Module,
+            };
             let arg1_loc = loc_refs.arg_to(op_loc);
             let partial_res_loc = loc_refs.result_of(op_loc);
             let arg2_loc = loc_refs.arg_to(partial_res_loc);
@@ -388,17 +483,39 @@ fn scan_expression(
             relations.push((res_loc, parent_loc));
 
             scan_expression(
-                arg1_loc, &arg1_node, bytes, names, loc_refs, relations,
+                arg1_loc, &arg1_node, bytes, names, loc_refs, scopes, relations,
             );
 
             scan_expression(
-                arg2_loc, &arg2_node, bytes, names, loc_refs, relations,
+                arg2_loc, &arg2_node, bytes, names, loc_refs, scopes, relations,
             );
         }
         elm::VALUE_EXPR => {
+            // We encountered a variable name usage. The name has the same type
+            // as the variable definition so we should add an equality relation.
+            // We don't know which scope the variable is defined in though,
+            // without which we cannot construct the `Loc` of the definition.
+            //
+            // We know the stack of scopes this expression is in, so we can
+            // create equality relations with all the hypothetical variable
+            // definitions with the right name at all these scopes. Because Elm
+            // does not allow variable shadowing we know that in compiling code
+            // only one of those relations is going to match. The other
+            // equality relations will 'dangle' harmlessly.
             let name = node_name(names, bytes, node);
-            let loc = Loc::Name(name);
-            relations.push((parent_loc, loc));
+            let new_relations = scopes
+                .iter()
+                .copied()
+                .map(|scope| (parent_loc, Loc::Hypothetical { name, scope }));
+            relations.extend(new_relations);
+        }
+        elm::STRING_CONSTANT_EXPR => {
+            let string_name = names.from_str("String");
+            let string_loc = Loc::Name {
+                name: string_name,
+                scope: Scope::Module,
+            };
+            relations.push((parent_loc, string_loc));
         }
         elm::NUMBER_CONSTANT_EXPR => {
             // TODO: Use knowledge that this literal is a `num`.
@@ -410,6 +527,7 @@ fn scan_expression(
                 bytes,
                 names,
                 loc_refs,
+                scopes,
                 relations,
             );
         }
@@ -438,16 +556,19 @@ fn scan_expression(
             let cond_loc = loc_refs.if_cond(parent_loc);
             let true_loc = loc_refs.if_true(parent_loc);
             let false_loc = loc_refs.if_false(parent_loc);
-            let bool_loc = Loc::Name(names.from_str("Bool"));
+            let bool_loc = Loc::Name {
+                name: names.from_str("Bool"),
+                scope: Scope::Module,
+            };
             relations.push((cond_loc, bool_loc));
             relations.push((true_loc, parent_loc));
             relations.push((false_loc, parent_loc));
 
             scan_expression(
-                cond_loc, &cond_node, bytes, names, loc_refs, relations,
+                cond_loc, &cond_node, bytes, names, loc_refs, scopes, relations,
             );
             scan_expression(
-                true_loc, &true_node, bytes, names, loc_refs, relations,
+                true_loc, &true_node, bytes, names, loc_refs, scopes, relations,
             );
             scan_expression(
                 false_loc,
@@ -455,6 +576,7 @@ fn scan_expression(
                 bytes,
                 names,
                 loc_refs,
+                scopes,
                 relations,
             );
         }
@@ -475,7 +597,10 @@ fn scan_type_annotation(
 ) {
     let name_node = node.child_by_field_name("name").unwrap();
     let name = node_name(names, bytes, &name_node);
-    let loc = Loc::Name(name);
+    let loc = Loc::Name {
+        name,
+        scope: Scope::Module,
+    };
     let type_node = node.child_by_field_name("typeExpression").unwrap();
     let mut cursor = type_node.walk();
 
@@ -499,7 +624,13 @@ fn scan_type_annotation(
         }
         let arg_name = node_name(names, bytes, &type_segment_node);
         let arg_loc = loc_refs.arg_to(parent_loc);
-        relations.push((arg_loc, Loc::Name(arg_name)));
+        relations.push((
+            arg_loc,
+            Loc::Name {
+                name: arg_name,
+                scope: Scope::Module,
+            },
+        ));
         relations.push((arg_loc, loc_refs.arg_to(parent_loc)));
         let res_loc = loc_refs.result_of(parent_loc);
         relations.push((res_loc, loc_refs.result_of(parent_loc)));
@@ -510,12 +641,21 @@ fn scan_type_annotation(
     if parent_loc == loc {
         // No arguments. The single type segment is the type of the definition.
         let type_name = node_name(names, bytes, &type_segment_node);
-        let type_loc = Loc::Name(type_name);
+        let type_loc = Loc::Name {
+            name: type_name,
+            scope: Scope::Module,
+        };
         relations.push((loc, type_loc));
     } else {
         // We've seen arguments. This final type segment is the return type.
         let res_name = node_name(names, bytes, &type_segment_node);
-        relations.push((parent_loc, Loc::Name(res_name)));
+        relations.push((
+            parent_loc,
+            Loc::Name {
+                name: res_name,
+                scope: Scope::Module,
+            },
+        ));
     }
 }
 
@@ -568,6 +708,7 @@ mod tests {
 
     type_test!(nested_function_calls);
     type_test!(if_statement);
+    type_test!(same_name_in_different_scopes);
 
     fn typing_test(path: &Path) {
         let path = PathBuf::from(path);
@@ -580,10 +721,22 @@ mod tests {
 
         let mut starter_types_input =
             differential_dataflow::input::InputSession::new();
-        let bool_loc = Loc::Name(names.from_str("Bool"));
-        let int_loc = Loc::Name(names.from_str("Int"));
-        let string_loc = Loc::Name(names.from_str("String"));
-        let length_loc = Loc::Name(names.from_str("String.length"));
+        let bool_loc = Loc::Name {
+            name: names.from_str("Bool"),
+            scope: Scope::Module,
+        };
+        let int_loc = Loc::Name {
+            name: names.from_str("Int"),
+            scope: Scope::Module,
+        };
+        let string_loc = Loc::Name {
+            name: names.from_str("String"),
+            scope: Scope::Module,
+        };
+        let length_loc = Loc::Name {
+            name: names.from_str("String.length"),
+            scope: Scope::Module,
+        };
         starter_types_input.insert((bool_loc, "Bool".to_string()));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
@@ -606,9 +759,12 @@ mod tests {
         let names_rc = Rc::new(names);
         let (mut graph_trace, mut probe) = worker.dataflow(|scope| {
             let starter_types = starter_types_input.to_collection(scope);
-            let same_as = same_as_input.to_collection(scope);
+            let same_as = equivalences(
+                loc_refs_rc.clone(),
+                &same_as_input.to_collection(scope),
+            );
             let types =
-                dataflow_graph(loc_refs_rc.clone(), &starter_types, &same_as);
+                propagate_types(loc_refs_rc.clone(), &starter_types, &same_as);
             let types_graph = debug_dataflow_typechecking(
                 loc_refs_rc,
                 names_rc.clone(),
@@ -655,13 +811,20 @@ mod tests {
         loc_refs: Rc<LocRefs>,
         names: Rc<Names>,
         types: &dataflow::Collection<'a, (Loc, Type)>,
-        same_as: &dataflow::Collection<'a, (Loc, Loc)>,
+        same_as_bidirectional: &dataflow::Collection<'a, (Loc, Loc)>,
     ) -> dataflow::Collection<'a, String> {
         let names2 = names.clone();
         let loc_refs2 = loc_refs.clone();
 
+        let same_as = same_as_bidirectional
+            .map(|(x, y)| if x < y { (x, y) } else { (y, x) })
+            .distinct();
+
         let relation_lines = same_as.flat_map(move |(from, to)| {
-            if from == to {
+            if from == to
+                || matches!(from, Loc::Hypothetical { .. })
+                || matches!(to, Loc::Hypothetical { .. })
+            {
                 None
             } else {
                 Some((
