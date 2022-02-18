@@ -18,15 +18,15 @@ booleanGrade grade =
 -- === expected output below ===
 -- digraph {
 -- "ArgTo((++))" -> "String" [color = red]
--- "ArgTo(CaseBranch(ResultOf(booleanGrade)).2.String.fromInt)" -> "Int" [color = red]
--- "ArgTo(ResultOf((++)))" -> "ResultOf(CaseBranch(ResultOf(booleanGrade)).2.String.fromInt)" [dir=none]
+-- "ArgTo(FnExpr(ArgTo(ResultOf((++)))))" -> "Int" [color = red]
+-- "ArgTo(ResultOf((++)))" -> "ResultOf(FnExpr(ArgTo(ResultOf((++)))))" [dir=none]
 -- "ArgTo(String.length)" -> "String" [color = red]
 -- "ArgTo(booleanGrade)" -> "Int" [color = red]
 -- "Bool" -> "Bool" [color = red]
 -- "CaseBranch(ResultOf(booleanGrade)).0" -> "String" [color = red]
 -- "CaseBranch(ResultOf(booleanGrade)).1" -> "String" [color = red]
 -- "CaseBranch(ResultOf(booleanGrade)).2" -> "String" [color = red]
--- "CaseBranch(ResultOf(booleanGrade)).2.other" -> "ArgTo(CaseBranch(ResultOf(booleanGrade)).2.String.fromInt)" [dir=none]
+-- "CaseBranch(ResultOf(booleanGrade)).2.other" -> "ArgTo(FnExpr(ArgTo(ResultOf((++)))))" [dir=none]
 -- "CaseBranch(ResultOf(booleanGrade)).2.other" -> "CaseExpr(ResultOf(booleanGrade))" [dir=none]
 -- "CaseBranch(ResultOf(booleanGrade)).2.other" -> "Int" [color = red]
 -- "CaseExpr(ResultOf(booleanGrade))" -> "Int" [color = red]

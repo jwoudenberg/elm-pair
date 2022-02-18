@@ -8,6 +8,7 @@ use differential_dataflow::operators::join::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
 use std::rc::Rc;
+use std::sync::Mutex;
 use tree_sitter::{Node, Tree, TreeCursor};
 
 #[derive(
@@ -23,6 +24,7 @@ pub enum Loc {
     IfFalse(LocRef),
     CaseExpr(LocRef),
     CaseBranch(LocRef, usize),
+    FnExpr(LocRef),
 }
 
 #[derive(
@@ -123,6 +125,9 @@ impl LocRefs {
                     self.print(names, self.get_loc(ref_))
                 )
             }
+            Loc::FnExpr(ref_) => {
+                format!("FnExpr({})", self.print(names, self.get_loc(ref_)))
+            }
         }
     }
 }
@@ -158,22 +163,41 @@ pub fn node_name(names: &mut Names, bytes: &[u8], node: &Node) -> Name {
 type Type = String;
 
 pub fn equivalences<'a>(
-    loc_refs: Rc<LocRefs>,
+    loc_refs: Rc<Mutex<LocRefs>>,
     relations: &dataflow::Collection<'a, (Loc, Loc)>,
+    starter_types: &dataflow::Collection<'a, (Loc, Type)>,
 ) -> dataflow::Collection<'a, (Loc, Loc)> {
     let names = relations
         .flat_map(|(x, y)| [x, y])
+        .concat(&starter_types.map(|(loc, _)| loc))
         .iterate(|locs| {
             locs.flat_map(move |loc| match &loc {
                 Loc::Name { .. } => None,
                 Loc::Hypothetical { .. } => None,
-                Loc::ArgTo(ref_) => Some(loc_refs.get_loc(*ref_)),
-                Loc::ResultOf(ref_) => Some(loc_refs.get_loc(*ref_)),
-                Loc::IfCond(ref_) => Some(loc_refs.get_loc(*ref_)),
-                Loc::IfTrue(ref_) => Some(loc_refs.get_loc(*ref_)),
-                Loc::IfFalse(ref_) => Some(loc_refs.get_loc(*ref_)),
-                Loc::CaseExpr(ref_) => Some(loc_refs.get_loc(*ref_)),
-                Loc::CaseBranch(ref_, _) => Some(loc_refs.get_loc(*ref_)),
+                Loc::ArgTo(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::ResultOf(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::IfCond(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::IfTrue(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::IfFalse(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::CaseExpr(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::CaseBranch(ref_, _) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
+                Loc::FnExpr(ref_) => {
+                    Some(loc_refs.lock().unwrap().get_loc(*ref_))
+                }
             })
             .concat(locs)
             .distinct()
@@ -211,35 +235,31 @@ pub fn equivalences<'a>(
 }
 
 pub fn propagate_types<'a>(
-    loc_refs: Rc<LocRefs>,
+    loc_refs: Rc<Mutex<LocRefs>>,
     starter_types: &dataflow::Collection<'a, (Loc, Type)>,
     same_as: &dataflow::Collection<'a, (Loc, Loc)>,
 ) -> dataflow::Collection<'a, (Loc, Type)> {
-    let base_types = starter_types.iterate(|transative| {
-        let same_as_local = same_as.enter(&transative.scope());
+    starter_types.iterate(|types| {
+        let same_as_local = same_as.enter(&types.scope());
 
-        let new_from_same_as = transative
+        let new_from_same_as = types
             .join_map(&same_as_local, |_, type_, same_as| {
                 (*same_as, type_.clone())
             });
 
-        transative.concat(&new_from_same_as).distinct()
-    });
-
-    let function_types = base_types.iterate(|transative| {
         let loc_refs2 = loc_refs.clone();
-        let arg_types = transative.flat_map(move |(loc, type_)| {
+        let arg_types = types.flat_map(move |(loc, type_)| {
             if let Loc::ArgTo(loc_ref) = loc {
-                Some((loc_refs2.get_loc(loc_ref), type_))
+                Some((loc_refs2.lock().unwrap().get_loc(loc_ref), type_))
             } else {
                 None
             }
         });
 
         let loc_refs3 = loc_refs.clone();
-        let result_types = transative.flat_map(move |(loc, type_)| {
+        let result_types = types.flat_map(move |(loc, type_)| {
             if let Loc::ResultOf(loc_ref) = loc {
-                Some((loc_refs3.get_loc(loc_ref), type_))
+                Some((loc_refs3.lock().unwrap().get_loc(loc_ref), type_))
             } else {
                 None
             }
@@ -249,10 +269,25 @@ pub fn propagate_types<'a>(
                 (*loc, format!("{arg} -> {result}"))
             });
 
-        transative.concat(&new_function_types).distinct()
-    });
+        let loc_refs4 = loc_refs.clone();
+        let new_arg_and_res_types = types.flat_map(move |(loc, type_)| {
+            if let Some((arg, res)) = type_.split_once(" -> ") {
+                let mut loc_refs_locked = loc_refs4.lock().unwrap();
+                vec![
+                    (loc_refs_locked.arg_to(loc), arg.to_string()),
+                    (loc_refs_locked.result_of(loc), res.to_string()),
+                ]
+            } else {
+                Vec::new()
+            }
+        });
 
-    base_types.concat(&function_types)
+        types
+            .concat(&new_from_same_as)
+            .concat(&new_function_types)
+            .concat(&new_arg_and_res_types)
+            .distinct()
+    })
 }
 
 pub fn scan_tree(
@@ -407,14 +442,7 @@ fn scan_expression(
                 return;
             }
 
-            // TODO: Don't create Name loc here, because we don't know for sure
-            // this is a name. It could be an expression, like: `(add 4)`.
-            let fn_node = cursor.node();
-            let fn_name = node_name(names, bytes, &fn_node);
-            let mut fn_loc = Loc::Name {
-                name: fn_name,
-                scope: scopes[0],
-            };
+            let mut fn_loc = Loc::FnExpr(loc_refs.get_ref(parent_loc));
 
             // Scan expression representing function to be called.
             scan_expression(
@@ -910,10 +938,7 @@ mod tests {
         starter_types_input.insert((bool_loc, "Bool".to_string()));
         starter_types_input.insert((int_loc, "Int".to_string()));
         starter_types_input.insert((string_loc, "String".to_string()));
-        starter_types_input
-            .insert((loc_refs.arg_to(length_loc), "String".to_string()));
-        starter_types_input
-            .insert((loc_refs.result_of(length_loc), "Int".to_string()));
+        starter_types_input.insert((length_loc, "String -> Int".to_string()));
 
         let mut same_as_input =
             differential_dataflow::input::InputSession::new();
@@ -925,13 +950,14 @@ mod tests {
         let mut worker =
             timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
 
-        let loc_refs_rc = Rc::new(loc_refs);
+        let loc_refs_rc = Rc::new(Mutex::new(loc_refs));
         let names_rc = Rc::new(names);
         let (mut graph_trace, mut probe) = worker.dataflow(|scope| {
             let starter_types = starter_types_input.to_collection(scope);
             let same_as = equivalences(
                 loc_refs_rc.clone(),
                 &same_as_input.to_collection(scope),
+                &starter_types,
             );
             let types =
                 propagate_types(loc_refs_rc.clone(), &starter_types, &same_as);
@@ -978,7 +1004,7 @@ mod tests {
     // progress.
     #[allow(dead_code)]
     pub fn debug_dataflow_typechecking<'a>(
-        loc_refs: Rc<LocRefs>,
+        loc_refs: Rc<Mutex<LocRefs>>,
         names: Rc<Names>,
         types: &dataflow::Collection<'a, (Loc, Type)>,
         same_as_bidirectional: &dataflow::Collection<'a, (Loc, Loc)>,
@@ -997,12 +1023,13 @@ mod tests {
             {
                 None
             } else {
+                let loc_refs_locked = loc_refs.lock().unwrap();
                 Some((
                     (),
                     format!(
                         "\"{}\" -> \"{}\" [dir=none]\n",
-                        loc_refs.print(&names, from),
-                        loc_refs.print(&names, to)
+                        loc_refs_locked.print(&names, from),
+                        loc_refs_locked.print(&names, to)
                     ),
                 ))
             }
@@ -1013,7 +1040,7 @@ mod tests {
                 (),
                 format!(
                     "\"{}\" -> \"{type_}\" [color = red]\n",
-                    loc_refs2.print(&names2, loc),
+                    loc_refs2.lock().unwrap().print(&names2, loc),
                 ),
             )
         });
