@@ -102,31 +102,31 @@ impl LocRefs {
                 ),
             },
             Loc::ArgTo(ref_) => {
-                format!("ArgTo({})", self.print(names, self.get_loc(ref_)))
+                format!("{}.arg", self.print(names, self.get_loc(ref_)))
             }
             Loc::ResultOf(ref_) => {
-                format!("ResultOf({})", self.print(names, self.get_loc(ref_)))
+                format!("{}.result", self.print(names, self.get_loc(ref_)))
             }
             Loc::IfCond(ref_) => {
-                format!("IfCond({})", self.print(names, self.get_loc(ref_)))
+                format!("{}.if_cond", self.print(names, self.get_loc(ref_)))
             }
             Loc::IfTrue(ref_) => {
-                format!("IfTrue({})", self.print(names, self.get_loc(ref_)))
+                format!("{}.if_true", self.print(names, self.get_loc(ref_)))
             }
             Loc::IfFalse(ref_) => {
-                format!("IfFalse({})", self.print(names, self.get_loc(ref_)))
+                format!("{}.if_false", self.print(names, self.get_loc(ref_)))
             }
             Loc::CaseExpr(ref_) => {
-                format!("CaseExpr({})", self.print(names, self.get_loc(ref_)))
+                format!("{}case_expr", self.print(names, self.get_loc(ref_)))
             }
             Loc::CaseBranch(ref_, i) => {
                 format!(
-                    "CaseBranch({}).{i}",
+                    "{}.case_branch_{i}",
                     self.print(names, self.get_loc(ref_))
                 )
             }
             Loc::FnExpr(ref_) => {
-                format!("FnExpr({})", self.print(names, self.get_loc(ref_)))
+                format!("{}.fn_expr", self.print(names, self.get_loc(ref_)))
             }
         }
     }
