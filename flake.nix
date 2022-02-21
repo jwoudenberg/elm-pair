@@ -58,11 +58,15 @@
         devShell = pkgs.mkShell {
           buildInputs = [
             rust-toolchain
-            pkgs.nodejs
-            pkgs.luaformatter
-            pkgs.lua53Packages.luacheck
             pkgs.elmPackages.elm
             pkgs.elmPackages.elm-format
+
+            # For neovim plugin development
+            pkgs.luaformatter
+            pkgs.lua53Packages.luacheck
+
+            # For VSCode plugin development
+            pkgs.nodejs
           ];
         };
       });
