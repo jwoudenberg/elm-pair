@@ -111,7 +111,11 @@ where
             let new_self = self.parse_notification_msg()?;
             Ok(Some(new_self))
         } else {
-            Err(log::mk_err!("received unknown msgpack-rpc message with length {:?} and type {:?}", array_len, type_))
+            Err(log::mk_err!(
+                "received unknown msgpack-rpc message with length {:?} and type {:?}",
+                array_len,
+                type_
+            ))
         }
     }
 
@@ -119,7 +123,11 @@ where
         let mut buffer = [0u8; 30];
         let len = rmp::decode::read_str_len(&mut self.read)? as usize;
         if len > buffer.len() {
-            return Err(log::mk_err!("name of received msgpack-rpc message length {:?} exceeds max length {:?}", len, buffer.len()));
+            return Err(log::mk_err!(
+                "name of received msgpack-rpc message length {:?} exceeds max length {:?}",
+                len,
+                buffer.len()
+            ));
         }
         self.read.read_exact(&mut buffer[0..len]).map_err(|err| {
             log::mk_err!("failed reading msgpack-rpc message name: {:?}", err)

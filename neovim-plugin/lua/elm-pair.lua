@@ -12,6 +12,9 @@ end
 local function connect_to_socket(socket_path)
     _G.elm_pair_channel = vim.fn.sockconnect("pipe", socket_path, {rpc = true})
 
+    -- Identify ourselves to Elm-pair as the neovim plugin.
+    vim.fn.rpcnotify(_G.elm_pair_channel, "")
+
     -- Tell elm-pair about Elm buffers opened while elm-pair was starting.
     for _, buf in pairs(vim.api.nvim_list_bufs()) do
         if vim.api.nvim_buf_is_loaded(buf) and

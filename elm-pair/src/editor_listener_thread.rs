@@ -6,6 +6,7 @@ use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use crate::{Error, MVar};
 use ropey::Rope;
 use std::collections::HashMap;
+use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -43,25 +44,59 @@ pub fn run(
     Ok(())
 }
 
+#[derive(Debug)]
+pub enum EditorKind {
+    Neovim,
+    VsCode,
+}
+
+fn read_editor_kind<R: Read>(read: &mut R) -> Result<EditorKind, Error> {
+    // We use 4 bytes to identify the editor because this is the smallest
+    // payload size Neovim is able to send, being limited to messages that are
+    // valid msgpack-rpc payloads.
+    let mut buf = [0; 4];
+    read.read_exact(&mut buf)
+        .map_err(|err| log::mk_err!("could not read editor kind: {:?}", err))?;
+    match buf {
+        // The 4-byte identifier for Neovim is an empty msgpack-rpc notify msg.
+        // 147 (10010011): Marks an upcoming 3-element array.
+        // 2: Fist element is the notify msg kind, which is always 2.
+        // 160 (10100000): An empty string (notify method being called).
+        // 144 (10010000): Empty array (arguments passed to notify method).
+        [147, 2, 160, 144] => Ok(EditorKind::Neovim),
+        [0, 0, 0, 0] => Ok(EditorKind::VsCode),
+        other => Err(log::mk_err!("unknown editor identifier {:?}", other)),
+    }
+}
+
 pub fn spawn_editor_thread(
     active_buffer: Arc<MVar<SourceFileSnapshot>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
     editor_id: u32,
-    socket: UnixStream,
+    mut socket: UnixStream,
 ) {
+    let editor_kind = match read_editor_kind(&mut socket) {
+        Ok(kind) => kind,
+        Err(err) => {
+            log::error!("Failed to start editor thread: {:?}", err);
+            return;
+        }
+    };
     std::thread::spawn(move || {
-        let res = neovim::Neovim::from_unix_socket(socket, editor_id).and_then(
-            |neovim| {
-                EditorListenerLoop {
-                    active_buffer,
-                    compilation_sender,
-                    analysis_sender,
-                    inactive_buffers: HashMap::new(),
-                }
-                .start(editor_id as u32, neovim)
-            },
-        );
+        let mut listener_loop = EditorListenerLoop {
+            active_buffer,
+            compilation_sender,
+            analysis_sender,
+            inactive_buffers: HashMap::new(),
+        };
+        let res = match editor_kind {
+            EditorKind::Neovim => neovim::Neovim::from_unix_socket(
+                socket, editor_id,
+            )
+            .and_then(|editor| listener_loop.start(editor_id as u32, editor)),
+            EditorKind::VsCode => todo!(),
+        };
         match res {
             Ok(()) => {}
             Err(err) => {
