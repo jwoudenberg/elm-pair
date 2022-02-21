@@ -10,16 +10,15 @@
 		"Other"
 	],
 	"activationEvents": [
-        "onCommand:elm-pair.helloWorld"
+        "onLanguage:elm"
 	],
 	"main": "./out/extension.js",
 	"contributes": {
-		"commands": [
-			{
-				"command": "elm-pair.helloWorld",
-				"title": "Hello World"
-			}
-		]
+		"languages": [{
+			"id": "elm",
+			"extensions": [ ".elm" ],
+			"aliases": [ "Elm", "elm" ]
+		}]
 	},
 	"scripts": {
 		"vscode:prepublish": "npm run compile",

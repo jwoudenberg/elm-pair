@@ -67,6 +67,7 @@
 
             # For VSCode plugin development
             pkgs.nodejs
+            pkgs.nodePackages.typescript
           ];
         };
       });
