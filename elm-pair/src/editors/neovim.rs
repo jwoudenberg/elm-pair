@@ -1,5 +1,7 @@
 use crate::analysis_thread as analysis;
 use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
+use crate::lib::bytes;
+use crate::lib::bytes::read_chunks;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{
@@ -261,6 +263,7 @@ where
         Ok(())
     }
 }
+
 pub struct NeovimEvent<R> {
     editor_id: u32,
     read: R,
@@ -415,40 +418,40 @@ where
         rmp::Marker::Null => {}
         rmp::Marker::True => {}
         rmp::Marker::False => {}
-        rmp::Marker::U8 => skip_bytes(read, 1)?,
-        rmp::Marker::U16 => skip_bytes(read, 2)?,
-        rmp::Marker::U32 => skip_bytes(read, 4)?,
-        rmp::Marker::U64 => skip_bytes(read, 8)?,
-        rmp::Marker::I8 => skip_bytes(read, 1)?,
-        rmp::Marker::I16 => skip_bytes(read, 2)?,
-        rmp::Marker::I32 => skip_bytes(read, 4)?,
-        rmp::Marker::I64 => skip_bytes(read, 8)?,
-        rmp::Marker::F32 => skip_bytes(read, 4)?,
-        rmp::Marker::F64 => skip_bytes(read, 8)?,
-        rmp::Marker::FixStr(bytes) => skip_bytes(read, bytes as u64)?,
+        rmp::Marker::U8 => bytes::skip(read, 1)?,
+        rmp::Marker::U16 => bytes::skip(read, 2)?,
+        rmp::Marker::U32 => bytes::skip(read, 4)?,
+        rmp::Marker::U64 => bytes::skip(read, 8)?,
+        rmp::Marker::I8 => bytes::skip(read, 1)?,
+        rmp::Marker::I16 => bytes::skip(read, 2)?,
+        rmp::Marker::I32 => bytes::skip(read, 4)?,
+        rmp::Marker::I64 => bytes::skip(read, 8)?,
+        rmp::Marker::F32 => bytes::skip(read, 4)?,
+        rmp::Marker::F64 => bytes::skip(read, 8)?,
+        rmp::Marker::FixStr(bytes) => bytes::skip(read, bytes as u64)?,
         rmp::Marker::Str8 => {
             let bytes = read.read_u8()?;
-            skip_bytes(read, bytes as u64)?;
+            bytes::skip(read, bytes as u64)?;
         }
         rmp::Marker::Str16 => {
             let bytes = read.read_u16::<byteorder::BigEndian>()?;
-            skip_bytes(read, bytes as u64)?
+            bytes::skip(read, bytes as u64)?
         }
         rmp::Marker::Str32 => {
             let bytes = read.read_u32::<byteorder::BigEndian>()?;
-            skip_bytes(read, bytes as u64)?
+            bytes::skip(read, bytes as u64)?
         }
         rmp::Marker::Bin8 => {
             let bytes = read.read_u8()?;
-            skip_bytes(read, bytes as u64)?
+            bytes::skip(read, bytes as u64)?
         }
         rmp::Marker::Bin16 => {
             let bytes = read.read_u16::<byteorder::BigEndian>()?;
-            skip_bytes(read, bytes as u64)?
+            bytes::skip(read, bytes as u64)?
         }
         rmp::Marker::Bin32 => {
             let bytes = read.read_u32::<byteorder::BigEndian>()?;
-            skip_bytes(read, bytes as u64)?
+            bytes::skip(read, bytes as u64)?
         }
         rmp::Marker::FixArray(objects) => {
             return Ok(objects as u32);
@@ -472,34 +475,26 @@ where
             let entries = read.read_u32::<byteorder::BigEndian>()?;
             return Ok(2 * entries);
         }
-        rmp::Marker::FixExt1 => skip_bytes(read, 2)?,
-        rmp::Marker::FixExt2 => skip_bytes(read, 3)?,
-        rmp::Marker::FixExt4 => skip_bytes(read, 5)?,
-        rmp::Marker::FixExt8 => skip_bytes(read, 9)?,
-        rmp::Marker::FixExt16 => skip_bytes(read, 17)?,
+        rmp::Marker::FixExt1 => bytes::skip(read, 2)?,
+        rmp::Marker::FixExt2 => bytes::skip(read, 3)?,
+        rmp::Marker::FixExt4 => bytes::skip(read, 5)?,
+        rmp::Marker::FixExt8 => bytes::skip(read, 9)?,
+        rmp::Marker::FixExt16 => bytes::skip(read, 17)?,
         rmp::Marker::Ext8 => {
             let bytes = read.read_u8()?;
-            skip_bytes(read, 1 + bytes as u64)?
+            bytes::skip(read, 1 + bytes as u64)?
         }
         rmp::Marker::Ext16 => {
             let bytes = read.read_u16::<byteorder::BigEndian>()?;
-            skip_bytes(read, 1 + bytes as u64)?
+            bytes::skip(read, 1 + bytes as u64)?
         }
         rmp::Marker::Ext32 => {
             let bytes = read.read_u32::<byteorder::BigEndian>()?;
-            skip_bytes(read, 1 + bytes as u64)?
+            bytes::skip(read, 1 + bytes as u64)?
         }
         rmp::Marker::Reserved => {}
     }
     Ok(0)
-}
-
-fn skip_bytes<R>(read: &mut R, count: u64) -> Result<(), std::io::Error>
-where
-    R: Read,
-{
-    std::io::copy(&mut read.take(count), &mut std::io::sink())?;
-    Ok(())
 }
 
 fn from_utf8(buffer: &[u8]) -> Result<&str, Error> {
@@ -510,53 +505,6 @@ fn from_utf8(buffer: &[u8]) -> Result<&str, Error> {
         )
     })?;
     Ok(str)
-}
-
-// Reads chunks of string slices of a reader. Used to copy bits of a reader
-// somewhere else without needing intermediate heap allocation.
-fn read_chunks<R, F, G, E>(
-    mut read: R,
-    len: usize,
-    on_error: G,
-    mut on_chunk: F,
-) -> Result<(), E>
-where
-    R: Read,
-    F: FnMut(&str) -> Result<(), E>,
-    G: Fn(std::io::Error) -> E,
-{
-    let mut bytes_remaining = len;
-    let mut buffer_offset = 0;
-    // The size of the buffer is small as to avoid overflowing the stack, but
-    // large enough to contain a single line of code (our typical read load).
-    // That way most typical payloads are moved in one iteration.
-    let mut buffer = [0u8; 100];
-    while bytes_remaining > 0 {
-        let chunk_size = std::cmp::min(buffer.len(), bytes_remaining);
-        let write_slice = &mut buffer[buffer_offset..chunk_size];
-        read.read_exact(write_slice).map_err(&on_error)?;
-        let str = match std::str::from_utf8_mut(&mut buffer[0..chunk_size]) {
-            Ok(str) => str,
-            Err(utf8_error) => {
-                let good_bytes = utf8_error.valid_up_to();
-                unsafe {
-                    std::str::from_utf8_unchecked_mut(
-                        &mut buffer[0..good_bytes],
-                    )
-                }
-            }
-        };
-        let actual_chunk_size = str.len();
-        bytes_remaining -= actual_chunk_size;
-        on_chunk(str)?;
-        let bad_bytes = actual_chunk_size - chunk_size;
-        buffer_offset = 0;
-        while buffer_offset < bad_bytes {
-            buffer[buffer_offset] = buffer[actual_chunk_size + buffer_offset];
-            buffer_offset += 1;
-        }
-    }
-    Ok(())
 }
 
 fn read_buf<R>(read: &mut R) -> Result<u32, Error>

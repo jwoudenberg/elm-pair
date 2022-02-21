@@ -1,6 +1,7 @@
 use crate::analysis_thread;
 use crate::compilation_thread;
 use crate::editors::neovim;
+use crate::editors::vscode;
 use crate::lib::log;
 use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use crate::{Error, MVar};
@@ -95,7 +96,10 @@ pub fn spawn_editor_thread(
                 socket, editor_id,
             )
             .and_then(|editor| listener_loop.start(editor_id as u32, editor)),
-            EditorKind::VsCode => todo!(),
+            EditorKind::VsCode => vscode::VsCode::from_unix_socket(
+                socket, editor_id,
+            )
+            .and_then(|editor| listener_loop.start(editor_id as u32, editor)),
         };
         match res {
             Ok(()) => {}
