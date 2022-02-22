@@ -4,7 +4,10 @@ use crate::lib::bytes;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
+use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::ops::DerefMut;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -17,6 +20,7 @@ pub struct VsCode<R, W> {
     editor_id: u32,
     read: R,
     write: Arc<Mutex<W>>,
+    buffer_paths: Arc<Mutex<HashMap<Buffer, PathBuf>>>,
 }
 
 impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
@@ -31,6 +35,7 @@ impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
             editor_id,
             read: BufReader::new(socket),
             write: Arc::new(Mutex::new(BufWriter::new(write))),
+            buffer_paths: Arc::new(Mutex::new(HashMap::new())),
         };
         Ok(vscode)
     }
@@ -42,7 +47,8 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
 
     fn driver(&self) -> VsCodeDriver<W> {
         VsCodeDriver {
-            _write: self.write.clone(),
+            write: self.write.clone(),
+            buffer_paths: self.buffer_paths.clone(),
         }
     }
 
@@ -61,7 +67,12 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
                 buffer_id: bytes::read_u32(&mut read)?,
                 editor_id: self.editor_id,
             };
-            let mut event = VsCodeEvent { buffer, read };
+            let mut event = VsCodeEvent {
+                buffer,
+                read,
+                // TODO: Avoid this clone by parsing the file path here.
+                buffer_paths: self.buffer_paths.clone(),
+            };
             on_event(buffer, &mut event).unwrap();
             read = event.read;
         }
@@ -69,22 +80,65 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
 }
 
 pub struct VsCodeDriver<W> {
-    _write: Arc<Mutex<W>>,
+    write: Arc<Mutex<W>>,
+    buffer_paths: Arc<Mutex<HashMap<Buffer, PathBuf>>>,
 }
 
 impl<W> analysis::EditorDriver for VsCodeDriver<W>
 where
     W: 'static + Write + Send,
 {
-    fn apply_edits(&self, _refactor: Vec<Edit>) -> bool {
-        println!("TODO: refactor here");
-        true
+    fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
+        let mut write_guard = crate::lock(&self.write);
+        let mut write = write_guard.deref_mut();
+        let buffer_paths = crate::lock(&self.buffer_paths);
+        match write_refactor(&mut write, &buffer_paths, refactor) {
+            Ok(()) => true,
+            Err(err) => {
+                log::error!("failed to write refactor to vscode: {:?}", err);
+                false
+            }
+        }
     }
+}
+
+fn write_refactor<W: Write>(
+    write: &mut W,
+    buffer_paths: &HashMap<Buffer, PathBuf>,
+    refactor: Vec<Edit>,
+) -> Result<(), Error> {
+    bytes::write_u32(write, refactor.len() as u32)?;
+    for edit in refactor {
+        let path = buffer_paths.get(&edit.buffer).unwrap();
+        let path_bytes = path.as_os_str().as_bytes();
+        let InputEdit {
+            start_position,
+            old_end_position,
+            ..
+        } = edit.input_edit;
+        bytes::write_u32(write, path_bytes.len() as u32)?;
+        write.write_all(path_bytes).map_err(|err| {
+            log::mk_err!("failed writing path to vscode: {:?}", err)
+        })?;
+        bytes::write_u32(write, start_position.row as u32)?;
+        bytes::write_u32(write, start_position.column as u32)?;
+        bytes::write_u32(write, old_end_position.row as u32)?;
+        bytes::write_u32(write, old_end_position.column as u32)?;
+        bytes::write_u32(write, edit.new_bytes.len() as u32)?;
+        write.write_all(edit.new_bytes.as_bytes()).map_err(|err| {
+            log::mk_err!("failed writing change to vscode: {:?}", err)
+        })?;
+        write.flush().map_err(|err| {
+            log::mk_err!("failed flushing refactor to vscode: {:?}", err)
+        })?;
+    }
+    Ok(())
 }
 
 pub struct VsCodeEvent<R> {
     read: R,
     buffer: Buffer,
+    buffer_paths: Arc<Mutex<HashMap<Buffer, PathBuf>>>,
 }
 
 impl<R: Read> EditorEvent for VsCodeEvent<R> {
@@ -93,7 +147,11 @@ impl<R: Read> EditorEvent for VsCodeEvent<R> {
         opt_code: Option<SourceFileSnapshot>,
     ) -> Result<BufferChange, crate::Error> {
         match bytes::read_u8(&mut self.read)? {
-            NEW_FILE_MSG => parse_new_file_msg(&mut self.read, self.buffer),
+            NEW_FILE_MSG => parse_new_file_msg(
+                &mut self.read,
+                &mut crate::lock(&self.buffer_paths),
+                self.buffer,
+            ),
             FILE_CHANGED_MSG => {
                 if let Some(code) = opt_code {
                     parse_file_changed_msg(&mut self.read, code)
@@ -110,11 +168,13 @@ impl<R: Read> EditorEvent for VsCodeEvent<R> {
 
 fn parse_new_file_msg<R: Read>(
     read: &mut R,
+    buffer_paths: &mut HashMap<Buffer, PathBuf>,
     buffer: Buffer,
 ) -> Result<BufferChange, Error> {
     let path_len = bytes::read_u32(read)?;
     let path_string = bytes::read_string(read, path_len as usize)?;
     let path = PathBuf::from(path_string);
+    buffer_paths.insert(buffer, path.clone());
     let bytes_len = bytes::read_u32(read)?;
     let mut bytes_builder = ropey::RopeBuilder::new();
     bytes::read_chunks(

@@ -6,6 +6,10 @@ import * as vscode from 'vscode';
 
 const NEW_FILE_MSG = 0;
 const FILE_CHANGED_MSG = 1;
+const EDIT_METADATA: vscode.WorkspaceEditEntryMetadata = {
+  label : "Change by Elm-pair",
+  needsConfirmation : false,
+};
 
 type FileIdMap = {
   [key: string]: number;
@@ -18,10 +22,9 @@ export async function activate(context: vscode.ExtensionContext) {
   writeInt32(socket, 0);
   const elmFileIdsByPath: FileIdMap = {};
 
-  socket.on('data', () => {
-    // TODO: apply refactors received from elm-pair.
-    return;
-  });
+  const processData = processRefactors();
+  processData.next(); // Run to first `yield` (moment we need data).
+  socket.on('data', (data) => { processData.next(data); });
 
   socket.on('end', () => {
     console.log("Elm-pair socket connection closed.");
@@ -38,20 +41,21 @@ export async function activate(context: vscode.ExtensionContext) {
     if (typeof fileId === "undefined") {
       fileId = elmFileIdsByPath[doc.fileName] =
           Object.keys(elmFileIdsByPath).length;
-      writeInt8(socket, NEW_FILE_MSG);
       writeInt32(socket, fileId);
+      writeInt8(socket, NEW_FILE_MSG);
       writeString(socket, fileName);
       writeString(socket, doc.getText());
-    }
-    for (const change of changeEvent.contentChanges) {
-      const range = change.range;
-      writeInt8(socket, FILE_CHANGED_MSG);
-      writeInt32(socket, fileId);
-      writeInt32(socket, range.start.line);
-      writeInt32(socket, range.start.character);
-      writeInt32(socket, range.end.line);
-      writeInt32(socket, range.end.character);
-      writeString(socket, change.text);
+    } else {
+      for (const change of changeEvent.contentChanges) {
+        const range = change.range;
+        writeInt32(socket, fileId);
+        writeInt8(socket, FILE_CHANGED_MSG);
+        writeInt32(socket, range.start.line);
+        writeInt32(socket, range.start.character);
+        writeInt32(socket, range.end.line);
+        writeInt32(socket, range.end.character);
+        writeString(socket, change.text);
+      }
     }
   });
 }
@@ -72,6 +76,61 @@ function getElmPairSocket(context: vscode.ExtensionContext): Promise<string> {
       }
     });
   });
+}
+
+// Parse refactors streamed from Elm-pair and apply them to vscode files.
+// This is a generator function so it can 'yield's when it needs more bytes.
+async function* processRefactors(): AsyncGenerator<void, void, Buffer> {
+  const edit = new vscode.WorkspaceEdit();
+  let buffer = yield;
+  let editsInRefactor;
+
+  [editsInRefactor, buffer] = yield* readInt32(buffer);
+
+  for (let i = 0; i < editsInRefactor; i++) {
+    let path, startLine, startCol, oldEndLine, oldEndCol, newText;
+    [path, buffer] = yield* readString(buffer);
+    [startLine, buffer] = yield* readInt32(buffer);
+    [startCol, buffer] = yield* readInt32(buffer);
+    [oldEndLine, buffer] = yield* readInt32(buffer);
+    [oldEndCol, buffer] = yield* readInt32(buffer);
+    [newText, buffer] = yield* readString(buffer);
+    const uri = vscode.Uri.file(path);
+    const startPosition = new vscode.Position(startLine, startCol);
+    const endPosition = new vscode.Position(oldEndLine, oldEndCol);
+    const range = new vscode.Range(startPosition, endPosition);
+    edit.replace(uri, range, newText, EDIT_METADATA);
+  }
+
+  await vscode.workspace.applyEdit(edit);
+  yield* processRefactors();
+}
+
+function*
+    readInt32(buffer: Buffer): Generator<void, [ number, Buffer ], Buffer> {
+  const [sample, newBuffer] = yield* takeFromBuffer(buffer, 4);
+  const num = sample.readInt32BE();
+  return [ num, newBuffer ];
+}
+
+function*
+    readString(buffer: Buffer): Generator<void, [ string, Buffer ], Buffer> {
+  const [stringLength, buffer2] = yield* readInt32(buffer);
+  const [sample, buffer3] = yield* takeFromBuffer(buffer2, stringLength);
+  const string = sample.toString('utf8');
+  return [ string, buffer3 ];
+}
+
+// Read a specific number of bytes from a buffer, waiting for additional data if
+// necessary.
+function* takeFromBuffer(buffer: Buffer, bytes: number):
+              Generator<void, [ Buffer, Buffer ], Buffer> {
+  while (buffer.length < bytes) {
+    buffer = Buffer.concat([ buffer, yield ]);
+  }
+  const sample = buffer.subarray(0, bytes);
+  const rest = buffer.subarray(bytes);
+  return [ sample, rest ];
 }
 
 function connectToElmPair(socketPath: string): Promise<net.Socket> {

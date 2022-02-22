@@ -1,6 +1,6 @@
 use crate::lib::log;
 use crate::lib::log::Error;
-use std::io::Read;
+use std::io::{Read, Write};
 
 // TODO: use custom error type here to force more specific errors higher up.
 
@@ -72,6 +72,12 @@ where
         }
     }
     Ok(())
+}
+
+pub fn write_u32<W: Write>(write: &mut W, n: u32) -> Result<(), Error> {
+    write
+        .write_all(&std::primitive::u32::to_be_bytes(n))
+        .map_err(|err| log::mk_err!("failed to write u32: {:?}", err))
 }
 
 pub fn skip<R>(read: &mut R, count: u64) -> Result<(), std::io::Error>
