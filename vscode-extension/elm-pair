@@ -1,4 +1,1 @@
-#!/usr/bin/env bash
-
-# TODO: replace this script with same install script the neovim plugin uses.
-echo -n "/Users/jasper/Library/Caches/elm-pair/0.10.0/socket"
+../neovim-plugin/elm-pair
