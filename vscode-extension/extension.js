@@ -17,6 +17,14 @@ let socket;
 let deactivating = false;
 
 async function activate(context) {
+  try {
+    await activateWrapper(context);
+  } catch (err) {
+    throwError(err);
+  }
+}
+
+async function activateWrapper(context) {
   const socketPath = await getElmPairSocket(context);
   socket = await connectToElmPair(socketPath);
   // Elm-pair expects a 4-byte editor-id. For Visual Studio Code it's 0.
@@ -29,7 +37,8 @@ async function activate(context) {
 
   socket.on('end', () => {
     if (!deactivating) {
-      throw new Error("Connection to elm-pair daemon closed unexpectedly.");
+      const err = new Error("Connection to elm-pair daemon closed.");
+      throwError(err);
     }
   });
 
@@ -65,6 +74,14 @@ async function activate(context) {
 function deactivate() {
   deactivating = true;
   socket.end();
+}
+
+async function throwError(err) {
+  let message = err.message || err;
+  await vscode.window.showErrorMessage(
+      "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: " +
+      message);
+  throw err;
 }
 
 function getElmPairSocket(context) {
