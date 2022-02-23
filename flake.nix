@@ -32,12 +32,14 @@
           # cargo = rust-toolchain;
           rustc = rust-toolchain;
         };
+
         elm-pair = system-naersk.buildPackage {
           pname = "elm-pair";
           root = ./elm-pair;
           doCheck = true;
           ELM_BINARY_PATH = "${pkgs.elmPackages.elm}/bin/elm";
         };
+        elm-pair-app = utils.lib.mkApp { drv = elm-pair; };
 
         neovim-plugin = pkgs.vimUtils.buildVimPlugin {
           name = "elm-pair";
@@ -47,13 +49,25 @@
               --replace '"elm-pair"' '"${elm-pair}/bin/elm-pair"'
           '';
         };
-        elm-pair-app = utils.lib.mkApp { drv = elm-pair; };
 
+        vscode-extension = pkgs.vscode-utils.buildVscodeExtension {
+          name = "elm-pair";
+          src = ./vscode-extension;
+          vscodeExtUniqueId = "jwoudenberg.elm-pair";
+          preBuild = ''
+            cp ${./README.md} ./README.md
+            cp ${./CHANGELOG.md} ./CHANGELOG.md
+            cp ${./neovim-plugin/elm-pair} ./elm-pair
+            substituteInPlace "extension.js" \
+              --replace 'nix-build-put-path-to-elm-pair-here' '${elm-pair}/bin/elm-pair'
+          '';
+        };
       in {
         # Packages
         defaultPackage = elm-pair;
         packages.elm-pair = elm-pair;
         packages.neovim-plugin = neovim-plugin;
+        packages.vscode-extension = vscode-extension;
 
         # Apps
         apps.elm-pair = elm-pair-app;

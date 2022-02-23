@@ -1,9 +1,11 @@
 const {Buffer} = require('buffer');
 const cp = require('child_process');
+const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const vscode = require('vscode');
 
+const ELM_PAIR_NIX_PATH = "nix-build-put-path-to-elm-pair-here";
 const NEW_FILE_MSG = 0;
 const FILE_CHANGED_MSG = 1;
 const EDIT_METADATA = {
@@ -67,7 +69,9 @@ function deactivate() {
 
 function getElmPairSocket(context) {
   return new Promise((resolve, reject) => {
-    const elmPairBin = path.join(context.extensionPath, "elm-pair");
+    const elmPairBin = fs.existsSync(ELM_PAIR_NIX_PATH)
+                           ? ELM_PAIR_NIX_PATH
+                           : path.join(context.extensionPath, "elm-pair");
     cp.exec(elmPairBin, (err, stdout, stderr) => {
       if (stderr) {
         console.log(stderr);
