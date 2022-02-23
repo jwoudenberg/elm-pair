@@ -15,9 +15,12 @@ type FileIdMap = {
   [key: string]: number;
 };
 
+let socket: net.Socket;
+let deactivating = false;
+
 export async function activate(context: vscode.ExtensionContext) {
   const socketPath = await getElmPairSocket(context);
-  const socket = await connectToElmPair(socketPath);
+  socket = await connectToElmPair(socketPath);
   // Elm-pair expects a 4-byte editor-id. For Visual Studio Code it's 0.
   writeInt32(socket, 0);
   const elmFileIdsByPath: FileIdMap = {};
@@ -27,8 +30,9 @@ export async function activate(context: vscode.ExtensionContext) {
   socket.on('data', (data) => { processData.next(data); });
 
   socket.on('end', () => {
-    console.log("Elm-pair socket connection closed.");
-    // TODO: handle this in some way.
+    if (!deactivating) {
+      throw new Error("Connection to elm-pair daemon closed unexpectedly.");
+    }
   });
 
   vscode.workspace.onDidChangeTextDocument(changeEvent => {
@@ -60,7 +64,10 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  deactivating = true;
+  socket.end();
+}
 
 function getElmPairSocket(context: vscode.ExtensionContext): Promise<string> {
   return new Promise((resolve, reject) => {
