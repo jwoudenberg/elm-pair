@@ -62,9 +62,18 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
     {
         let mut read = self.read;
         loop {
-            // TODO: check for EOF.
+            let mut u32_buffer = [0; 4];
+            let buffer_id = match read.read_exact(&mut u32_buffer) {
+                Ok(()) => std::primitive::u32::from_be_bytes(u32_buffer),
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    return Err(log::mk_err!("could not read u8: {:?}", err));
+                }
+            };
             let buffer = Buffer {
-                buffer_id: bytes::read_u32(&mut read)?,
+                buffer_id,
                 editor_id: self.editor_id,
             };
             let mut event = VsCodeEvent {
