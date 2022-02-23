@@ -3,7 +3,6 @@ const cp = require('child_process');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
-const vscode = require('vscode');
 
 const ELM_PAIR_NIX_PATH = "nix-build-put-path-to-elm-pair-here";
 const NEW_FILE_MSG = 0;
@@ -13,32 +12,38 @@ const EDIT_METADATA = {
   needsConfirmation : false,
 };
 
-let socket;
-let deactivating = false;
+let deactivate_;
+module.exports = {
+  activate : async function activate(context) {
+    const vscode = require('vscode');
+    try {
+      const socketPath = await getElmPairSocket(context);
+      const socket = await connectToElmPair(socketPath);
+      deactivate_ = listenOnSocket(vscode, socket);
+    } catch (err) {
+      throwError(vscode, err);
+    }
+  },
+  deactivate : function deactivate() { deactivate_(); },
 
-async function activate(context) {
-  try {
-    await activateWrapper(context);
-  } catch (err) {
-    throwError(err);
-  }
-}
+  // Exported for testing.
+  listenOnSocket
+};
 
-async function activateWrapper(context) {
-  const socketPath = await getElmPairSocket(context);
-  socket = await connectToElmPair(socketPath);
+function listenOnSocket(vscode, socket) {
   // Elm-pair expects a 4-byte editor-id. For Visual Studio Code it's 0.
   writeInt32(socket, 0);
   const elmFileIdsByPath = {};
 
-  const processData = processRefactors();
+  const processData = processRefactors(vscode);
   processData.next(); // Run to first `yield` (moment we need data).
   socket.on('data', (data) => { processData.next(data); });
 
+  let deactivating = false;
   socket.on('end', () => {
     if (!deactivating) {
       const err = new Error("Connection to elm-pair daemon closed.");
-      throwError(err);
+      throwError(vscode, err);
     }
   });
 
@@ -69,14 +74,14 @@ async function activateWrapper(context) {
       }
     }
   });
+
+  return function deactivate() {
+    deactivating = true;
+    socket.end();
+  };
 }
 
-function deactivate() {
-  deactivating = true;
-  socket.end();
-}
-
-async function throwError(err) {
+async function throwError(vscode, err) {
   let message = err.message || err;
   await vscode.window.showErrorMessage(
       "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: " +
@@ -104,7 +109,7 @@ function getElmPairSocket(context) {
 
 // Parse refactors streamed from Elm-pair and apply them to vscode files.
 // This is a generator function so it can 'yield's when it needs more bytes.
-async function* processRefactors() {
+async function* processRefactors(vscode) {
   const edit = new vscode.WorkspaceEdit();
   let buffer = yield;
   let editsInRefactor;
@@ -127,7 +132,7 @@ async function* processRefactors() {
   }
 
   await vscode.workspace.applyEdit(edit);
-  yield* processRefactors();
+  yield* processRefactors(vscode);
 }
 
 function* readInt32(buffer) {
@@ -180,8 +185,3 @@ function writeString(socket, str) {
   writeInt32(socket, len);
   socket.write(str, 'utf8');
 }
-
-module.exports = {
-  activate,
-  deactivate
-};
