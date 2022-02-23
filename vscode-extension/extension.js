@@ -1,29 +1,25 @@
-import {Buffer} from 'buffer';
-import * as cp from 'child_process';
-import * as net from 'net';
-import * as path from 'path';
-import * as vscode from 'vscode';
+const {Buffer} = require('buffer');
+const cp = require('child_process');
+const net = require('net');
+const path = require('path');
+const vscode = require('vscode');
 
 const NEW_FILE_MSG = 0;
 const FILE_CHANGED_MSG = 1;
-const EDIT_METADATA: vscode.WorkspaceEditEntryMetadata = {
+const EDIT_METADATA = {
   label : "Change by Elm-pair",
   needsConfirmation : false,
 };
 
-type FileIdMap = {
-  [key: string]: number;
-};
-
-let socket: net.Socket;
+let socket;
 let deactivating = false;
 
-export async function activate(context: vscode.ExtensionContext) {
+async function activate(context) {
   const socketPath = await getElmPairSocket(context);
   socket = await connectToElmPair(socketPath);
   // Elm-pair expects a 4-byte editor-id. For Visual Studio Code it's 0.
   writeInt32(socket, 0);
-  const elmFileIdsByPath: FileIdMap = {};
+  const elmFileIdsByPath = {};
 
   const processData = processRefactors();
   processData.next(); // Run to first `yield` (moment we need data).
@@ -64,12 +60,12 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 }
 
-export function deactivate(): void {
+function deactivate() {
   deactivating = true;
   socket.end();
 }
 
-function getElmPairSocket(context: vscode.ExtensionContext): Promise<string> {
+function getElmPairSocket(context) {
   return new Promise((resolve, reject) => {
     const elmPairBin = path.join(context.extensionPath, "elm-pair");
     cp.exec(elmPairBin, (err, stdout, stderr) => {
@@ -87,7 +83,7 @@ function getElmPairSocket(context: vscode.ExtensionContext): Promise<string> {
 
 // Parse refactors streamed from Elm-pair and apply them to vscode files.
 // This is a generator function so it can 'yield's when it needs more bytes.
-async function* processRefactors(): AsyncGenerator<void, void, Buffer> {
+async function* processRefactors() {
   const edit = new vscode.WorkspaceEdit();
   let buffer = yield;
   let editsInRefactor;
@@ -113,15 +109,13 @@ async function* processRefactors(): AsyncGenerator<void, void, Buffer> {
   yield* processRefactors();
 }
 
-function*
-    readInt32(buffer: Buffer): Generator<void, [ number, Buffer ], Buffer> {
+function* readInt32(buffer) {
   const [sample, newBuffer] = yield* takeFromBuffer(buffer, 4);
   const num = sample.readInt32BE();
   return [ num, newBuffer ];
 }
 
-function*
-    readString(buffer: Buffer): Generator<void, [ string, Buffer ], Buffer> {
+function* readString(buffer) {
   const [stringLength, buffer2] = yield* readInt32(buffer);
   const [sample, buffer3] = yield* takeFromBuffer(buffer2, stringLength);
   const string = sample.toString('utf8');
@@ -130,8 +124,7 @@ function*
 
 // Read a specific number of bytes from a buffer, waiting for additional data if
 // necessary.
-function* takeFromBuffer(buffer: Buffer, bytes: number):
-              Generator<void, [ Buffer, Buffer ], Buffer> {
+function* takeFromBuffer(buffer, bytes) {
   while (buffer.length < bytes) {
     buffer = Buffer.concat([ buffer, yield ]);
   }
@@ -140,7 +133,7 @@ function* takeFromBuffer(buffer: Buffer, bytes: number):
   return [ sample, rest ];
 }
 
-function connectToElmPair(socketPath: string): Promise<net.Socket> {
+function connectToElmPair(socketPath) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     socket.on('connect', () => { resolve(socket); });
@@ -149,20 +142,25 @@ function connectToElmPair(socketPath: string): Promise<net.Socket> {
   });
 }
 
-function writeInt8(socket: net.Socket, int: number): void {
+function writeInt8(socket, int) {
   const buffer = Buffer.allocUnsafe(1);
   buffer.writeInt8(int, 0);
   socket.write(buffer);
 }
 
-function writeInt32(socket: net.Socket, int: number): void {
+function writeInt32(socket, int) {
   const buffer = Buffer.allocUnsafe(4);
   buffer.writeInt32BE(int, 0);
   socket.write(buffer);
 }
 
-function writeString(socket: net.Socket, str: string): void {
+function writeString(socket, str) {
   const len = Buffer.byteLength(str, 'utf8');
   writeInt32(socket, len);
   socket.write(str, 'utf8');
 }
+
+module.exports = {
+  activate,
+  deactivate
+};
