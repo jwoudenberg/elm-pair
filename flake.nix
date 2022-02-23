@@ -32,27 +32,32 @@
           # cargo = rust-toolchain;
           rustc = rust-toolchain;
         };
-      in rec {
-        # Packages
-        packages.neovim-plugin = pkgs.vimUtils.buildVimPlugin {
-          name = "elm-pair";
-          src = ./neovim-plugin;
-          preFixup = ''
-            substituteInPlace "$out/lua/elm-pair.lua" \
-              --replace '"elm-pair"' '"${packages.elm-pair}/bin/elm-pair"'
-          '';
-        };
-        packages.elm-pair = system-naersk.buildPackage {
+        elm-pair = system-naersk.buildPackage {
           pname = "elm-pair";
           root = ./elm-pair;
           doCheck = true;
           ELM_BINARY_PATH = "${pkgs.elmPackages.elm}/bin/elm";
         };
-        defaultPackage = packages.elm-pair;
+
+        neovim-plugin = pkgs.vimUtils.buildVimPlugin {
+          name = "elm-pair";
+          src = ./neovim-plugin;
+          preFixup = ''
+            substituteInPlace "$out/lua/elm-pair.lua" \
+              --replace '"elm-pair"' '"${elm-pair}/bin/elm-pair"'
+          '';
+        };
+        elm-pair-app = utils.lib.mkApp { drv = elm-pair; };
+
+      in {
+        # Packages
+        defaultPackage = elm-pair;
+        packages.elm-pair = elm-pair;
+        packages.neovim-plugin = neovim-plugin;
 
         # Apps
-        apps.elm-pair = utils.lib.mkApp { drv = packages.elm-pair; };
-        defaultApp = apps.elm-pair;
+        apps.elm-pair = elm-pair-app;
+        defaultApp = elm-pair-app;
 
         # Development
         devShell = pkgs.mkShell {
