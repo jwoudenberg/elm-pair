@@ -11,7 +11,8 @@
   };
 
   outputs = { self, nixpkgs, utils, naersk, fenix }:
-    utils.lib.eachDefaultSystem (system:
+    let supportedSystems = [ "x86_64-linux" "x86_64-darwin" ];
+    in utils.lib.eachSystem supportedSystems (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         system-fenix = fenix.packages.${system};
@@ -72,6 +73,11 @@
         # Apps
         apps.elm-pair = elm-pair-app;
         defaultApp = elm-pair-app;
+
+        # Checks
+        checks.vscode-extension = pkgs.runCommand "vscode-extension" { } ''
+          ${pkgs.nodejs}/bin/node ${./vscode-extension}/tests.js > $out
+        '';
 
         # Development
         devShell = pkgs.mkShell {
