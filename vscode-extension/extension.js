@@ -21,7 +21,8 @@ module.exports = {
       const socket = await connectToElmPair(socketPath);
       deactivate_ = listenOnSocket(vscode, socket);
     } catch (err) {
-      throwError(vscode, err);
+      reportError(vscode, err);
+      throw err;
     }
   },
   deactivate : function deactivate() { deactivate_(); },
@@ -43,7 +44,7 @@ function listenOnSocket(vscode, socket) {
   socket.on('end', () => {
     if (!deactivating) {
       const err = new Error("Connection to elm-pair daemon closed.");
-      throwError(vscode, err);
+      reportError(vscode, err);
     }
   });
 
@@ -81,12 +82,11 @@ function listenOnSocket(vscode, socket) {
   };
 }
 
-async function throwError(vscode, err) {
+async function reportError(vscode, err) {
   let message = err.message || err;
   await vscode.window.showErrorMessage(
       "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: " +
       message);
-  throw err;
 }
 
 function getElmPairSocket(context) {
