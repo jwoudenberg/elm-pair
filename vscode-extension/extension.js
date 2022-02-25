@@ -48,6 +48,13 @@ function listenOnSocket(vscode, socket) {
     }
   });
 
+  vscode.workspace.onDidOpenTextDocument(doc => {
+    if (doc.languageId !== "elm") {
+      return;
+    }
+    onNewElmFile(socket, doc, elmFileIdsByPath);
+  });
+
   vscode.workspace.onDidChangeTextDocument(changeEvent => {
     const doc = changeEvent.document;
     if (doc.languageId !== "elm") {
@@ -56,12 +63,7 @@ function listenOnSocket(vscode, socket) {
     const fileName = doc.fileName;
     let fileId = elmFileIdsByPath[fileName];
     if (typeof fileId === "undefined") {
-      fileId = elmFileIdsByPath[doc.fileName] =
-          Object.keys(elmFileIdsByPath).length;
-      writeInt32(socket, fileId);
-      writeInt8(socket, NEW_FILE_MSG);
-      writeString(socket, fileName);
-      writeString(socket, doc.getText());
+      onNewElmFile(socket, doc, elmFileIdsByPath);
     } else {
       // reason 1 and 2 correspond to UNDO and REDO modifications respectively.
       // We don't want Elm-pair to respond to undo or redo changes, as it might
@@ -86,6 +88,15 @@ function listenOnSocket(vscode, socket) {
     deactivating = true;
     socket.end();
   };
+}
+
+function onNewElmFile(socket, doc, elmFileIdsByPath) {
+  const fileId = elmFileIdsByPath[doc.fileName] =
+      Object.keys(elmFileIdsByPath).length;
+  writeInt32(socket, fileId);
+  writeInt8(socket, NEW_FILE_MSG);
+  writeString(socket, doc.fileName);
+  writeString(socket, doc.getText());
 }
 
 async function reportError(vscode, err) {

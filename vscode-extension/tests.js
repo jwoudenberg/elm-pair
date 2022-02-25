@@ -15,6 +15,30 @@ const suite = () => {
     assert.equal(fakeSocket.read(), undefined);
   });
 
+  test("opening a non-elm file is ignored", () => {
+    const document = {languageId : "md"};
+    fakeVscode.simulateOpen(document);
+    const chunk = fakeSocket.read();
+    assert.equal(chunk, undefined);
+  });
+
+  test("opening Elm puts whole file source on socket", () => {
+    const document = {
+      languageId : "elm",
+      fileName : "New.elm",
+      getText : () => "abcd"
+    };
+    fakeVscode.simulateOpen(document);
+
+    assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int8FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), "New.elm".length);
+    assert.equal(stringFromChunk(fakeSocket.read()), "New.elm");
+    assert.equal(int32FromChunk(fakeSocket.read()), "abcd".length);
+    assert.equal(stringFromChunk(fakeSocket.read()), "abcd");
+    assert.equal(fakeSocket.read(), undefined);
+  });
+
   test("change to non-elm file is ignored", () => {
     const change = {document : {languageId : "md"}};
     fakeVscode.simulateChange(change);
@@ -29,7 +53,7 @@ const suite = () => {
     };
     fakeVscode.simulateChange(change);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 0);
     assert.equal(int32FromChunk(fakeSocket.read()), "Test.elm".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "Test.elm");
@@ -60,7 +84,7 @@ const suite = () => {
     };
     fakeVscode.simulateChange(change);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 1);
@@ -70,7 +94,7 @@ const suite = () => {
     assert.equal(int32FromChunk(fakeSocket.read()), "pqr".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "pqr");
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 5);
@@ -205,6 +229,7 @@ function makeFakeVscode() {
   ret.vscode = {
     workspace : {
       onDidChangeTextDocument(callback) { ret.simulateChange = callback; },
+      onDidOpenTextDocument(callback) { ret.simulateOpen = callback; },
       applyEdit(edit) { editsStream.write(edit); }
     },
     window : {
