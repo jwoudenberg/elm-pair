@@ -58,6 +58,7 @@
           preBuild = ''
             cp ${./README.md} ./README.md
             cp ${./CHANGELOG.md} ./CHANGELOG.md
+            cp ${./LICENSE} ./LICENSE
             cp ${./neovim-plugin/elm-pair} ./elm-pair
             substituteInPlace "extension.js" \
               --replace 'nix-build-put-path-to-elm-pair-here' '${elm-pair}/bin/elm-pair'
