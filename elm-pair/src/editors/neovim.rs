@@ -5,7 +5,7 @@ use crate::lib::bytes::read_chunks;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{
-    byte_to_point, Buffer, Edit, SourceFileSnapshot,
+    byte_to_point, Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
 use byteorder::ReadBytesExt;
 use messagepack::read_tuple;
@@ -300,7 +300,11 @@ impl<R: Read> EditorEvent for NeovimEvent<R> {
                 self.lastline,
                 &mut code.bytes,
             )?;
-            Ok(BufferChange::ModifiedBuffer { code, edit })
+            Ok(BufferChange::ModifiedBuffer {
+                code,
+                edit,
+                refactor_allowed: RefactorAllowed::Yes,
+            })
         } else {
             log::error!(
                 "received incremental buffer update before full update"

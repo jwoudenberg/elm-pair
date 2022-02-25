@@ -62,6 +62,7 @@ const suite = () => {
 
     assert.equal(int32FromChunk(fakeSocket.read()), 0);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
+    assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int32FromChunk(fakeSocket.read()), 3);
@@ -70,6 +71,7 @@ const suite = () => {
     assert.equal(stringFromChunk(fakeSocket.read()), "pqr");
 
     assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 5);
     assert.equal(int32FromChunk(fakeSocket.read()), 6);

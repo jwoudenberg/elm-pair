@@ -1,7 +1,9 @@
 use crate::elm;
 use crate::elm::compiler::Compiler;
 use crate::lib::log;
-use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
+use crate::lib::source_code::{
+    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
+};
 use crate::{Error, MVar, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -25,7 +27,7 @@ impl From<Error> for Msg {
 }
 
 pub fn run(
-    latest_code: &MVar<SourceFileSnapshot>,
+    latest_code: &MVar<(RefactorAllowed, SourceFileSnapshot)>,
     analysis_receiver: Receiver<Msg>,
     compiler: Compiler,
 ) -> Result<(), Error> {
@@ -40,7 +42,7 @@ pub fn run(
 }
 
 struct AnalysisLoop<'a> {
-    latest_code: &'a MVar<SourceFileSnapshot>,
+    latest_code: &'a MVar<(RefactorAllowed, SourceFileSnapshot)>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
@@ -181,8 +183,11 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
 
 impl<'a> AnalysisLoop<'a> {
     fn source_file_diff(&self) -> Option<SourceFileDiff> {
-        let new = self.latest_code.try_read()?;
+        let (refactor_allowed, new) = self.latest_code.try_read()?;
         let old = self.last_compiling_code.get(&new.buffer)?.clone();
+        if let RefactorAllowed::No = refactor_allowed {
+            return None;
+        }
         if new.revision <= old.revision {
             return None;
         }

@@ -192,3 +192,9 @@ pub fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
         column: code.byte_to_char(byte) - code.line_to_char(row),
     }
 }
+
+#[derive(Clone, Copy)]
+pub enum RefactorAllowed {
+    Yes,
+    No,
+}

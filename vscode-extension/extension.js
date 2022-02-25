@@ -63,10 +63,16 @@ function listenOnSocket(vscode, socket) {
       writeString(socket, fileName);
       writeString(socket, doc.getText());
     } else {
+      // reason 1 and 2 correspond to UNDO and REDO modifications respectively.
+      // We don't want Elm-pair to respond to undo or redo changes, as it might
+      // result in programmers getting stuck in a loop.
+      const doNotRefactor =
+          changeEvent.reason === 1 || changeEvent.reason === 2;
       for (const change of changeEvent.contentChanges) {
         const range = change.range;
         writeInt32(socket, fileId);
         writeInt8(socket, FILE_CHANGED_MSG);
+        writeInt8(socket, doNotRefactor ? 0 : 1);
         writeInt32(socket, range.start.line);
         writeInt32(socket, range.start.character);
         writeInt32(socket, range.end.line);

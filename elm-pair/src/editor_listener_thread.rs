@@ -3,7 +3,7 @@ use crate::compilation_thread;
 use crate::editors::neovim;
 use crate::editors::vscode;
 use crate::lib::log;
-use crate::lib::source_code::{Buffer, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, RefactorAllowed, SourceFileSnapshot};
 use crate::{Error, MVar};
 use ropey::Rope;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tree_sitter::InputEdit;
 
 struct EditorListenerLoop {
-    active_buffer: Arc<MVar<SourceFileSnapshot>>,
+    active_buffer: Arc<MVar<(RefactorAllowed, SourceFileSnapshot)>>,
     inactive_buffers: HashMap<Buffer, SourceFileSnapshot>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
@@ -23,7 +23,7 @@ struct EditorListenerLoop {
 
 pub fn run(
     listener: UnixListener,
-    active_buffer: Arc<MVar<SourceFileSnapshot>>,
+    active_buffer: Arc<MVar<(RefactorAllowed, SourceFileSnapshot)>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
@@ -71,7 +71,7 @@ fn read_editor_kind<R: Read>(read: &mut R) -> Result<EditorKind, Error> {
 }
 
 pub fn spawn_editor_thread(
-    active_buffer: Arc<MVar<SourceFileSnapshot>>,
+    active_buffer: Arc<MVar<(RefactorAllowed, SourceFileSnapshot)>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
     editor_id: u32,
@@ -132,11 +132,15 @@ impl EditorListenerLoop {
             .send(analysis_thread::Msg::EditorConnected(editor_id, boxed))?;
         editor.listen(|buffer, update| {
             let event = update.apply_to_buffer(self.take_buffer(buffer))?;
-            let code = match event {
+            let (refactor_allowed, code) = match event {
                 BufferChange::NoChanges => return Ok(()),
-                BufferChange::ModifiedBuffer { mut code, edit } => {
+                BufferChange::ModifiedBuffer {
+                    mut code,
+                    edit,
+                    refactor_allowed,
+                } => {
                     code.apply_edit(edit)?;
-                    code
+                    (refactor_allowed, code)
                 }
                 BufferChange::OpenedNewBuffer {
                     bytes,
@@ -156,7 +160,10 @@ impl EditorListenerLoop {
                             path,
                         },
                     )?;
-                    SourceFileSnapshot::new(buffer, bytes)?
+                    (
+                        RefactorAllowed::Yes,
+                        SourceFileSnapshot::new(buffer, bytes)?,
+                    )
                 }
             };
             if !code.tree.root_node().has_error()
@@ -167,7 +174,7 @@ impl EditorListenerLoop {
                     compilation_thread::Msg::CompilationRequested(code.clone()),
                 )?;
             }
-            self.put_active_buffer(code);
+            self.put_active_buffer(code, refactor_allowed);
             self.analysis_sender
                 .send(analysis_thread::Msg::SourceCodeModified)?;
             Ok(())
@@ -179,7 +186,7 @@ impl EditorListenerLoop {
     }
 
     fn take_buffer(&mut self, buffer: Buffer) -> Option<SourceFileSnapshot> {
-        if let Some(code) = self.active_buffer.try_take() {
+        if let Some((_, code)) = self.active_buffer.try_take() {
             if code.buffer == buffer {
                 return Some(code);
             } else {
@@ -189,8 +196,14 @@ impl EditorListenerLoop {
         self.inactive_buffers.remove(&buffer)
     }
 
-    fn put_active_buffer(&mut self, code: SourceFileSnapshot) {
-        if let Some(prev_active) = self.active_buffer.replace(code) {
+    fn put_active_buffer(
+        &mut self,
+        code: SourceFileSnapshot,
+        refactor: RefactorAllowed,
+    ) {
+        if let Some((_, prev_active)) =
+            self.active_buffer.replace((refactor, code))
+        {
             self.inactive_buffers
                 .insert(prev_active.buffer, prev_active);
         }
@@ -234,5 +247,6 @@ pub enum BufferChange {
     ModifiedBuffer {
         code: SourceFileSnapshot,
         edit: InputEdit,
+        refactor_allowed: RefactorAllowed,
     },
 }

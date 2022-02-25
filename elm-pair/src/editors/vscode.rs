@@ -3,7 +3,9 @@ use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
 use crate::lib::bytes;
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
+use crate::lib::source_code::{
+    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
+};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::ops::DerefMut;
@@ -207,6 +209,11 @@ fn parse_file_changed_msg<R: Read>(
     read: &mut R,
     mut code: SourceFileSnapshot,
 ) -> Result<BufferChange, Error> {
+    let refactor_allowed = if bytes::read_u8(read)? == 0 {
+        RefactorAllowed::No
+    } else {
+        RefactorAllowed::Yes
+    };
     let start_line = bytes::read_u32(read)?;
     let start_char = bytes::read_u32(read)?;
     let end_line = bytes::read_u32(read)?;
@@ -245,6 +252,7 @@ fn parse_file_changed_msg<R: Read>(
     };
     let change = BufferChange::ModifiedBuffer {
         code,
+        refactor_allowed,
         edit: InputEdit {
             start_byte,
             old_end_byte,
