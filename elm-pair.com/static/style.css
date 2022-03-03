@@ -20,10 +20,11 @@ footer {
 h1 {
   font-size: 2.5em;
   margin-bottom: 0;
-}
-
-h1 a {
-  text-decoration: none;
+  padding-left: 1.6em;
+  background-image: url("./logo.svg");
+  background-size: 1.2em auto;
+  background-repeat: no-repeat;
+  background-position: 0 0.1em;
 }
 
 h2 {
