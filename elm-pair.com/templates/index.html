@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block content %}
+<p>Elm-pair helps you write Elm code. You tell Elm-pair about the change you want to make and it will do the actual work. It's a bit like using an IDE, except you don't need to learn any keyboard shortcuts.</p>
+<p>You talk to Elm-pair by making a change in your code. If Elm-pair understands your intent will respond with a change off its own.</p>
+<p>Elm-pair is in early development. The short video below demonstrates current functionality.</p>
+<div style="padding:41.87% 0 0 0;position:relative;"><iframe src="https://player.vimeo.com/video/662666351?h=096340b0bc" style="position:absolute;top:0;left:0;width:100%;height:100%;" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe></div><script src="https://player.vimeo.com/api/player.js"></script>
+
+{% set news = get_section(path="news/_index.md") %}
+<h2 id="news">News</h2>
+{% for page in news.pages %}
+  <h3>{{page.date}}: {{page.title}}</h3>
+  {{page.content | safe}}
+{% endfor %}
+
+{% endblock content %}

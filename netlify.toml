@@ -1,3 +1,8 @@
 [build]
-publish = "elm-pair.com"
-build = "true"
+base = "elm-pair.com/"
+publish = "public/"
+command = "./build.sh"
+
+[build.environment]
+ZOLA_VERSION = "0.15.2"
+PYTHON_VERSION = "3.8"

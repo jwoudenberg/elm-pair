@@ -1,0 +1,23 @@
+# The URL the site will be built for
+base_url = "https://elm-pair.com"
+
+# The site title and description; used in feeds by default.
+title = "Elm-pair News"
+description = "Updates on new releases of Elm-pair."
+
+# Whether to automatically compile all Sass files in the sass directory
+compile_sass = false
+
+# Whether to build a search index to be used later on by a JavaScript library
+build_search_index = false
+
+generate_feed = true
+feed_filename = "atom.xml"
+
+[markdown]
+# Whether to do syntax highlighting
+# Theme can be customised by setting the `highlight_theme` variable to a theme supported by Zola
+highlight_code = false
+
+[extra]
+# Put all your custom variables here

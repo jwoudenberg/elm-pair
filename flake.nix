@@ -94,6 +94,10 @@
             # For VSCode plugin development
             pkgs.nodejs
             pkgs.nodePackages.typescript
+
+            # Site development
+            pkgs.zola
+            pkgs.python38
           ];
         };
       });

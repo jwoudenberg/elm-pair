@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>News</h2>
+{% for page in section.pages %}
+  <h3>{{page.date}}: {{page.title}}</h3>
+  {{page.content | safe}}
+{% endfor %}
+{% endblock content %}
