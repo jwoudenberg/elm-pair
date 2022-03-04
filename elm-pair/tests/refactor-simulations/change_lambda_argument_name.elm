@@ -13,6 +13,11 @@ youngest ages =
         |> Maybe.map Age
 
 
+idAge : Age -> Age
+idAge years =
+    years
+
+
 
 -- START SIMULATION
 -- MOVE CURSOR TO LINE 11 n)
@@ -33,3 +38,10 @@ youngest ages =
 --         |> List.map (\(Age years) -> years)
 --         |> List.minimum
 --         |> Maybe.map Age
+--
+--
+-- idAge : Age -> Age
+-- idAge years =
+--     years
+--
+--

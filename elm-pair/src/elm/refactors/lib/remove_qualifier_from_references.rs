@@ -25,6 +25,7 @@ pub fn remove_qualifier_from_references(
         refactor,
         code,
         &names,
+        &[],
         skip_byteranges,
     )?;
     let mut cursor = QueryCursor::new();

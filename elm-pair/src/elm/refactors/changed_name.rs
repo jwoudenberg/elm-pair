@@ -67,6 +67,7 @@ pub fn refactor(
                     new_constructor.clone(),
                     new_type.clone(),
                 ]),
+                &[&scope],
                 &[&new_node.byte_range()],
             )?;
             renaming::rename(
@@ -95,6 +96,7 @@ pub fn refactor(
                 refactor,
                 code,
                 &HashSet::from_iter(std::iter::once(new_name.clone())),
+                &[&scope],
                 &[&new_node.byte_range()],
             )?;
             renaming::rename(

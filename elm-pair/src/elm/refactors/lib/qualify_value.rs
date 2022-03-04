@@ -184,7 +184,7 @@ pub fn qualify_value(
                     let mut unqualified_names_in_use: HashSet<Name> = queries
                         .query_for_unqualified_values
                         .run(&mut cursor, code)
-                        .map(|r| r.map(|(_, reference)| reference))
+                        .map(|r| r.map(|(_, _, reference)| reference))
                         .collect::<Result<HashSet<Name>, Error>>()?;
                     unqualified_names_in_use.remove(reference);
                     let mut new_exposed: String = String::new();

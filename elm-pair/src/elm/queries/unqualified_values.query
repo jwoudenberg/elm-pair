@@ -4,19 +4,19 @@
         (lower_case_identifier) @value
     )
     (type_annotation
-        (lower_case_identifier) @value
+        (lower_case_identifier) @value_definition
     )
     (function_declaration_left
-        (lower_case_identifier) @value
+        (lower_case_identifier) @value_definition
     )
     (lower_pattern
-        (lower_case_identifier) @value
+        (lower_case_identifier) @value_definition
     )
     (module_declaration
       exposing: (exposing_list
         [
           (exposed_value
-              (lower_case_identifier) @value
+              (lower_case_identifier) @value_definition
           )
           (exposed_type
               (type_identifier) @type_
@@ -81,7 +81,7 @@ decoder kind =
 -- === expected output below ===
 -- type_: [2:22] Beverage
 --
--- value: [2:32] decoder
+-- value_definition: [2:32] decoder
 --
 -- type_: [7:11] Beverage
 --
@@ -95,15 +95,15 @@ decoder kind =
 --
 -- constructor: [15:6] Water
 --
--- value: [18:0] enjoyment
+-- value_definition: [18:0] enjoyment
 --
 -- type_: [18:12] Beverage
 --
 -- type_: [18:24] Float
 --
--- value: [19:0] enjoyment
+-- value_definition: [19:0] enjoyment
 --
--- value: [20:5] beverage
+-- value_definition: [20:5] beverage
 --
 -- value: [21:13] beverage
 --
@@ -113,7 +113,7 @@ decoder kind =
 --
 -- constructor: [23:12] Water
 --
--- value: [26:0] decoder
+-- value_definition: [26:0] decoder
 --
 -- type_: [26:10] BeverageKind
 --
@@ -121,11 +121,11 @@ decoder kind =
 --
 -- type_: [26:34] Beverage
 --
--- value: [27:0] decoder
+-- value_definition: [27:0] decoder
 --
--- value: [27:8] kind
+-- value_definition: [27:8] kind
 --
--- value: [29:8] kindDecoder
+-- value_definition: [29:8] kindDecoder
 --
 -- value: [29:22] succeed
 --

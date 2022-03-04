@@ -7,6 +7,7 @@ use tree_sitter::{Node, QueryCursor};
 crate::elm::queries::query!(
     "./unqualified_values.query",
     value,
+    value_definition,
     type_,
     constructor,
 );
@@ -40,14 +41,12 @@ impl Query {
         node: Node,
     ) -> Result<Name, Error> {
         let mut cursor = QueryCursor::new();
-        let (_, new_name) = self
+        let (_, _, new_name) = self
             .run_in(&mut cursor, code, node)
             .next()
             .ok_or_else(|| {
-                log::mk_err!(
-                    "parsing unqualified value node using query failed"
-                )
-            })??;
+            log::mk_err!("parsing unqualified value node using query failed")
+        })??;
         Ok(new_name)
     }
 }
@@ -58,16 +57,23 @@ pub struct UnqualifiedValues<'a, 'tree> {
     query: &'a Query,
 }
 
+pub enum IsDefinition {
+    Yes,
+    No,
+}
+
 impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
-    type Item = Result<(Node<'a>, Name), Error>;
+    type Item = Result<(Node<'a>, IsDefinition, Name), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let match_ = self.matches.next()?;
         let capture = match_.captures.first()?;
-        let kind = match capture.index {
-            index if index == self.query.value => NameKind::Value,
-            index if index == self.query.type_ => NameKind::Type,
-            index if index == self.query.constructor => NameKind::Constructor,
+        let (is_definition, kind) = match capture.index {
+            index if index == self.query.value => (IsDefinition::No, NameKind::Value),
+            index if index == self.query.value_definition => (IsDefinition::Yes, NameKind::Value),
+            // TODO: Add IsDefinition::Yes branches for type and construtor names.
+            index if index == self.query.type_ => (IsDefinition::No, NameKind::Type),
+            index if index == self.query.constructor => (IsDefinition::No, NameKind::Constructor),
             index => {
                 return Some(Err(log::mk_err!(
                     "query for unqualified values captured name with unexpected index {:?}",
@@ -81,6 +87,6 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
             name: name.into(),
             kind,
         };
-        Some(Ok((node, reference)))
+        Some(Ok((node, is_definition, reference)))
     }
 }

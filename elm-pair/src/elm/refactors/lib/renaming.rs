@@ -1,4 +1,5 @@
 use crate::elm::dependencies::DataflowComputation;
+use crate::elm::queries::unqualified_values::IsDefinition;
 use crate::elm::refactors::lib::qualify_value::qualify_value;
 use crate::elm::{Name, Queries, Refactor};
 use crate::lib::log;
@@ -23,6 +24,7 @@ pub fn free_names(
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     names: &HashSet<Name>,
+    scope_must_include_one_of: &[&Range<usize>],
     // Often this function gets called after the programmer already introduced
     // a naming conflict. Elm-pair needs to rename the old usages of the name
     // from before the programmer introduced the conflict to resolve that
@@ -32,11 +34,20 @@ pub fn free_names(
     skip_byteranges: &[&Range<usize>],
 ) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
-    let names_in_use: HashSet<Name> = queries
-        .query_for_unqualified_values
-        .run_in(&mut cursor, code, code.tree.root_node())
-        .map(|r| r.map(|(_, name)| name))
-        .collect::<Result<HashSet<Name>, Error>>()?;
+    let mut names_in_use: HashSet<Name> = HashSet::new();
+    let mut definition_sites: HashMap<Name, usize> = HashMap::new();
+    let matches = queries.query_for_unqualified_values.run_in(
+        &mut cursor,
+        code,
+        code.tree.root_node(),
+    );
+    for result in matches {
+        let (node, is_definition, name) = result?;
+        if let IsDefinition::Yes = is_definition {
+            definition_sites.insert(name.clone(), node.start_byte());
+        }
+        names_in_use.insert(name);
+    }
     let names_from_other_modules = imported_names(
         queries,
         &mut cursor,
@@ -63,6 +74,29 @@ pub fn free_names(
 
         // If an unqualified variable with this name already exists, rename it
         if names_in_use.contains(name) {
+            // TODO: Make it so we query for 'scopes' at most once.
+            if !scope_must_include_one_of.is_empty() {
+                if let Some(definition_site) = definition_sites.get(name) {
+                    let opt_scope = queries
+                        .query_for_scopes
+                        .run(&mut cursor, code)
+                        .filter(|scope| scope.contains(definition_site))
+                        // If the variable definition is in multiple scopes, the innermost
+                        // (i.e. shortes) scope will be the one the variable can be used in.
+                        .min_by_key(|scope| scope.len());
+                    if let Some(scope) = opt_scope {
+                        let overlaps_with_included =
+                            scope_must_include_one_of.iter().any(|included| {
+                                included.contains(&scope.start)
+                                    || included.contains(&scope.end)
+                            });
+                        if !overlaps_with_included {
+                            continue;
+                        }
+                    }
+                }
+            }
+
             let new_name = names_with_digit(name)
                 .find(|name| !names_in_use.contains(name))
                 .ok_or_else(|| {
@@ -150,7 +184,7 @@ pub fn rename(
             .any(|skip_range| skip_range.contains(&node.start_byte()))
     };
     for res in unqualified_values {
-        let (node, reference) = res?;
+        let (node, _, reference) = res?;
         if &reference == from && should_include(&node) && !should_skip(&node) {
             refactor.add_change(node.byte_range(), to.name.to_string())
         }

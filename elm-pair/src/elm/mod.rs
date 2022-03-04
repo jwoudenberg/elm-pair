@@ -290,7 +290,7 @@ impl RefactorEngine {
                 parent: _,
             } => {
                 let mut cursor = QueryCursor::new();
-                let (node, new_reference) = self
+                let (node, _, new_reference) = self
                     .queries
                     .query_for_unqualified_values
                     .run_in(&mut cursor, &diff.new, changes.new_parent)
