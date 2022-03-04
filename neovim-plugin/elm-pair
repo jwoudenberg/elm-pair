@@ -7,7 +7,7 @@ set -euo pipefail
 # elm-pair binary downloaded, then starts that binary.
 
 ELM_VERSION="0.19.1"
-ELM_PAIR_VERSION="release-10"
+ELM_PAIR_VERSION="release-11"
 
 function main {
   # Redirect stdout to stderr for the duration of this script. The editor plugin

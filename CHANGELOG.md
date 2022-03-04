@@ -1,5 +1,11 @@
 # Changelog
 
+## 2022-03-04: Release 11
+
+- When giving a variable a new name that is already in use in a separate
+scope, Elm-pair will no longer add a suffix to that other variable, moving it
+out of the way.
+
 ## 2022-02-09: Release 10
 
 - Fixes a bug where typing fast would cause Elm-pair to loose the thread on a rename refactor.
