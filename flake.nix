@@ -34,6 +34,19 @@
           rustc = rust-toolchain;
         };
 
+        site = pkgs.stdenv.mkDerivation {
+          src = ./.;
+          name = "elm-pair.com";
+          buildPhase = ''
+            cd elm-pair.com
+            ${pkgs.python38}/bin/python ./changelog-to-news.py
+            ${pkgs.zola}/bin/zola build
+          '';
+          installPhase = ''
+            mv public $out
+          '';
+        };
+
         elm-pair = system-naersk.buildPackage {
           pname = "elm-pair";
           root = ./elm-pair;
@@ -67,6 +80,7 @@
       in {
         # Packages
         defaultPackage = elm-pair;
+        packages.site = site;
         packages.elm-pair = elm-pair;
         packages.neovim-plugin = neovim-plugin;
         packages.vscode-extension = vscode-extension;

@@ -27,7 +27,7 @@ grep -P "## \d{4}-\d{2}-\d{2}: Release $release$" < CHANGELOG.md
 grep "^ELM_PAIR_VERSION=\"release-$release\"$" < neovim-plugin/elm-pair
 
 # Check cargo build runs without producing warnings
-(cd elm-pair && RUSTFLAGS=-Dwarnings cargo build --release)
+(cd elm-pair && cargo build --release)
 
 # Check nix-build runs (runs tests too)
 nix build
