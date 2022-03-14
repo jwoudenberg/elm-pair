@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-03-14: Release 12
+
+- Opening an Elm module outside an Elm project directory no longer crashes Elm-pair.
+
 ## 2022-03-04: Release 11
 
 - When giving a variable a new name that is already in use in a separate
