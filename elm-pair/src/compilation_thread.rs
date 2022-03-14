@@ -1,8 +1,8 @@
 use crate::analysis_thread;
 use crate::elm::compiler::Compiler;
-use crate::sized_stack::SizedStack;
 use crate::lib::log;
 use crate::lib::source_code::{Buffer, SourceFileSnapshot};
+use crate::sized_stack::SizedStack;
 use crate::{Error, MsgLoop};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ impl MsgLoop<Error> for CompilationLoop {
                 self.compilation_candidates.push(snapshot)
             }
             Msg::OpenedNewSourceFile { buffer, path } => {
-                self.buffer_info.insert(buffer, BufferInfo::new(&path)?);
+                self.buffer_info.insert(buffer, BufferInfo::new(&path));
             }
         }
         Ok(true)
@@ -63,14 +63,23 @@ impl MsgLoop<Error> for CompilationLoop {
                     snapshot.buffer
                 )
             })?;
+        let root = match &buffer_info.root {
+            ElmProjectRoot::Known(root_path) => root_path,
+            ElmProjectRoot::Unknown => {
+                // We can't compile if we don't know the root of the project
+                // this elm module is located in. We already logged an error
+                // when we created the ElmProjectRoot::Unknown constructor, so
+                // we're not going to log the same error again here.
+                return Ok(());
+            }
+        };
         if is_new_revision(&mut buffer_info.last_checked_revision, &snapshot) {
             log::info!(
                 "running compilation for revision {:?} of buffer {:?}",
                 snapshot.revision,
                 snapshot.buffer
             );
-            let opt_output =
-                self.compiler.make(&buffer_info.root, &snapshot.bytes);
+            let opt_output = self.compiler.make(root, &snapshot.bytes);
             match opt_output.map(|output| output.status.success()) {
                 Err(err) => {
                     log::error!("Failure running `elm make`: {:?}", err)
@@ -101,18 +110,33 @@ fn is_new_revision(
     is_new
 }
 
+enum ElmProjectRoot {
+    Known(PathBuf),
+    Unknown,
+}
+
 struct BufferInfo {
     last_checked_revision: Option<usize>,
     // Root of the Elm project containing this source file.
-    root: PathBuf,
+    root: ElmProjectRoot,
 }
 
 impl BufferInfo {
-    fn new(path: &Path) -> Result<BufferInfo, Error> {
-        let info = BufferInfo {
-            last_checked_revision: None,
-            root: crate::elm::project::root(path)?.to_owned(),
+    fn new(path: &Path) -> BufferInfo {
+        let root = match crate::elm::project::root(path) {
+            Ok(root_path) => ElmProjectRoot::Known(root_path.to_owned()),
+            Err(err) => {
+                log::info!(
+                    "Could not find elm project root for path {:?}: {:?}",
+                    path,
+                    err
+                );
+                ElmProjectRoot::Unknown
+            }
         };
-        Ok(info)
+        BufferInfo {
+            last_checked_revision: None,
+            root,
+        }
     }
 }
