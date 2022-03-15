@@ -4,11 +4,4 @@
 <p>Elm-pair helps you write Elm code. You tell Elm-pair about the change you want to make and it will do the actual work. It's a bit like using an IDE, except you don't need to learn any keyboard shortcuts.</p>
 <p>You talk to Elm-pair by making a change in your code. If Elm-pair understands your intent will respond with a change off its own.</p>
 
-{% set news = get_section(path="news/_index.md") %}
-<h2 id="news">News</h2>
-{% for page in news.pages %}
-  <h3>{{page.date}}: {{page.title}}</h3>
-  {{page.content | safe}}
-{% endfor %}
-
 {% endblock content %}
