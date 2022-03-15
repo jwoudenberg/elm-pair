@@ -19,6 +19,7 @@ footer {
 
 h1, h2, h3 {
   font-family: Georgia, "Times New Roman", Times, serif;
+  margin: 1.2em 0 0.2em 0;
 }
 
 h1 {
@@ -34,11 +35,14 @@ h1 {
 
 h2 {
   font-size: 1.9em;
-  margin-top: 1.0em;
 }
 
 h3 {
   font-size: 1.2em;
+}
+
+p, ul, ol {
+  margin: 0 0 1em 0;
 }
 
 nav {
@@ -58,4 +62,9 @@ nav li {
 
 a {
   color: inherit;
+}
+
+img {
+  display: block;
+  margin: auto;
 }
