@@ -40,6 +40,10 @@ fn run() -> Result<(), Error> {
             println!("{}", VERSION);
             return Ok(());
         }
+        Some(arg) if arg == "--credits" => {
+            show_credits();
+            return Ok(());
+        }
         Some(arg) => {
             show_help();
             return Err(log::mk_err!(
@@ -141,6 +145,10 @@ fn show_help() {
     println!();
     println!("    elm-pair --version");
     println!("        Show the Elm-pair version number.");
+}
+
+fn show_credits() {
+    println!(include_str!("credits.txt"));
 }
 
 // Continue running the rest of this program as a daemon. This function follows
