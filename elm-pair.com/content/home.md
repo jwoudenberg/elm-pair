@@ -5,7 +5,7 @@ template = "page.html"
 
 Elm-pair helps you write Elm code. You tell Elm-pair about the change you want to make and it will do the actual work. It's a bit like using an IDE, except you don't need to learn any keyboard shortcuts.
 
-You talk to Elm-pair by making a change in your code. If Elm-pair understands your intent will follow up with its own change.
+You talk to Elm-pair by making a change in your code. If Elm-pair understands your intent then it will follow up with its own change.
 
 ### Renaming variables, types, and constructors
 
