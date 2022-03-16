@@ -43,10 +43,19 @@ Building your environment for the first time will fail with a hash mismatch erro
 
 ## Acknowledgements
 
-This project is made possible by a couple of others. A big thank you to the [tree-sitter][] and [tree-sitter-elm][], that provide the fast parsing logic Elm-pair buils on top of.
+This project is made possible by a couple of others.
+
+- [tree-sitter][] is a library for fast code parsing. It allows Elm-pair to listen to every key stroke and figure out programmer intent quickly and efficiently.
+- [tree-sitter-elm][] is an extension for tree-sitter that adds support for the Elm programming language.
+- [ropey][] provides the 'rope' datastructure Elm-pair uses to store local copies of source code.
+- [notify][] makes it easy for Elm-pair to subscribe to changes in the file system, so it can keep up with what's happening in your Elm projects.
+- [differential-dataflow][] provides a way to do incremental computation, allowing Elm-pair to do the bare minimum of work when a file changes.
 
 [demo]: https://vimeo.com/662666351
+[differential-dataflow]: https://crates.io/crates/differential-dataflow
 [home-manager]: https://github.com/nix-community/home-manager
 [neovim]: https://neovim.io/
+[notify]: https://crates.io/crates/notify
+[ropey]: https://crates.io/crates/ropey
 [tree-sitter-elm]: https://github.com/elm-tooling/tree-sitter-elm
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
