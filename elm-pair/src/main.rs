@@ -31,6 +31,25 @@ pub fn main() {
 }
 
 fn run() -> Result<(), Error> {
+    match std::env::args().nth(1) {
+        Some(arg) if arg == "--help" || arg == "-h" => {
+            show_help();
+            return Ok(());
+        }
+        Some(arg) if arg == "--version" || arg == "-v" => {
+            println!("{}", VERSION);
+            return Ok(());
+        }
+        Some(arg) => {
+            show_help();
+            return Err(log::mk_err!(
+                "elm-pair was passed unexpected argument: {}",
+                arg
+            ));
+        }
+        None => {}
+    }
+
     let elm_pair_dir = elm_pair_dir()?;
     let socket_path = elm_pair_dir.join("socket");
     // Print the socket we're listening on so the editor can connect to it.
@@ -108,6 +127,20 @@ fn run() -> Result<(), Error> {
     analysis_thread::run(&latest_code, analysis_receiver, compiler)?;
     log::info!("elm-pair exiting");
     Ok(())
+}
+
+fn show_help() {
+    println!("Thank you for running elm-pair!");
+    println!("You can learn more about elm-pair at elm-pair.com");
+    println!();
+    println!("Elm-pair is typically not started by hand, but by a text-editor plugin.");
+    println!("The following flags exist for manual use:");
+    println!();
+    println!("    elm-pair --help");
+    println!("        Show this help text.");
+    println!();
+    println!("    elm-pair --version");
+    println!("        Show the Elm-pair version number.");
 }
 
 // Continue running the rest of this program as a daemon. This function follows
