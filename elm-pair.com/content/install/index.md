@@ -3,6 +3,8 @@ title = "Installing Elm-pair"
 template = "page.html"
 +++
 
+Elm-pair is free for non-commercial usage. If you'd like to use Elm-pair in commercial projects you can [buy a license](/commercial-license).
+
 ### Neovim
 
 Elm-pair is available as a plugin for Neovim. Below are instructions for
