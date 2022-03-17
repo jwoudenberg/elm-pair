@@ -18,13 +18,13 @@ grep "^version = \"0.$release.0\"$" < elm-pair/Cargo.toml
 grep -zlP "name = \"elm-pair\"\nversion = \"0.$release.0\"" < elm-pair/Cargo.toml
 
 # check vscode-extension/package.json contains the expected version
-grep "^\s*\"version\": \"0.$release.0\",$" < vscode-extension/package.json
+grep "^\s*\"version\": \"0.$release.0\",$" < editor-integrations/vscode/package.json
 
 # check changelog contains an entry for this version
 grep -P "## \d{4}-\d{2}-\d{2}: Release $release$" < CHANGELOG.md
 
 # check version downloaded by neovim plugin install script
-grep "^ELM_PAIR_VERSION=\"release-$release\"$" < neovim-plugin/elm-pair
+grep "^ELM_PAIR_VERSION=\"release-$release\"$" < editor-integrations/neovim/elm-pair
 
 # Check cargo build runs without producing warnings
 (cd elm-pair && cargo build --release)

@@ -57,7 +57,7 @@
 
         neovim-plugin = pkgs.vimUtils.buildVimPlugin {
           name = "elm-pair";
-          src = ./neovim-plugin;
+          src = ./editor-integrations/neovim;
           preFixup = ''
             substituteInPlace "$out/lua/elm-pair.lua" \
               --replace '"elm-pair"' '"${elm-pair}/bin/elm-pair"'
@@ -66,13 +66,13 @@
 
         vscode-extension = pkgs.vscode-utils.buildVscodeExtension {
           name = "elm-pair";
-          src = ./vscode-extension;
+          src = ./editor-integrations/vscode;
           vscodeExtUniqueId = "jwoudenberg.elm-pair";
           preBuild = ''
             cp ${./README.md} ./README.md
             cp ${./CHANGELOG.md} ./CHANGELOG.md
             cp ${./LICENSE} ./LICENSE
-            cp ${./neovim-plugin/elm-pair} ./elm-pair
+            cp ${./editor-integrations/neovim/elm-pair} ./elm-pair
             substituteInPlace "extension.js" \
               --replace 'nix-build-put-path-to-elm-pair-here' '${elm-pair}/bin/elm-pair'
           '';
@@ -91,7 +91,9 @@
 
         # Checks
         checks.vscode-extension = pkgs.runCommand "vscode-extension" { } ''
-          ${pkgs.nodejs}/bin/node ${./vscode-extension}/tests.js > $out
+          ${pkgs.nodejs}/bin/node ${
+            ./editor-integrations/vscode
+          }/tests.js > $out
         '';
 
         # Development

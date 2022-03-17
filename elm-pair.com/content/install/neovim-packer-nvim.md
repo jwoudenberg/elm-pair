@@ -13,7 +13,7 @@ If you run into trouble we'd love to help. Please [reach out][/support]!
 
    ```vimscript
    return require('packer').startup(function()
-     use {'jwoudenberg/elm-pair', rtp = 'neovim-plugin'}
+     use {'jwoudenberg/elm-pair', rtp = 'editor-integrations/neovim'}
 
      -- .. potentially more plugins here!
 
