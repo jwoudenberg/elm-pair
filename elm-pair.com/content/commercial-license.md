@@ -12,7 +12,7 @@ If you'd like to use Elm-pair for commercial projects as well then you need to b
 
 [Full license terms][commercial-license]
 
-Price: € 30
+Price: € 40
 
 *We refund orders up to 30 days after the purchase date. To request a refund, please send an email to [refunds@elm-pair.com](mailto:refunds@jasperwoudenberg.com) and send us the order reference number.*
 
