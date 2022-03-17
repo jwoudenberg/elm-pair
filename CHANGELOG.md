@@ -1,5 +1,10 @@
 # Changelog
 
+## 2022-03-17: Release 13
+
+- Add support for Visual Studio Code.
+- From this version forward, using Elm-pair for commercial work requires a payed license. This change is intended to fund further development of Elm-pair.
+
 ## 2022-03-14: Release 12
 
 - Opening an Elm module outside an Elm project directory no longer crashes Elm-pair.
