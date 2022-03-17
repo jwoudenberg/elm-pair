@@ -21,4 +21,4 @@ As you change an import statement alias or exposing list, Elm-pair will update y
 
 ### Use your own editor
 
-Elm-pair integrates with your editor of choice. Currently Neovim is supported and Visual Studio Code support is on the way, with support for additional editors planned.
+Elm-pair integrates with your editor of choice. Currently Neovim is supported and Visual Studio Code support is on the way, with support for additional editors planned. Elm-pair runs on MacOS and Linux.
