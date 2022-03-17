@@ -1,7 +1,10 @@
 {
   "name": "elm-pair",
-  "displayName": "elm-pair",
+  "displayName": "Elm-pair",
   "description": "An artificial pair-programmer that helps you write Elm code!",
+  "publisher": "hjgames",
+  "keywords": ["elm"],
+  "homepage": "https://elm-pair.com",
   "icon": "icon.png",
   "version": "0.12.0",
   "engines": {
