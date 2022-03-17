@@ -57,10 +57,10 @@ Yes! You can find the full source [here][source-code]. Both the [commercial-lice
 
 ### I have a question that isn't answered here.
 
-Feel free to [contact us][contact] and we'll try to help.
+Feel free to [contact us][support] and we'll try to help.
 
 [non-commercial-license]: https://github.com/jwoudenberg/elm-pair/blob/main/LICENSE
 [commercial-license]: /commercial-license.pdf
 [installation instructions]: https://github.com/jwoudenberg/elm-pair/blob/main/README.md#installation
 [source-code]: https://github.com/jwoudenberg/elm-pair
-[contact]: mailto:questions@elm-pair.com
+[support]: /support
