@@ -1,21 +1,21 @@
 +++
-title = "Installing Elm-pair for Neovim using Nix home-manager"
+title = "Installing Elm-pair for Visual Studio Code using Nix home-manager"
 template = "page.html"
 +++
 
-This page describes how to install Elm-pair for Neovim using [home-manager][]. It assumes you're already using home-manager for managing your Neovim configuration.
+This page describes how to install Elm-pair for Visual Studio Code using [home-manager][]. It assumes you're already using home-manager for managing your Visual Studio Code configuration.
 
 If you run into trouble we'd love to help. Please [reach out](/support)!
 
-1. Open your home-mananger configuration and modify the section configuring Neovim to make it look like this:
+1. Open your home-mananger configuration and modify the section configuring Visual Studio Code to make it look like this:
 
    ```nix
    { pkgs, ... }:
 
    {
-     programs.neovim = {
+     programs.vscode = {
        enable = true;
-       plugins =
+       extensions =
          let
            elm-pair = pkgs.fetchFromGitHub {
              owner = "jwoudenberg";
@@ -23,7 +23,7 @@ If you run into trouble we'd love to help. Please [reach out](/support)!
              rev = "main";
              sha256 = lib.fakeSha256;
            };
-         in [ (import elm-pair).neovim-plugin ];
+         in [ (import elm-pair).vscode-extension ];
      };
    }
    ```

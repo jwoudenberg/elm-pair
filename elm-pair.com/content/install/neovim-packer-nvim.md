@@ -5,7 +5,7 @@ template = "page.html"
 
 This page describes how to install Elm-pair for Neovim using the [packer.nvim][] plugin manager. It assumes packer.nvim has already been installed.
 
-If you run into trouble we'd love to help. Please [reach out][/support]!
+If you run into trouble we'd love to help. Please [reach out](/support)!
 
 1. Open your packer plugin specification file at `~/.config/nvim/lua/plugins.lua`.
 

@@ -5,7 +5,7 @@ template = "page.html"
 
 This page describes how to install Elm-pair for Neovim using the [vim-plug][] plugin manager. It assumes vim-plug has already been installed.
 
-If you run into trouble we'd love to help. Please [reach out][/support]!
+If you run into trouble we'd love to help. Please [reach out](/support)!
 
 1. Open your Neovim configuration file. It is typically located either at `~/.vimrc` or `~/.config/neovim/init.vim`.
 
