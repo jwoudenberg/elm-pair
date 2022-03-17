@@ -42,7 +42,7 @@ We do not currently offer volume discounts.
 
 We do not currently offer site licenses.
 
-### Where can I find the license texts for th e different versions?
+### Where can I find the license texts for the different versions?
 
 - [non-commercial-license][]
 - [commercial-license][]
