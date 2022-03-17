@@ -1,45 +1,28 @@
-# 🍐 elm-pair
+# <img alt="Elm-pair logo" height="45px" src="https://elm-pair.com/logo.svg"> Elm-pair
 
-An artificial pair-programmer that helps you writing Elm code.
+Elm-pair helps you write Elm code. You tell Elm-pair about the change you want to make and it will do the actual work. It's a bit like using an IDE, except you don't need to learn any keyboard shortcuts.
 
-[Check out this 2 minute demo of current functionality!][demo]
+You talk to Elm-pair by making a change in your code. If Elm-pair understands your intent then it will follow up with its own change.
 
-The current version of this code is licensed under GPL. The plan is for a change of license at some point in the future, after which you will need a payed license to be able to use elm-pair commercially.
+### Renaming variables, types, and constructors
 
-## Installation
+Rename a variable and Elm-pair will propagate the new name wherever the variable is used. Elm-pair will propagate type and constructor names in the same way.
 
-Currently elm-pair only has support for [Neovim][] running on Linux or MacOS.
+![Demonstration of rename functionality in Visual Studio Code][renaming-gif]
 
-### Using a Neovim plugin manager
+### Changing import statements
 
-There's a lot of Neovim plugin managers, too many to list them all here! You'll want to add the `neovim-plugin/` subdirectory of this repository as a plugin to your Neovim configuration. If you're running into trouble please create an issue on this repository, I'm happy to help!
+As you change an import statement alias or exposing list, Elm-pair will update your code to keep it compiling.
 
-The Neovim plugin will perform some installation steps the first time you open a `.elm` file in Neovim with this plugin enabled.
+![Demonstration of import statement functionality in Visual Studio Code][imports-gif]
 
-### Using nix home-manager
+### Use your own editor
 
-If you're managing your Neovim configuration using [home-manager][] then you can add elm-pair to your list of plugins. You won't need to install the elm-pair program separately.
+Elm-pair integrates with your editor of choice. Currently Neovim is supported and Visual Studio Code support is on the way, with support for additional editors planned. Elm-pair runs on MacOS and Linux.
 
-```nix
-{ pkgs, ... }:
+## Get it
 
-{
-  programs.neovim = {
-    enable = true;
-    plugins =
-      let
-        elm-pair = pkgs.fetchFromGitHub {
-          owner = "jwoudenberg";
-          repo = "elm-pair";
-          rev = "main";
-          sha256 = lib.fakeSha256;
-        };
-      in [ (import elm-pair).neovim-plugin ];
-  };
-}
-```
-
-Building your environment for the first time will fail with a hash mismatch error. Replace `lib.fakeSha256` in the code above with the correct hash provided in the error message, run again, and you should be all set.
+You can find installation instructions at https://elm-pair.com/install.
 
 ## Acknowledgements
 
@@ -51,11 +34,12 @@ This project is made possible by a couple of others.
 - [notify][] makes it easy for Elm-pair to subscribe to changes in the file system, so it can keep up with what's happening in your Elm projects.
 - [differential-dataflow][] provides a way to do incremental computation, allowing Elm-pair to do the bare minimum of work when a file changes.
 
-[demo]: https://vimeo.com/662666351
 [differential-dataflow]: https://crates.io/crates/differential-dataflow
 [home-manager]: https://github.com/nix-community/home-manager
+[imports-gif]: https://elm-pair.com/imports.gif
 [neovim]: https://neovim.io/
 [notify]: https://crates.io/crates/notify
+[renaming-gif]: https://elm-pair.com/renaming.gif
 [ropey]: https://crates.io/crates/ropey
 [tree-sitter-elm]: https://github.com/elm-tooling/tree-sitter-elm
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
