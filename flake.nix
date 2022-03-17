@@ -72,6 +72,7 @@
             cp ${./README.md} ./README.md
             cp ${./CHANGELOG.md} ./CHANGELOG.md
             cp ${./LICENSE} ./LICENSE
+            cp ${./elm-pair.com/static/logo.png} ./icon.png
             cp ${./editor-integrations/neovim/elm-pair} ./elm-pair
             substituteInPlace "extension.js" \
               --replace 'nix-build-put-path-to-elm-pair-here' '${elm-pair}/bin/elm-pair'

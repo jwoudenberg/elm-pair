@@ -1,4 +1,4 @@
-# <img alt="Elm-pair logo" height="45px" src="https://elm-pair.com/logo.svg"> Elm-pair
+# <img alt="Elm-pair logo" height="45px" src="https://elm-pair.com/logo.png"> Elm-pair
 
 Elm-pair helps you write Elm code. You tell Elm-pair about the change you want to make and it will do the actual work. It's a bit like using an IDE, except you don't need to learn any keyboard shortcuts.
 
