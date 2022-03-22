@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-03-22: Release 14
+
+- Linux binaries are now statically linked. This will let them run on some previously unsupported linux systems.
+
 ## 2022-03-17: Release 13
 
 - Add support for Visual Studio Code.
