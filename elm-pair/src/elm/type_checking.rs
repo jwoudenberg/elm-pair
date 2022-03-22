@@ -880,12 +880,11 @@ fn to_next_field(cursor: &mut TreeCursor, field: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lib::included_answer_test::assert_eq_answer_in;
     use crate::lib::source_code::parse_bytes;
     use differential_dataflow::operators::arrange::ArrangeBySelf;
     use differential_dataflow::trace::cursor::CursorDebug;
     use differential_dataflow::trace::TraceReader;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use timely::dataflow::operators::Probe;
 
     macro_rules! type_test {
@@ -909,13 +908,18 @@ mod tests {
     type_test!(case_statement);
 
     fn typing_test(path: &Path) {
-        let path = PathBuf::from(path);
-        let bytes = std::fs::read(&path).unwrap();
-        let tree = parse_bytes(bytes.clone()).unwrap();
+        crate::lib::included_answer_test::for_file(path, |input| {
+            typing_test_helper(input)
+        })
+    }
+
+    fn typing_test_helper(input: &str) -> String {
+        let bytes = input.as_bytes();
+        let tree = parse_bytes(bytes).unwrap();
         let mut names = Names::new();
         let mut loc_refs = LocRefs::new();
         let mut relations = Vec::new();
-        scan_tree(tree, &bytes, &mut names, &mut loc_refs, &mut relations);
+        scan_tree(tree, bytes, &mut names, &mut loc_refs, &mut relations);
 
         let mut starter_types_input =
             differential_dataflow::input::InputSession::new();
@@ -997,7 +1001,7 @@ mod tests {
             })
             .unwrap()
             .0;
-        assert_eq_answer_in(&graph, &path);
+        graph
     }
 
     // A dataflow computation that returns graphviz dot graphs of type-checking

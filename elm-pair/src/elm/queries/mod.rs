@@ -47,53 +47,46 @@ macro_rules! query {
 
             #[test]
             fn query_sample_data() {
-                let language = tree_sitter_elm::language();
-                let query = Query::init(language).unwrap();
-                let separator = "=== test input below ===";
-                let test_str =
-                      match include_str!($file).split_once(separator) {
-                          Some((_, test)) => test,
-                          None => panic!("No test str found in query file.")
-                      };
-                // Trailing comments
-                // the source tree
-                let test_separator = $crate::lib::included_answer_test::separator();
-                let test_input =
-                      match test_str.split_once(&test_separator) {
-                          Some((input, _)) => input,
-                          None => test_str,
-                      };
-                let mut cursor = tree_sitter::QueryCursor::new();
-                let tree = $crate::lib::source_code::parse_bytes(test_input).unwrap();
-                let root_node = tree.root_node();
-                if root_node.has_error() {
-                    panic!("Parsing resulted in invalid syntax tree.");
-                }
-                let capture_names = query.query.capture_names();
-                let output: String =
-                    cursor
-                      .matches(&query.query, root_node, test_input.as_bytes())
-                      .map(|m| {
-                          let captures_str: String =
-                                m.captures.into_iter().map(|c| {
-                                    let position = c.node.start_position();
-                                    format!("{}: [{}:{}] {}\n",
-                                        capture_names[c.index as usize],
-                                        position.row,
-                                        position.column,
-                                        test_input.get(c.node.byte_range()).unwrap(),
-                                    )
-                                }).collect();
-                          format!("{}\n", captures_str)
-                      })
-                      .collect();
                 let mut query_file_path = std::path::PathBuf::from(std::file!());
                 query_file_path.pop();
                 query_file_path = query_file_path.join($file);
-                $crate::lib::included_answer_test::assert_eq_answer_in(
-                    output.as_str(),
+                $crate::lib::included_answer_test::for_file(
                     &query_file_path,
-                );
+                    |test_str| {
+                        let language = tree_sitter_elm::language();
+                        let query = Query::init(language).unwrap();
+                        let separator = "=== test input below ===";
+                        let test_input =
+                            match test_str.split_once(separator) {
+                                Some((_, test)) => test,
+                                None => panic!("No test str found in query file.")
+                            };
+                        let mut cursor = tree_sitter::QueryCursor::new();
+                        let tree = $crate::lib::source_code::parse_bytes(test_input).unwrap();
+                        let root_node = tree.root_node();
+                        if root_node.has_error() {
+                            panic!("Parsing resulted in invalid syntax tree.");
+                        }
+                        let capture_names = query.query.capture_names();
+                        let output: String =
+                            cursor
+                            .matches(&query.query, root_node, test_input.as_bytes())
+                            .map(|m| {
+                                let captures_str: String =
+                                        m.captures.into_iter().map(|c| {
+                                            let position = c.node.start_position();
+                                            format!("{}: [{}:{}] {}\n",
+                                                capture_names[c.index as usize],
+                                                position.row,
+                                                position.column,
+                                                test_input.get(c.node.byte_range()).unwrap(),
+                                            )
+                                        }).collect();
+                                format!("{}\n", captures_str)
+                            })
+                            .collect();
+                        output
+                });
             }
         }
     };

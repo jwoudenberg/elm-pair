@@ -4,26 +4,23 @@
 use crate::lib::source_code::{Buffer, Edit};
 use core::ops::Range;
 use ropey::Rope;
-use std::io::BufRead;
-use std::path::Path;
 
-fn find_start_simulation_script<I>(
+fn find_start_simulation_script<'a, I>(
     lines: &mut I,
 ) -> Result<(String, usize), Error>
 where
-    I: Iterator<Item = Result<String, Error>>,
+    I: Iterator<Item = &'a str>,
 {
     let mut code: Vec<String> = Vec::new();
     loop {
         let line = match lines.next() {
             None => return Err(Error::FromFileFailedNoStartSimulationFound),
-            Some(Err(err)) => return Err(err),
-            Some(Ok(line)) => line,
+            Some(line) => line,
         };
         if let Some(padding) = line.strip_suffix("START SIMULATION") {
             break Ok((code.join("\n"), padding.len()));
         } else {
-            code.push(line);
+            code.push(line.to_owned());
         }
     }
 }
@@ -35,19 +32,15 @@ pub struct Simulation {
 }
 
 impl Simulation {
-    pub fn from_file(path: &Path) -> Result<Simulation, Error> {
-        let file =
-            std::fs::File::open(path).map_err(Error::FromFileOpenFailed)?;
-        let mut lines = std::io::BufReader::new(file)
-            .lines()
-            .map(|line| line.map_err(Error::FromFileReadingLineFailed));
+    pub fn from_str(input: &str) -> Result<Simulation, Error> {
+        let mut lines = input.lines();
         let (code, simulation_script_padding) =
             find_start_simulation_script(&mut lines)?;
         let mut builder = SimulationBuilder::new(Rope::from_str(&code));
         loop {
             let line = match lines.next() {
                 None => return Err(Error::FileEndCameBeforeSimulationEnd),
-                Some(line) => line?
+                Some(line) => line
                     .get(simulation_script_padding..)
                     .ok_or(
                         Error::SimulationInstructionsDontHaveConsistentPadding,
@@ -166,8 +159,6 @@ pub enum Error {
     CannotParseLineNumber(String),
     FileEndCameBeforeSimulationEnd,
     SimulationInstructionsDontHaveConsistentPadding,
-    FromFileOpenFailed(std::io::Error),
-    FromFileReadingLineFailed(std::io::Error),
     MoveCursorFailedLineZeroNotAllowed,
     MoveCursorDidNotFindWordOnLine,
     FailureWhileNavigatingSimulationRope(ropey::Error),

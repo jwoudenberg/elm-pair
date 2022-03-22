@@ -24,28 +24,35 @@ macro_rules! simulation_test {
             let module_name = stringify!($name);
             path.push(module_name.to_owned() + ".elm");
             println!("Run simulation {:?}", &path);
-            $crate::elm::refactors::lib::simulations::run_simulation_test(&path);
+            $crate::elm::refactors::lib::simulations::run_simulation_test(
+                &path,
+            );
         }
     };
 }
 pub use simulation_test;
 
 pub fn run_simulation_test(path: &Path) {
-    match run_simulation_test_helper(path) {
-        Err(Error::ElmPair(err)) => {
-            eprintln!("{:?}", err);
-            panic!();
+    ia_test::for_file(path, |input| {
+        match run_simulation_test_helper(path, input) {
+            Err(Error::ElmPair(err)) => {
+                eprintln!("{:?}", err);
+                panic!();
+            }
+            Err(Error::RunningSimulation(err)) => {
+                eprintln!("{:?}", err);
+                panic!();
+            }
+            Ok(res) => res,
         }
-        Err(Error::RunningSimulation(err)) => {
-            eprintln!("{:?}", err);
-            panic!();
-        }
-        Ok(res) => ia_test::assert_eq_answer_in(&res, path),
-    }
+    })
 }
 
-fn run_simulation_test_helper(path: &Path) -> Result<String, Error> {
-    let simulation = Simulation::from_file(path)?;
+fn run_simulation_test_helper(
+    path: &Path,
+    input: &str,
+) -> Result<String, Error> {
+    let simulation = Simulation::from_str(input)?;
     let buffer = Buffer {
         buffer_id: 0,
         editor_id: 0,

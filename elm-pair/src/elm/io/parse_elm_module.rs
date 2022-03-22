@@ -25,9 +25,15 @@ pub fn parse_elm_module(
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|err| log::mk_err!("failed to read module file: {:?}", err))?;
+    parse_bytes(query_for_exports, &bytes)
+}
+
+fn parse_bytes(
+    query_for_exports: &exports::Query,
+    bytes: &[u8],
+) -> Result<Vec<ExportedName>, Error> {
     let tree = crate::lib::source_code::parse_bytes(&bytes)?;
-    let exports = query_for_exports.run(&tree, &bytes)?;
-    Ok(exports)
+    query_for_exports.run(&tree, bytes)
 }
 
 #[cfg(test)]
@@ -51,19 +57,21 @@ mod tests {
     }
 
     fn run_exports_scanning_test(path: &Path) {
-        match run_exports_scanning_test_helper(path) {
+        ia_test::for_file(path, |input| match run_exports_scanning_test_helper(
+            input,
+        ) {
             Err(err) => {
                 eprintln!("{:?}", err);
                 panic!();
             }
-            Ok(res) => ia_test::assert_eq_answer_in(&res, path),
-        }
+            Ok(res) => res,
+        })
     }
 
-    fn run_exports_scanning_test_helper(path: &Path) -> Result<String, Error> {
+    fn run_exports_scanning_test_helper(input: &str) -> Result<String, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = exports::Query::init(language)?;
-        let exports = parse_elm_module(&query_for_exports, path)?;
+        let exports = parse_bytes(&query_for_exports, input.as_bytes())?;
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))

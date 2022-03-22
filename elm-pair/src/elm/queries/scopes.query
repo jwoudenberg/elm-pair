@@ -69,7 +69,6 @@ isYoung birthYear currentYear =
 --     diff currentYear birthYear < 30
 --
 --
---
 -- scope: [6:0] youngest ages =
 --     case ages of
 --         [] -> Debug.todo ""
