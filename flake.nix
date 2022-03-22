@@ -21,6 +21,7 @@
           system-fenix.stable.cargo
           system-fenix.stable.rustfmt
           system-fenix.stable.clippy
+          system-fenix.targets."x86_64-unknown-linux-musl".stable.rust-std
           # Extra dependencies for `cargo build` on darwin.
           (pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
