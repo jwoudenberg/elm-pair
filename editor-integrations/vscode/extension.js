@@ -49,10 +49,9 @@ function listenOnSocket(vscode, socket) {
   });
 
   vscode.workspace.onDidOpenTextDocument(doc => {
-    if (doc.languageId !== "elm") {
-      return;
+    if (doc.languageId === "elm") {
+      onNewElmFile(socket, doc, elmFileIdsByPath);
     }
-    onNewElmFile(socket, doc, elmFileIdsByPath);
   });
 
   vscode.workspace.onDidChangeTextDocument(changeEvent => {
@@ -83,6 +82,13 @@ function listenOnSocket(vscode, socket) {
       }
     }
   });
+
+  // Tell Elm-pair about files that were open before this activation code ran.
+  for (const doc of vscode.workspace.textDocuments) {
+    if (doc.languageId === "elm") {
+      onNewElmFile(socket, doc, elmFileIdsByPath);
+    }
+  };
 
   return function deactivate() {
     deactivating = true;

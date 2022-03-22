@@ -7,11 +7,23 @@ const {listenOnSocket} = require("./extension.js");
 const suite = () => {
   const fakeSocket = makeFakeSocket();
   const fakeVscode = makeFakeVscode();
+  fakeVscode.vscode.workspace.textDocuments.push({
+    languageId : "elm",
+    fileName : "Existing.elm",
+    getText : () => "elm!"
+  });
   const deactivate = listenOnSocket(fakeVscode.vscode, fakeSocket.socket);
 
-  test("upon activation send editor-id of 0", () => {
+  test("upon activation send editor-id of 0 and initial open documents", () => {
     const chunk = fakeSocket.read();
     assert.equal(int32FromChunk(chunk), 0);
+
+    assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int8FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), "Existing.elm".length);
+    assert.equal(stringFromChunk(fakeSocket.read()), "Existing.elm");
+    assert.equal(int32FromChunk(fakeSocket.read()), "elm!".length);
+    assert.equal(stringFromChunk(fakeSocket.read()), "elm!");
     assert.equal(fakeSocket.read(), undefined);
   });
 
@@ -30,7 +42,7 @@ const suite = () => {
     };
     fakeVscode.simulateOpen(document);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 0);
     assert.equal(int32FromChunk(fakeSocket.read()), "New.elm".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "New.elm");
@@ -53,7 +65,7 @@ const suite = () => {
     };
     fakeVscode.simulateChange(change);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 1);
+    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 0);
     assert.equal(int32FromChunk(fakeSocket.read()), "Test.elm".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "Test.elm");
@@ -84,7 +96,7 @@ const suite = () => {
     };
     fakeVscode.simulateChange(change);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 1);
+    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 1);
@@ -94,7 +106,7 @@ const suite = () => {
     assert.equal(int32FromChunk(fakeSocket.read()), "pqr".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "pqr");
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 1);
+    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 5);
@@ -228,6 +240,7 @@ function makeFakeVscode() {
   };
   ret.vscode = {
     workspace : {
+      textDocuments: [],
       onDidChangeTextDocument(callback) { ret.simulateChange = callback; },
       onDidOpenTextDocument(callback) { ret.simulateOpen = callback; },
       applyEdit(edit) { editsStream.write(edit); }

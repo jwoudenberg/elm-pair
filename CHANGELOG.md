@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased: Release 15
+
+- Fix a bug in the Visual Studio Code extension, where the first change to the first Elm file opened would not be acted upon by Elm-pair.
+
 ## 2022-03-22: Release 14
 
 - Linux binaries are now statically linked. This will let them run on some previously unsupported linux systems.
