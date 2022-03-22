@@ -40,72 +40,72 @@ isYoung birthYear currentYear =
     in
     diff currentYear birthYear < 30
 
--- === expected output below ===
--- scope: [2:0] module Main exposing (..)
---
---
--- youngest : List Age -> Age
--- youngest ages =
---     case ages of
---         [] -> Debug.todo ""
---         [single] -> single
---         (head :: rest) -> min head (youngest rest)
---
---
--- safeYoungest : List Age -> Maybe Age
--- safeYoungest ageList =
---     ageList
---         |> List.map (\(Age n) -> n)
---         |> List.minimum
---         |> Maybe.map Age
---
---
--- isYoung : Int -> Int -> Bool
--- isYoung birthYear currentYear =
---     let
---         diff x y =
---             x - y
---     in
---     diff currentYear birthYear < 30
---
---
--- scope: [6:0] youngest ages =
---     case ages of
---         [] -> Debug.todo ""
---         [single] -> single
---         (head :: rest) -> min head (youngest rest)
--- function_name: [6:0] youngest
---
--- scope: [8:8] [] -> Debug.todo ""
---
--- scope: [9:8] [single] -> single
---
--- scope: [10:8] (head :: rest) -> min head (youngest rest)
---
--- scope: [14:0] safeYoungest ageList =
---     ageList
---         |> List.map (\(Age n) -> n)
---         |> List.minimum
---         |> Maybe.map Age
--- function_name: [14:0] safeYoungest
---
--- scope: [16:21] \(Age n) -> n
---
--- scope: [22:0] isYoung birthYear currentYear =
---     let
---         diff x y =
---             x - y
---     in
---     diff currentYear birthYear < 30
--- function_name: [22:0] isYoung
---
--- scope: [23:4] let
---         diff x y =
---             x - y
---     in
---     diff currentYear birthYear < 30
---
--- scope: [24:8] diff x y =
---             x - y
--- function_name: [24:8] diff
---
+=== expected output below ===
+scope: [2:0] module Main exposing (..)
+
+
+youngest : List Age -> Age
+youngest ages =
+    case ages of
+        [] -> Debug.todo ""
+        [single] -> single
+        (head :: rest) -> min head (youngest rest)
+
+
+safeYoungest : List Age -> Maybe Age
+safeYoungest ageList =
+    ageList
+        |> List.map (\(Age n) -> n)
+        |> List.minimum
+        |> Maybe.map Age
+
+
+isYoung : Int -> Int -> Bool
+isYoung birthYear currentYear =
+    let
+        diff x y =
+            x - y
+    in
+    diff currentYear birthYear < 30
+
+
+scope: [6:0] youngest ages =
+    case ages of
+        [] -> Debug.todo ""
+        [single] -> single
+        (head :: rest) -> min head (youngest rest)
+function_name: [6:0] youngest
+
+scope: [8:8] [] -> Debug.todo ""
+
+scope: [9:8] [single] -> single
+
+scope: [10:8] (head :: rest) -> min head (youngest rest)
+
+scope: [14:0] safeYoungest ageList =
+    ageList
+        |> List.map (\(Age n) -> n)
+        |> List.minimum
+        |> Maybe.map Age
+function_name: [14:0] safeYoungest
+
+scope: [16:21] \(Age n) -> n
+
+scope: [22:0] isYoung birthYear currentYear =
+    let
+        diff x y =
+            x - y
+    in
+    diff currentYear birthYear < 30
+function_name: [22:0] isYoung
+
+scope: [23:4] let
+        diff x y =
+            x - y
+    in
+    diff currentYear birthYear < 30
+
+scope: [24:8] diff x y =
+            x - y
+function_name: [24:8] diff
+

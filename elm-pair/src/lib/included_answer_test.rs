@@ -10,8 +10,6 @@ use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 
-const PREFIX: &str = "-- ";
-
 pub fn for_file<F>(path: &Path, f: F)
 where
     F: Fn(&str) -> String,
@@ -23,14 +21,18 @@ where
             .open(path),
     );
     let mut buffered = BufReader::new(file);
-    let separator = format!("{PREFIX}=== expected output below ===\n");
+    let separator = "=== expected output below ===";
+    let mut prefix = "".to_string();
     let mut lines = buffered.by_ref().lines();
     let mut found_separator = false;
     let input: String = lines
         .by_ref()
         .map(|line| line.unwrap())
         .take_while(|line| {
-            found_separator = line.trim_end() == separator.trim_end();
+            if let Some(prefix_) = line.strip_suffix(separator) {
+                found_separator = true;
+                prefix = prefix_.to_string();
+            }
             !found_separator
         })
         .my_intersperse("\n".to_string())
@@ -48,8 +50,8 @@ where
         let expected_output: String = lines
             .map(|opt_line| {
                 let line = opt_line.unwrap();
-                line.strip_prefix(&PREFIX)
-                    .or_else(|| line.strip_prefix(&PREFIX.trim_end()))
+                line.strip_prefix(&prefix)
+                    .or_else(|| line.strip_prefix(&prefix.trim_end()))
                     .unwrap_or(&line)
                     .trim_end()
                     .to_string()
@@ -69,9 +71,12 @@ where
         }
     } else {
         let mut file_for_writing = buffered.into_inner();
+        assert_ok(file_for_writing.write_all(prefix.as_bytes()));
         assert_ok(file_for_writing.write_all(separator.as_bytes()));
+        assert_ok(file_for_writing.write_all("\n".as_bytes()));
+
         for line in output.lines() {
-            assert_ok(file_for_writing.write_all(PREFIX.as_bytes()));
+            assert_ok(file_for_writing.write_all(prefix.as_bytes()));
             assert_ok(file_for_writing.write_all(line.as_bytes()));
             assert_ok(file_for_writing.write_all("\n".as_bytes()));
         }

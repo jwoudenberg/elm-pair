@@ -23,19 +23,19 @@ sumDecoder =
         (Json.Decode.field "x" int)
         (Json.Decode.field "y" int)
 
--- === expected output below ===
--- root: [9:4] Json.Decode.map2
--- qualifier: [9:4] Json
--- qualifier: [9:9] Decode
--- value: [9:16] map2
---
--- root: [10:9] Json.Decode.field
--- qualifier: [10:9] Json
--- qualifier: [10:14] Decode
--- value: [10:21] field
---
--- root: [11:9] Json.Decode.field
--- qualifier: [11:9] Json
--- qualifier: [11:14] Decode
--- value: [11:21] field
---
+=== expected output below ===
+root: [9:4] Json.Decode.map2
+qualifier: [9:4] Json
+qualifier: [9:9] Decode
+value: [9:16] map2
+
+root: [10:9] Json.Decode.field
+qualifier: [10:9] Json
+qualifier: [10:14] Decode
+value: [10:21] field
+
+root: [11:9] Json.Decode.field
+qualifier: [11:9] Json
+qualifier: [11:14] Decode
+value: [11:21] field
+

@@ -20,8 +20,8 @@ sumDecoder =
         (Json.Decode.field "x" int)
         (Json.Decode.field "y" int)
 
--- === expected output below ===
--- root: [4:0] import Json.Decode exposing (Decoder, int)
--- name: [4:7] Json.Decode
--- exposing_list: [4:19] exposing (Decoder, int)
---
+=== expected output below ===
+root: [4:0] import Json.Decode exposing (Decoder, int)
+name: [4:7] Json.Decode
+exposing_list: [4:19] exposing (Decoder, int)
+
