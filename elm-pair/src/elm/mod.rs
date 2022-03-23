@@ -2,6 +2,7 @@ use crate::analysis_thread::{SourceFileDiff, TreeChanges};
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
+use crate::elm::module_name::ModuleName;
 use crate::elm::queries::imports::{ExposedConstructors, Import};
 use crate::elm::queries::qualified_values::QualifiedName;
 use crate::lib::log;
@@ -631,7 +632,7 @@ fn find_unimported_qualifiers(
     queries: &Queries,
     code: &SourceFileSnapshot,
     parent: Node,
-) -> Result<HashSet<String>, Error> {
+) -> Result<HashSet<ModuleName>, Error> {
     let mut cursor = QueryCursor::new();
     let existing_imports: Vec<Rope> = queries
         .query_for_imports
@@ -648,7 +649,8 @@ fn find_unimported_qualifiers(
         if reference.unqualified_name.name.len_bytes() > 0
             && !existing_imports.contains(&reference.qualifier)
         {
-            unimported_qualifiers.insert(reference.qualifier.to_string());
+            unimported_qualifiers
+                .insert(ModuleName(reference.qualifier.to_string()));
         }
     }
     Ok(unimported_qualifiers)

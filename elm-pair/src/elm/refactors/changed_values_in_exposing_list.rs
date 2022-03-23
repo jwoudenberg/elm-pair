@@ -16,7 +16,7 @@ pub fn refactor(
     new_import: Import,
 ) -> Result<(), Error> {
     let mut cursor = computation
-        .exports_cursor(code.buffer, old_import.unaliased_name().to_string());
+        .exports_cursor(code.buffer, old_import.module_name());
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;

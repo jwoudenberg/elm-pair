@@ -14,8 +14,8 @@ pub fn refactor(
     import: Import,
 ) -> Result<(), Error> {
     let mut val_cursor = QueryCursor::new();
-    let mut cursor = computation
-        .exports_cursor(code.buffer, import.unaliased_name().to_string());
+    let mut cursor =
+        computation.exports_cursor(code.buffer, import.module_name());
     let mut references_to_qualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;

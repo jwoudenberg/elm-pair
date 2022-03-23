@@ -2,6 +2,7 @@ use crate::elm::compiler::Compiler;
 use crate::elm::io::parse_elm_json::{parse_elm_json, ElmJson};
 use crate::elm::io::parse_elm_module::parse_elm_module;
 use crate::elm::io::parse_elm_stuff_idat::parse_elm_stuff_idat;
+use crate::elm::module_name::ModuleName;
 use crate::elm::queries::exports;
 use crate::lib::dir_walker::DirWalker;
 use crate::lib::log::Error;
@@ -25,7 +26,7 @@ pub trait ElmIO: Clone {
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
-    ) -> Result<Box<dyn Iterator<Item = (String, ExportedName)>>, Error>;
+    ) -> Result<Box<dyn Iterator<Item = (ModuleName, ExportedName)>>, Error>;
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
@@ -90,7 +91,8 @@ impl ElmIO for RealElmIO {
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
-    ) -> Result<Box<dyn Iterator<Item = (String, ExportedName)>>, Error> {
+    ) -> Result<Box<dyn Iterator<Item = (ModuleName, ExportedName)>>, Error>
+    {
         let iterator = parse_elm_stuff_idat(&self.compiler, path)?;
         Ok(Box::new(iterator))
     }
@@ -122,7 +124,7 @@ pub mod mock {
     #[derive(Clone)]
     pub struct FakeElmProject {
         elm_json: ElmJson,
-        dependencies: Vec<(String, ExportedName)>,
+        dependencies: Vec<(ModuleName, ExportedName)>,
     }
 
     impl FakeElmIO {
@@ -185,7 +187,7 @@ pub mod mock {
         fn parse_elm_stuff_idat(
             &self,
             path: &Path,
-        ) -> Result<Box<dyn Iterator<Item = (String, ExportedName)>>, Error>
+        ) -> Result<Box<dyn Iterator<Item = (ModuleName, ExportedName)>>, Error>
         {
             let projects = self.projects.lock().unwrap();
             let project_root = project::root_from_idat_path(path)?;
@@ -227,7 +229,7 @@ pub mod mock {
                     .into_iter()
                     .map(|name| {
                         (
-                            name.to_string(),
+                            ModuleName::from_str(name),
                             ExportedName::Value {
                                 name: "ants".to_string(),
                             },

@@ -60,7 +60,7 @@ pub fn qualify_value(
 
                 let mut cursor = computation.exports_cursor(
                     code.buffer,
-                    import.unaliased_name().to_string(),
+                    import.module_name(),
                 );
                 match constructors_of_exports(cursor.iter(), type_.name)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
@@ -133,7 +133,7 @@ pub fn qualify_value(
                         Vec::new();
                     let mut cursor = computation.exports_cursor(
                         code.buffer,
-                        import.unaliased_name().to_string(),
+                        import.module_name(),
                     );
                     cursor.iter().for_each(|export| match export {
                         ExportedName::Value { name } => {
@@ -237,7 +237,7 @@ pub fn qualify_value(
                         // added. The type must be among them!
                         let mut cursor = computation.exports_cursor(
                             code.buffer,
-                            import.unaliased_name().to_string(),
+                            import.module_name(),
                         );
                         for export in cursor.iter() {
                             match export {

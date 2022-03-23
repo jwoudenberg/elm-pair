@@ -1,5 +1,6 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::io::{ElmIO, ExportedName, RealElmIO};
+use crate::elm::module_name::ModuleName;
 use crate::elm::project;
 use crate::lib::dataflow;
 use crate::lib::log;
@@ -29,7 +30,7 @@ pub struct DataflowComputation {
     // An input representing the buffers we're querying.
     queried_buffers_input: dataflow::Input<Buffer>,
     // An input representing the module names we're querying.
-    queried_modules_input: dataflow::Input<String>,
+    queried_modules_input: dataflow::Input<ModuleName>,
     // An input representing projects we're currently tracking.
     buffers_input: dataflow::Input<(Buffer, PathBuf)>,
     // An input representing events happening to files. Whether it's file
@@ -220,7 +221,7 @@ impl DataflowComputation {
     pub fn exports_cursor(
         &mut self,
         buffer: Buffer,
-        module: String,
+        module: ModuleName,
     ) -> dataflow::Cursor<dataflow::SelfTrace<ExportedName>> {
         self.queried_buffers_input.insert(buffer);
         self.queried_modules_input.insert(module.clone());
@@ -241,7 +242,7 @@ fn dataflow_graph<'a, D>(
     project_roots: dataflow::Collection<'a, (ProjectId, PathBuf)>,
     filepath_events: dataflow::Collection<'a, PathBuf>,
 ) -> (
-    dataflow::Collection<'a, (ProjectId, (String, ExportedName))>,
+    dataflow::Collection<'a, (ProjectId, (ModuleName, ExportedName))>,
     dataflow::Collection<'a, PathBuf>,
 )
 where
@@ -383,7 +384,7 @@ mod tests {
         project_roots_input: dataflow::Input<(ProjectId, PathBuf)>,
         filepath_events_input: dataflow::Input<PathBuf>,
         exports_by_project:
-            dataflow::KeyTrace<ProjectId, (String, ExportedName)>,
+            dataflow::KeyTrace<ProjectId, (ModuleName, ExportedName)>,
         watched_paths: dataflow::SelfTrace<PathBuf>,
     }
 
@@ -465,7 +466,7 @@ mod tests {
                 .collect()
         }
 
-        fn project(&mut self, project: ProjectId) -> HashSet<String> {
+        fn project(&mut self, project: ProjectId) -> HashSet<ModuleName> {
             let (mut cursor, storage) = self.exports_by_project.cursor();
             cursor
                 .to_vec(&storage)
@@ -507,8 +508,8 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Animals.Bat".to_string(),
-                "Care.Soap".to_string()
+                ModuleName::from_str("Animals.Bat"),
+                ModuleName::from_str("Care.Soap")
             ]),
         );
         // And the right paths are tracked...
@@ -542,8 +543,8 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Animals.Bat".to_string(),
-                "Care.Soap".to_string()
+                ModuleName::from_str("Animals.Bat"),
+                ModuleName::from_str("Care.Soap")
             ]),
         );
         // And the right paths are tracked...
@@ -584,7 +585,7 @@ mod tests {
         computation.advance();
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Animals.Bat".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Animals.Bat")]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
@@ -603,8 +604,8 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Elements.Water".to_string(),
-                "Animals.Bat".to_string()
+                ModuleName::from_str("Elements.Water"),
+                ModuleName::from_str("Animals.Bat")
             ]),
         );
         // And we only parsed the new module...
@@ -639,13 +640,13 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Animals.Bat".to_string(),
-                "Care.Soap".to_string()
+                ModuleName::from_str("Animals.Bat"),
+                ModuleName::from_str("Care.Soap")
             ]),
         );
         assert_eq!(
             computation.project(project2_id),
-            HashSet::from_iter(["Care.Shampoo".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Care.Shampoo")]),
         );
     }
 
@@ -665,7 +666,7 @@ mod tests {
         computation.advance();
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Animals.Bat".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Animals.Bat")]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
 
@@ -699,8 +700,8 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Animals.Bat".to_string(),
-                "Care.Soap".to_string()
+                ModuleName::from_str("Animals.Bat"),
+                ModuleName::from_str("Care.Soap")
             ]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
@@ -719,7 +720,7 @@ mod tests {
         // Then the module is removed from the project...
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Care.Soap".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Care.Soap")]),
         );
         // And no additional parsing has taken place...
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 2);
@@ -746,8 +747,8 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Json.Decode".to_string(),
-                "Animals.Bat".to_string()
+                ModuleName::from_str("Json.Decode"),
+                ModuleName::from_str("Animals.Bat")
             ]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
@@ -769,7 +770,7 @@ mod tests {
         // And the project's only contains dependency modules...
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Json.Decode".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Json.Decode")]),
         );
         assert_eq!(*elm_io.elm_modules_parsed.lock().unwrap(), 1);
     }
@@ -790,7 +791,7 @@ mod tests {
         computation.advance();
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Json.Decode".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Json.Decode")]),
         );
         assert_eq!(*elm_io.elm_idats_parsed.lock().unwrap(), 1);
 
@@ -810,7 +811,7 @@ mod tests {
         // And the project's dependency modules have chanaged
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Time".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Time")]),
         );
     }
 
@@ -840,11 +841,11 @@ mod tests {
         // Then both projects list the modules in the shared source directory...
         assert_eq!(
             computation.project(project_id),
-            HashSet::from_iter(["Care.Soap".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Care.Soap")]),
         );
         assert_eq!(
             computation.project(project2_id),
-            HashSet::from_iter(["Care.Soap".to_string()]),
+            HashSet::from_iter([ModuleName::from_str("Care.Soap")]),
         );
 
         // And each module has only been parsed once...
@@ -879,8 +880,8 @@ mod tests {
         assert_eq!(
             computation.project(project_id),
             HashSet::from_iter([
-                "Animals.Bat".to_string(),
-                "Care.Soap".to_string()
+                ModuleName::from_str("Animals.Bat"),
+                ModuleName::from_str("Care.Soap")
             ]),
         );
         // And each module has only been parsed once...

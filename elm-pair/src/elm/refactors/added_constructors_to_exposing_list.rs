@@ -16,7 +16,7 @@ pub fn refactor(
     type_name: RopeSlice,
 ) -> Result<(), Error> {
     let mut cursor = computation
-        .exports_cursor(code.buffer, import.unaliased_name().to_string());
+        .exports_cursor(code.buffer, import.module_name());
     let mut references_to_unqualify = HashSet::new();
     for export in cursor.iter() {
         if let ExportedName::Type { name, constructors } = export {

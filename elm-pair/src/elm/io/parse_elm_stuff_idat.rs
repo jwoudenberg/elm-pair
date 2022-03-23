@@ -1,5 +1,6 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::io::ExportedName;
+use crate::elm::module_name::ModuleName;
 use crate::elm::project;
 use crate::lib::log;
 use crate::lib::log::Error;
@@ -12,7 +13,7 @@ use std::path::Path;
 pub fn parse_elm_stuff_idat(
     compiler: &Compiler,
     path: &Path,
-) -> Result<impl Iterator<Item = (String, ExportedName)>, Error> {
+) -> Result<impl Iterator<Item = (ModuleName, ExportedName)>, Error> {
     let file = std::fs::File::open(path).or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             let project_root = project::root_from_idat_path(path)?;
@@ -41,7 +42,7 @@ pub fn parse_elm_stuff_idat(
             let Name(name) = canonical_name.module;
             elm_module_from_interface(i)
                 .into_iter()
-                .map(move |export| (name.clone(), export))
+                .map(move |export| (ModuleName(name.clone()), export))
         });
     Ok(exports)
 }

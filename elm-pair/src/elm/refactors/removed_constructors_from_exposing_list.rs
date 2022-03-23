@@ -20,7 +20,7 @@ pub fn refactor(
 ) -> Result<(), Error> {
     let mut references_to_qualify = HashSet::new();
     let mut cursor = computation
-        .exports_cursor(code.buffer, old_import.unaliased_name().to_string());
+        .exports_cursor(code.buffer, old_import.module_name());
     match constructors_of_exports(cursor.iter(), type_name)? {
         ExposedConstructors::FromTypeAlias(ctor) => {
             references_to_qualify.insert(Name {

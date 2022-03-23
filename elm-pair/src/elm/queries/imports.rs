@@ -1,3 +1,4 @@
+use crate::elm::module_name::ModuleName;
 use crate::elm::{ExportedName, Name, NameKind};
 use crate::elm::{DOUBLE_DOT, EXPOSED_OPERATOR, EXPOSED_TYPE, EXPOSED_VALUE};
 use crate::lib::log;
@@ -88,6 +89,10 @@ pub struct Import<'a> {
 impl Import<'_> {
     pub fn unaliased_name(&self) -> RopeSlice {
         self.code.slice(&self.name_node.byte_range())
+    }
+
+    pub fn module_name(&self) -> ModuleName {
+        ModuleName(self.unaliased_name().to_string())
     }
 
     pub fn aliased_name(&self) -> RopeSlice {

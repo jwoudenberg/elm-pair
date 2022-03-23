@@ -13,7 +13,7 @@ pub fn refactor(
     import: Import,
 ) -> Result<(), Error> {
     let mut cursor = computation
-        .exports_cursor(code.buffer, import.unaliased_name().to_string());
+        .exports_cursor(code.buffer, import.module_name());
     let mut references_to_unqualify = HashSet::new();
     for result in import.exposing_list() {
         let (_, exposed) = result?;

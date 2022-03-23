@@ -137,7 +137,7 @@ pub fn imported_names(
                 let (_, exposed) = res?;
                 let mut cursor = computation.exports_cursor(
                     code.buffer,
-                    import.unaliased_name().to_string(),
+                    import.module_name(),
                 );
                 exposed.for_each_name(cursor.iter(), |name| {
                     names_from_other_modules

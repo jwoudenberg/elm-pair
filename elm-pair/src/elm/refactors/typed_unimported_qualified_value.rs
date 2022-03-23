@@ -1,4 +1,5 @@
 use crate::elm::dependencies::DataflowComputation;
+use crate::elm::module_name::ModuleName;
 use crate::elm::{Refactor, BLOCK_COMMENT, MODULE_DECLARATION};
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
@@ -13,7 +14,7 @@ pub fn refactor(
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
-    new_import_names: HashSet<String>,
+    new_import_names: HashSet<ModuleName>,
 ) -> Result<(), Error> {
     let mut tree_cursor = code.tree.root_node().walk();
     tree_cursor.goto_first_child();

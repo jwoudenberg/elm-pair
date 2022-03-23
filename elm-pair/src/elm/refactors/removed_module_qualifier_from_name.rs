@@ -27,8 +27,8 @@ pub fn refactor(
         .by_aliased_name(code, &qualifier.slice(..))?;
     let mut references_to_unqualify = HashSet::new();
     if unqualified_name.kind == NameKind::Constructor {
-        let mut cursor = computation
-            .exports_cursor(code.buffer, import.unaliased_name().to_string());
+        let mut cursor =
+            computation.exports_cursor(code.buffer, import.module_name());
         for export in cursor.iter() {
             match export {
                 ExportedName::Value { .. } => {}

@@ -1,14 +1,35 @@
 use crate::lib::intersperse::Intersperse;
 use crate::lib::log;
 use crate::lib::log::Error;
+use abomonation_derive::Abomonation;
 use std::path::Path;
 
-pub fn from_path(source_dir: &Path, path: &Path) -> Result<String, Error> {
-    path.with_extension("")
+#[derive(Abomonation, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleName(pub String);
+
+impl ModuleName {
+    pub fn from_str(name: &str) -> ModuleName {
+        ModuleName(name.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::fmt::Display for ModuleName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+pub fn from_path(source_dir: &Path, path: &Path) -> Result<ModuleName, Error> {
+    let name = path
+        .with_extension("")
         .strip_prefix(source_dir)
         .map_err(|err| {
             log::mk_err!(
-                "error stripping source directory {:?} from elm module path {:?}: {:?}",
+        "error stripping source directory {:?} from elm module path {:?}: {:?}",
                 path,
                 source_dir,
                 err
@@ -26,10 +47,11 @@ pub fn from_path(source_dir: &Path, path: &Path) -> Result<String, Error> {
         .collect::<Result<String, &std::ffi::OsStr>>()
         .map_err(|os_str| {
             log::mk_err!(
-                "directory segment of Elm module used in module name is not valid UTF8: {:?}",
+"directory segment of Elm module used in module name is not valid UTF8: {:?}",
                 os_str
             )
-        })
+        })?;
+    Ok(ModuleName(name))
 }
 
 #[cfg(test)]
@@ -43,7 +65,7 @@ mod tests {
                 Path::new("/project/src"),
                 Path::new("/project/src/TopLevel.elm"),
             ),
-            Ok("TopLevel".to_string())
+            Ok(ModuleName::from_str("TopLevel"))
         );
     }
 
@@ -54,7 +76,7 @@ mod tests {
                 Path::new("/project/src"),
                 Path::new("/project/src/Some/Nested/Module.elm"),
             ),
-            Ok("Some.Nested.Module".to_string())
+            Ok(ModuleName::from_str("Some.Nested.Module"))
         );
     }
 
