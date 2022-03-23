@@ -81,58 +81,48 @@ impl DataflowComputation {
             let buffers = buffers_input.to_collection(scope);
             let filepath_events = filepath_events_input.to_collection(scope);
 
-            let buffer_projects =
-                buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
-                    match project::root(&path) {
-                        Ok(root) => {
-                            let next_project_id =
-                                ProjectId(project_ids.len() as u8);
-                            let project_id = project_ids
-                                .entry(root.to_owned())
-                                .or_insert(next_project_id);
-                            Some((buffer, *project_id, root.to_owned()))
-                        }
-                        Err(err) => {
-                            log::error!(
-                            "Can't find Elm project root for path {:?}: {:?}",
-                                path,
-                                err,
-                            );
-                            None
-                        }
+            let buffer_projects = buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
+                match project::root(&path) {
+                    Ok(root) => {
+                        let next_project_id = ProjectId(project_ids.len() as u8);
+                        let project_id = project_ids
+                            .entry(root.to_owned())
+                            .or_insert(next_project_id);
+                        Some((buffer, *project_id, root.to_owned()))
                     }
-                });
+                    Err(err) => {
+                        log::error!("Can't find Elm project root for path {:?}: {:?}", path, err,);
+                        None
+                    }
+                }
+            });
 
             let project_roots = buffer_projects
                 .map(|(_, project, root)| (project, root))
                 .distinct();
 
-            let (exports, paths_to_watch) =
-                dataflow_graph(elm_io, project_roots, filepath_events);
+            let (exports, paths_to_watch) = dataflow_graph(elm_io, project_roots, filepath_events);
 
             let watched_paths =
-                paths_to_watch.inspect(move |(path, _, diff)| {
-                    match std::cmp::Ord::cmp(diff, &0) {
-                        std::cmp::Ordering::Equal => {}
-                        std::cmp::Ordering::Less => {
-                            if let Err(err) = file_watcher.unwatch(path) {
-                                log::error!(
-                    "failed while remove path {:?} to watch for changes: {:?}",
+                paths_to_watch.inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
+                    std::cmp::Ordering::Equal => {}
+                    std::cmp::Ordering::Less => {
+                        if let Err(err) = file_watcher.unwatch(path) {
+                            log::error!(
+                                "failed while remove path {:?} to watch for changes: {:?}",
                                 path,
                                 err
                             )
-                            }
                         }
-                        std::cmp::Ordering::Greater => {
-                            if let Err(err) = file_watcher
-                                .watch(path, notify::RecursiveMode::Recursive)
-                            {
-                                log::error!(
-                "failed while adding path {:?} to watch for changes: {:?}",
-                                    path,
+                    }
+                    std::cmp::Ordering::Greater => {
+                        if let Err(err) = file_watcher.watch(path, notify::RecursiveMode::Recursive)
+                        {
+                            log::error!(
+                                "failed while adding path {:?} to watch for changes: {:?}",
+                                path,
                                 err
                             )
-                            }
                         }
                     }
                 });
@@ -458,7 +448,7 @@ mod tests {
             );
         }
 
-        pub fn watched_paths(&mut self) -> HashSet<PathBuf> {
+        fn watched_paths(&mut self) -> HashSet<PathBuf> {
             let (mut cursor, storage) = self.watched_paths.cursor();
             cursor
                 .to_vec(&storage)
@@ -475,7 +465,7 @@ mod tests {
                 .collect()
         }
 
-        pub fn project(&mut self, project: ProjectId) -> HashSet<String> {
+        fn project(&mut self, project: ProjectId) -> HashSet<String> {
             let (mut cursor, storage) = self.exports_by_project.cursor();
             cursor
                 .to_vec(&storage)
