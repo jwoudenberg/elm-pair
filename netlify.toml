@@ -11,3 +11,9 @@ ignore = "false"
 [build.environment]
 ZOLA_VERSION = "0.15.2"
 PYTHON_VERSION = "3.8"
+
+[[redirects]]
+from = "https://elm-pair.jasperwoudenberg.com"
+to = "https://elm-pair.com"
+status = 301
+force = true
