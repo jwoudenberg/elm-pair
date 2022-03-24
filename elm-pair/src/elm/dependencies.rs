@@ -1,4 +1,5 @@
 use crate::elm::compiler::Compiler;
+use crate::elm::io::parse_elm_module::Module;
 use crate::elm::io::{ElmIO, ExportedName, RealElmIO};
 use crate::elm::module_name::ModuleName;
 use crate::elm::project;
@@ -82,48 +83,58 @@ impl DataflowComputation {
             let buffers = buffers_input.to_collection(scope);
             let filepath_events = filepath_events_input.to_collection(scope);
 
-            let buffer_projects = buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
-                match project::root(&path) {
-                    Ok(root) => {
-                        let next_project_id = ProjectId(project_ids.len() as u8);
-                        let project_id = project_ids
-                            .entry(root.to_owned())
-                            .or_insert(next_project_id);
-                        Some((buffer, *project_id, root.to_owned()))
+            let buffer_projects =
+                buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
+                    match project::root(&path) {
+                        Ok(root) => {
+                            let next_project_id =
+                                ProjectId(project_ids.len() as u8);
+                            let project_id = project_ids
+                                .entry(root.to_owned())
+                                .or_insert(next_project_id);
+                            Some((buffer, *project_id, root.to_owned()))
+                        }
+                        Err(err) => {
+                            log::error!(
+                            "Can't find Elm project root for path {:?}: {:?}",
+                            path,
+                            err,
+                        );
+                            None
+                        }
                     }
-                    Err(err) => {
-                        log::error!("Can't find Elm project root for path {:?}: {:?}", path, err,);
-                        None
-                    }
-                }
-            });
+                });
 
             let project_roots = buffer_projects
                 .map(|(_, project, root)| (project, root))
                 .distinct();
 
-            let (exports, paths_to_watch) = dataflow_graph(elm_io, project_roots, filepath_events);
+            let (exports_by_project, paths_to_watch, _imports_by_module) =
+                dataflow_graph(elm_io, project_roots, filepath_events);
 
             let watched_paths =
-                paths_to_watch.inspect(move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
-                    std::cmp::Ordering::Equal => {}
-                    std::cmp::Ordering::Less => {
-                        if let Err(err) = file_watcher.unwatch(path) {
-                            log::error!(
-                                "failed while remove path {:?} to watch for changes: {:?}",
+                paths_to_watch.inspect(move |(path, _, diff)| {
+                    match std::cmp::Ord::cmp(diff, &0) {
+                        std::cmp::Ordering::Equal => {}
+                        std::cmp::Ordering::Less => {
+                            if let Err(err) = file_watcher.unwatch(path) {
+                                log::error!(
+                "failed while remove path {:?} to watch for changes: {:?}",
                                 path,
                                 err
                             )
+                            }
                         }
-                    }
-                    std::cmp::Ordering::Greater => {
-                        if let Err(err) = file_watcher.watch(path, notify::RecursiveMode::Recursive)
-                        {
-                            log::error!(
-                                "failed while adding path {:?} to watch for changes: {:?}",
+                        std::cmp::Ordering::Greater => {
+                            if let Err(err) = file_watcher
+                                .watch(path, notify::RecursiveMode::Recursive)
+                            {
+                                log::error!(
+                "failed while adding path {:?} to watch for changes: {:?}",
                                 path,
                                 err
                             )
+                            }
                         }
                     }
                 });
@@ -133,7 +144,7 @@ impl DataflowComputation {
                 .semijoin(&queried_buffers)
                 .map(|(_, project)| project);
 
-            let exports_output = exports
+            let exports_output = exports_by_project
                 .semijoin(&queried_projects)
                 .map(|(_, x)| x)
                 .semijoin(&queried_modules)
@@ -244,6 +255,7 @@ fn dataflow_graph<'a, D>(
 ) -> (
     dataflow::Collection<'a, (ProjectId, (ModuleName, ExportedName))>,
     dataflow::Collection<'a, PathBuf>,
+    dataflow::Collection<'a, ((ProjectId, ModuleName), ModuleName)>,
 )
 where
     D: ElmIO + 'static,
@@ -252,18 +264,23 @@ where
     let elm_io3 = elm_io.clone();
     let elm_io4 = elm_io.clone();
 
-    let project_roots = project_roots.distinct();
+    let project_roots: dataflow::Collection<(ProjectId, PathBuf)> =
+        project_roots.distinct();
 
-    let elm_json_files =
+    let elm_json_files: dataflow::Collection<(PathBuf, ProjectId)> =
         project_roots.map(move |(project_id, project_root)| {
             (project::elm_json_path(&project_root), project_id)
         });
 
-    let elm_json_file_events = elm_json_files
-        .semijoin(&filepath_events)
-        .concat(&elm_json_files);
+    let elm_json_file_events: dataflow::Collection<(PathBuf, ProjectId)> =
+        elm_json_files
+            .semijoin(&filepath_events)
+            .concat(&elm_json_files);
 
-    let source_directories_by_project = elm_json_file_events
+    let source_directories_by_project: dataflow::Collection<(
+        ProjectId,
+        PathBuf,
+    )> = elm_json_file_events
         .map(|(elm_json_path, project_id)| (project_id, elm_json_path))
         .reduce(move |_, _input, output| {
             let mut elm_json = match elm_io.parse_elm_json(_input[0].0) {
@@ -280,15 +297,16 @@ where
             }
         });
 
-    let source_directories = source_directories_by_project
-        .map(|(_, path)| path)
-        .distinct();
+    let source_directories: dataflow::Collection<PathBuf> =
+        source_directories_by_project
+            .map(|(_, path)| path)
+            .distinct();
 
     // This collection can intentionally contain files multiple times.
     // A new entry should be added whenever we receive an event for a file,
     // like a modification or removal. Useful for logic that needs to rerun on
     // those occasions.
-    let module_events = source_directories
+    let module_events: dataflow::Collection<PathBuf> = source_directories
         .flat_map(move |path| {
             elm_io2
                 .find_files_recursively(&path)
@@ -297,20 +315,36 @@ where
         })
         .concat(&filepath_events.filter(|path| project::is_elm_file(path)));
 
-    let parsed_modules = module_events.map(|path| (path, ())).reduce(
-        move |path, _input, output| match elm_io3.parse_elm_module(path) {
-            Ok(exports) => {
-                output.extend(exports.into_iter().map(|export| (export, 1)))
-            }
-            Err(err) => {
-                log::error!("Failed parsing module: {:?}", err);
-            }
-        },
-    );
+    let parsed_modules: dataflow::Collection<(PathBuf, Module)> =
+        module_events.map(|path| (path, ())).reduce(
+            move |path, _input, output| match elm_io3.parse_elm_module(path) {
+                Ok(parsed) => output.push((parsed, 1)),
+                Err(err) => {
+                    log::error!("Failed parsing module: {:?}", err);
+                }
+            },
+        );
 
-    let module_paths = module_events.distinct();
+    let exported_names: dataflow::Collection<(PathBuf, ExportedName)> =
+        parsed_modules.flat_map(|(path, (exports, _))| {
+            exports
+                .into_iter()
+                .map(move |export| (path.clone(), export))
+        });
 
-    let project_modules = module_paths
+    let imported_modules: dataflow::Collection<(PathBuf, ModuleName)> =
+        parsed_modules.flat_map(|(path, (_, imports))| {
+            imports
+                .into_iter()
+                .map(move |import| (path.clone(), import))
+        });
+
+    let module_paths: dataflow::Collection<PathBuf> = module_events.distinct();
+
+    let project_modules: dataflow::Collection<(
+        PathBuf,
+        (ProjectId, ModuleName),
+    )> = module_paths
         // Join on `()`, i.e. create a record for every combination of
         // source path and source directory. Then later we can filter
         // that down to keep just the combinations where the path is
@@ -319,42 +353,51 @@ where
         .join(&source_directories_by_project.map(|x| ((), x)))
         .flat_map(|((), (file_path, (project_id, src_dir)))| {
             if file_path.starts_with(&src_dir) {
-                Some((file_path, (project_id, src_dir)))
-            } else {
-                None
-            }
-        })
-        .join_map(
-            &parsed_modules,
-            |file_path, (project_id, src_dir), parsed_module| {
-                match crate::elm::module_name::from_path(src_dir, file_path) {
-                    Ok(module_name) => Some((
-                        *project_id,
-                        (module_name, parsed_module.clone()),
-                    )),
+                match crate::elm::module_name::from_path(&src_dir, &file_path) {
+                    Ok(module_name) => {
+                        Some((file_path, (project_id, module_name)))
+                    }
                     Err(err) => {
                         log::error!("Failed deriving module name: {:?}", err);
                         None
                     }
                 }
-            },
-        )
-        .flat_map(|opt| opt);
+            } else {
+                None
+            }
+        });
 
-    let paths_to_watch = source_directories_by_project
-        .map(|(_, path)| path)
-        .concat(&project_roots.map(|(_, path)| project::elm_json_path(&path)))
-        .concat(&project_roots.map(|(_, path)| project::idat_path(&path)))
-        .distinct();
+    let exports_by_project: dataflow::Collection<(
+        ProjectId,
+        (ModuleName, ExportedName),
+    )> = project_modules.join_map(
+        &exported_names,
+        |_file_path, (project_id, module_name), parsed_module| {
+            (*project_id, (module_name.clone(), parsed_module.clone()))
+        },
+    );
 
-    let idat_files = project_roots.map(|(project_id, project_root)| {
-        (project::idat_path(&project_root), project_id)
-    });
+    let paths_to_watch: dataflow::Collection<PathBuf> =
+        source_directories_by_project
+            .map(|(_, path)| path)
+            .concat(
+                &project_roots.map(|(_, path)| project::elm_json_path(&path)),
+            )
+            .concat(&project_roots.map(|(_, path)| project::idat_path(&path)))
+            .distinct();
 
-    let idat_file_events =
+    let idat_files: dataflow::Collection<(PathBuf, ProjectId)> = project_roots
+        .map(|(project_id, project_root)| {
+            (project::idat_path(&project_root), project_id)
+        });
+
+    let idat_file_events: dataflow::Collection<(PathBuf, ProjectId)> =
         idat_files.semijoin(&filepath_events).concat(&idat_files);
 
-    let idat_modules = idat_file_events
+    let idat_modules: dataflow::Collection<(
+        ProjectId,
+        (ModuleName, ExportedName),
+    )> = idat_file_events
         .map(|(idat_path, project)| (project, idat_path))
         .reduce(move |_project_id, input, output| {
             let idat_path = input[0].0;
@@ -366,7 +409,21 @@ where
             }
         });
 
-    (project_modules.concat(&idat_modules), paths_to_watch)
+    let imports_by_module: dataflow::Collection<(
+        (ProjectId, ModuleName),
+        ModuleName,
+    )> = project_modules.join_map(
+        &imported_modules,
+        |_file_path, (project_id, module_name), imported_module| {
+            ((*project_id, module_name.clone()), imported_module.clone())
+        },
+    );
+
+    (
+        exports_by_project.concat(&idat_modules),
+        paths_to_watch,
+        imports_by_module,
+    )
 }
 
 #[cfg(test)]
@@ -385,7 +442,9 @@ mod tests {
         filepath_events_input: dataflow::Input<PathBuf>,
         exports_by_project:
             dataflow::KeyTrace<ProjectId, (ModuleName, ExportedName)>,
-        watched_paths: dataflow::SelfTrace<PathBuf>,
+        paths_to_watch: dataflow::SelfTrace<PathBuf>,
+        imports_by_module:
+            dataflow::KeyTrace<(ProjectId, ModuleName), ModuleName>,
     }
 
     impl DependenciesCalculation {
@@ -401,28 +460,33 @@ mod tests {
             let mut filepath_events_input =
                 differential_dataflow::input::InputSession::new();
 
-            let (exports_by_project, watched_paths, probes) =
+            let (exports_by_project, paths_to_watch, imports_by_module, probes) =
                 worker.dataflow(|scope| {
                     let project_roots =
                         project_roots_input.to_collection(scope);
                     let filepath_events =
                         filepath_events_input.to_collection(scope);
-                    let (modules, paths_to_watch) = dataflow_graph(
-                        elm_io.clone(),
-                        project_roots,
-                        filepath_events,
-                    );
+                    let (exports_by_project, paths_to_watch, imports_by_module) =
+                        dataflow_graph(
+                            elm_io.clone(),
+                            project_roots,
+                            filepath_events,
+                        );
 
-                    let exports_by_project = modules.arrange_by_key();
+                    let exports_by_project_arr =
+                        exports_by_project.arrange_by_key();
 
-                    let watched_paths = paths_to_watch.arrange_by_self();
+                    let paths_to_watch_arr = paths_to_watch.arrange_by_self();
+
+                    let imports_by_module_arr = imports_by_module.arrange_by_key();
 
                     (
-                        exports_by_project.trace,
-                        watched_paths.trace,
+                        exports_by_project_arr.trace,
+                        paths_to_watch_arr.trace,
+                        imports_by_module_arr.trace,
                         vec![
-                            watched_paths.stream.probe(),
-                            exports_by_project.stream.probe(),
+                            paths_to_watch_arr.stream.probe(),
+                            exports_by_project_arr.stream.probe(),
                         ],
                     )
                 });
@@ -433,7 +497,8 @@ mod tests {
                 project_roots_input,
                 filepath_events_input,
                 exports_by_project,
-                watched_paths,
+                paths_to_watch,
+                imports_by_module,
             }
         }
 
@@ -443,14 +508,15 @@ mod tests {
                     &mut self.project_roots_input,
                     &mut self.filepath_events_input,
                     &mut self.exports_by_project,
+                    &mut self.imports_by_module,
                     &mut self.probes,
                 ),
                 &mut self.worker,
             );
         }
 
-        fn watched_paths(&mut self) -> HashSet<PathBuf> {
-            let (mut cursor, storage) = self.watched_paths.cursor();
+        fn paths_to_watch(&mut self) -> HashSet<PathBuf> {
+            let (mut cursor, storage) = self.paths_to_watch.cursor();
             cursor
                 .to_vec(&storage)
                 .into_iter()
@@ -480,6 +546,32 @@ mod tests {
                         None
                     }
                 })
+                .collect()
+        }
+
+        fn imports_by_module(
+            &mut self,
+            project: ProjectId,
+            module: &ModuleName,
+        ) -> HashSet<ModuleName> {
+            let (mut cursor, storage) = self.imports_by_module.cursor();
+            cursor
+                .to_vec(&storage)
+                .into_iter()
+                .filter_map(
+                    |(((project_, module_), imported_module), counts)| {
+                        let total: isize =
+                            counts.into_iter().map(|(_, count)| count).sum();
+                        if total > 0
+                            && project_ == project
+                            && &module_ == module
+                        {
+                            Some(imported_module)
+                        } else {
+                            None
+                        }
+                    },
+                )
                 .collect()
         }
     }
@@ -514,12 +606,20 @@ mod tests {
         );
         // And the right paths are tracked...
         assert_eq!(
-            computation.watched_paths(),
+            computation.paths_to_watch(),
             HashSet::from_iter([
                 PathBuf::from("/project/elm.json"),
                 PathBuf::from("/project/elm-stuff/0.19.1/i.dat"),
                 PathBuf::from("/project/src"),
             ]),
+        );
+        // And imports are found...
+        assert_eq!(
+            computation.imports_by_module(
+                project_id,
+                &ModuleName::from_str("Animals.Bat")
+            ),
+            HashSet::from_iter([ModuleName::from_str("Json.Decode"),]),
         );
     }
 
@@ -549,7 +649,7 @@ mod tests {
         );
         // And the right paths are tracked...
         assert_eq!(
-            computation.watched_paths(),
+            computation.paths_to_watch(),
             HashSet::from_iter([
                 PathBuf::from("/project/elm.json"),
                 PathBuf::from("/project/elm-stuff/0.19.1/i.dat"),
@@ -566,7 +666,7 @@ mod tests {
         // Then it is forgotten
         assert_eq!(computation.project(project_id), HashSet::new(),);
         // And the projects paths are no longer tracked...
-        assert_eq!(computation.watched_paths(), HashSet::new(),);
+        assert_eq!(computation.paths_to_watch(), HashSet::new(),);
     }
 
     #[test]

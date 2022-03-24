@@ -1,9 +1,10 @@
 use crate::elm::compiler::Compiler;
 use crate::elm::io::parse_elm_json::{parse_elm_json, ElmJson};
-use crate::elm::io::parse_elm_module::parse_elm_module;
+use crate::elm::io::parse_elm_module::{parse_elm_module, Module};
 use crate::elm::io::parse_elm_stuff_idat::parse_elm_stuff_idat;
 use crate::elm::module_name::ModuleName;
 use crate::elm::queries::exports;
+use crate::elm::queries::imports;
 use crate::lib::dir_walker::DirWalker;
 use crate::lib::log::Error;
 use abomonation_derive::Abomonation;
@@ -21,8 +22,7 @@ pub trait ElmIO: Clone {
     type FilesInDir: IntoIterator<Item = PathBuf>;
 
     fn parse_elm_json(&self, path: &Path) -> Result<ElmJson, Error>;
-    fn parse_elm_module(&self, path: &Path)
-        -> Result<Vec<ExportedName>, Error>;
+    fn parse_elm_module(&self, path: &Path) -> Result<Module, Error>;
     fn parse_elm_stuff_idat(
         &self,
         path: &Path,
@@ -61,15 +61,18 @@ pub enum ExportedName {
 pub struct RealElmIO {
     compiler: Compiler,
     query_for_exports: Rc<exports::Query>,
+    query_for_imports: Rc<imports::Query>,
 }
 
 impl RealElmIO {
     pub fn new(compiler: Compiler) -> Result<RealElmIO, Error> {
         let language = tree_sitter_elm::language();
         let query_for_exports = Rc::new(exports::Query::init(language)?);
+        let query_for_imports = Rc::new(imports::Query::init(language)?);
         Ok(RealElmIO {
             compiler,
             query_for_exports,
+            query_for_imports,
         })
     }
 }
@@ -81,11 +84,8 @@ impl ElmIO for RealElmIO {
         parse_elm_json(path)
     }
 
-    fn parse_elm_module(
-        &self,
-        path: &Path,
-    ) -> Result<Vec<ExportedName>, Error> {
-        parse_elm_module(&self.query_for_exports, path)
+    fn parse_elm_module(&self, path: &Path) -> Result<Module, Error> {
+        parse_elm_module(&self.query_for_exports, &self.query_for_imports, path)
     }
 
     fn parse_elm_stuff_idat(
@@ -115,7 +115,7 @@ pub mod mock {
     #[derive(Clone)]
     pub struct FakeElmIO {
         pub projects: Rc<Mutex<HashMap<PathBuf, FakeElmProject>>>,
-        pub modules: Rc<Mutex<HashMap<PathBuf, Vec<ExportedName>>>>,
+        pub modules: Rc<Mutex<HashMap<PathBuf, Module>>>,
         pub elm_jsons_parsed: Rc<Mutex<u64>>,
         pub elm_modules_parsed: Rc<Mutex<u64>>,
         pub elm_idats_parsed: Rc<Mutex<u64>>,
@@ -130,7 +130,7 @@ pub mod mock {
     impl FakeElmIO {
         pub fn new(
             projects: Vec<(PathBuf, FakeElmProject)>,
-            modules: Vec<(PathBuf, Vec<ExportedName>)>,
+            modules: Vec<(PathBuf, Module)>,
         ) -> FakeElmIO {
             FakeElmIO {
                 projects: Rc::new(Mutex::new(HashMap::from_iter(
@@ -164,10 +164,7 @@ pub mod mock {
                 .map(|project| project.elm_json.clone())
         }
 
-        fn parse_elm_module(
-            &self,
-            path: &Path,
-        ) -> Result<Vec<ExportedName>, Error> {
+        fn parse_elm_module(&self, path: &Path) -> Result<Module, Error> {
             let mut elm_modules_parsed =
                 self.elm_modules_parsed.lock().unwrap();
             let opt_module = self
@@ -180,7 +177,7 @@ pub mod mock {
                 *elm_modules_parsed += 1;
                 Ok(module)
             } else {
-                Ok(Vec::new())
+                Ok((Vec::new(), Vec::new()))
             }
         }
 
@@ -240,12 +237,15 @@ pub mod mock {
         )
     }
 
-    pub fn mk_module(path: &str) -> (PathBuf, Vec<ExportedName>) {
+    pub fn mk_module(path: &str) -> (PathBuf, Module) {
         (
             PathBuf::from(path),
-            vec![ExportedName::Value {
-                name: "bees".to_string(),
-            }],
+            (
+                vec![ExportedName::Value {
+                    name: "bees".to_string(),
+                }],
+                vec![ModuleName::from_str("Json.Decode")],
+            ),
         )
     }
 }
