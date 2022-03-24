@@ -69,7 +69,7 @@ fn run_simulation_test_helper(
             log::mk_err!("failed to canonicalize path: {:?}", err)
         })?,
     )?;
-    let edits = refactor_engine
+    let (edits, _) = refactor_engine
         .respond_to_change(&diff, tree_changes)?
         .edits(&mut diff.new)?;
     if edits.is_empty() || diff.old.bytes == diff.new.bytes {

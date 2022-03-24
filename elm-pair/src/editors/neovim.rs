@@ -13,6 +13,7 @@ use ropey::{Rope, RopeBuilder};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::ops::DerefMut;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -536,6 +537,15 @@ where
             }
         }
     }
+    fn open_files(&self, files: Vec<PathBuf>) -> bool {
+        match self.open_buffers(files) {
+            Ok(()) => true,
+            Err(err) => {
+                log::error!("failed opening buffers in neovim: {:?}", err);
+                false
+            }
+        }
+    }
 }
 
 impl<W> NeovimDriver<W>
@@ -576,6 +586,68 @@ where
                 write_str(write, line)?;
             }
         }
+        write.flush().map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?;
+        Ok(())
+    }
+
+    fn open_buffers(&self, files: Vec<PathBuf>) -> Result<(), Error> {
+        let mut write_guard = crate::lock(&self.write);
+        let write = write_guard.deref_mut();
+
+        for file in files {
+            // nvim_command("e {file}")
+            // This is the Ex-command to open the file in the current window.
+            // - It'd be preferable to use a dedicated command on the neovim
+            //   API instead of constructing an Ex-command string that Neovim
+            //   will have to parse again. Such a command does not appear to
+            //   exist on the API at this point.
+            // - It'd be preferable for this buffer to open 'in the background',
+            //   the current command will immediately show the new file to the
+            //   user, potentially interupting what they're doing. The `:badd`
+            //   command allows opening background buffers, but does not appear
+            //   to open the associated file, which we need if we're going to
+            //   send edits for it later. So because we open the file in the
+            //   foreground we perform another command to switch back to the
+            //   previous file directly after.
+            rmp::encode::write_array_len(write, 3)?; // msgpack envelope
+            rmp::encode::write_i8(write, 2)?;
+
+            write_str(write, "nvim_command")?;
+
+            rmp::encode::write_array_len(write, 1)?;
+            let command = b"e ";
+            let file_bytes = file.as_os_str().as_bytes();
+            rmp::encode::write_str_len(
+                write,
+                (command.len() + file_bytes.len()) as u32,
+            )?;
+            write.write_all(command).map_err(|err| {
+                log::mk_err!("failed writing to neovim: {:?}", err)
+            })?;
+            write.write_all(file_bytes).map_err(|err| {
+                log::mk_err!("failed writing to neovim: {:?}", err)
+            })?;
+
+            // nvim_command("e #")
+            // The previous command switches us to the newly opened file. It
+            // also sets both files up as 'alternates'. This command opens the
+            // alternate file, effectively switching us back to whatever was
+            // showing before opening the new file.
+            rmp::encode::write_array_len(write, 3)?; // msgpack envelope
+            rmp::encode::write_i8(write, 2)?;
+
+            write_str(write, "nvim_command")?;
+
+            rmp::encode::write_array_len(write, 1)?;
+            let command2 = b"e #";
+            rmp::encode::write_str_len(write, command2.len() as u32)?;
+            write.write_all(command2).map_err(|err| {
+                log::mk_err!("failed writing to neovim: {:?}", err)
+            })?;
+        }
+
         write.flush().map_err(|err| {
             log::mk_err!("failed writing to neovim: {:?}", err)
         })?;

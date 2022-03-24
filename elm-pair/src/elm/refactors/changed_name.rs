@@ -8,6 +8,7 @@ use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
 use std::collections::HashSet;
 use std::iter::FromIterator;
+use std::path::PathBuf;
 use tree_sitter::{Node, QueryCursor};
 
 pub fn refactor(
@@ -38,6 +39,10 @@ pub fn refactor(
         // If the variable definition is in multiple scopes, the innermost
         // (i.e. shortes) scope will be the one the variable can be used in.
         .min_by_key(|(_, scope)| scope.len());
+
+    refactor.open_file(PathBuf::from(
+        "/home/jasper/dev/elm-pair/elm-pair/tests/src/Support/Date.elm",
+    ));
 
     match opt_scope {
         Some((RenameKind::RecordFieldPattern, _)) => Ok(()),

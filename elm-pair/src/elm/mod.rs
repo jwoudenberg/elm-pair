@@ -11,7 +11,7 @@ use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
 use core::ops::Range;
 use ropey::Rope;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tree_sitter::{Node, QueryCursor};
 
 pub mod compiler;
@@ -120,12 +120,14 @@ pub struct Queries {
 
 pub struct Refactor {
     replacements: Vec<(Range<usize>, String)>,
+    files_to_open: Vec<PathBuf>,
 }
 
 impl Refactor {
     fn new() -> Refactor {
         Refactor {
             replacements: Vec::new(),
+            files_to_open: Vec::new(),
         }
     }
 
@@ -133,10 +135,14 @@ impl Refactor {
         self.replacements.push((range, new_bytes))
     }
 
+    fn open_file(&mut self, file: PathBuf) {
+        self.files_to_open.push(file)
+    }
+
     pub fn edits(
         mut self,
         code: &mut SourceFileSnapshot,
-    ) -> Result<Vec<Edit>, Error> {
+    ) -> Result<(Vec<Edit>, Vec<PathBuf>), Error> {
         // Sort edits in reverse order of where they change the source file. This
         // ensures when we apply the edits in sorted order that earlier edits don't
         // move the area of affect of later edits.
@@ -153,7 +159,7 @@ impl Refactor {
             code.apply_edit(edit.input_edit)?;
             edits.push(edit);
         }
-        Ok(edits)
+        Ok((edits, self.files_to_open))
     }
 }
 

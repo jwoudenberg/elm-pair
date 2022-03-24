@@ -80,14 +80,21 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                 .respond_to_change(&diff, tree_changes)
                 .and_then(|refactor| refactor.edits(&mut refactored_code));
             match result {
-                Ok(edits) if !diff.new.tree.root_node().has_error() => {
+                Ok((edits, files_to_open))
+                    if !diff.new.tree.root_node().has_error() =>
+                {
+                    if !files_to_open.is_empty() {
+                        editor_driver.open_files(files_to_open);
+                        return Ok(());
+                    }
+
                     if edits.is_empty() {
                         return Ok(());
                     }
 
                     // If we recently performed the exact same refactor we might
                     // be in a loop. This can happen when the programmer undoes
-                    // a refator that introduced a single change with that undo
+                    // a refactor that introduced a single change with that undo
                     // triggering a new refactor.
                     if self.previous_refactors.contains(&edits) {
                         log::info!("redo of recent refactor aborted");
@@ -200,6 +207,7 @@ impl<'a> AnalysisLoop<'a> {
 // support different kinds of editors.
 pub trait EditorDriver: 'static + Send {
     fn apply_edits(&self, edits: Vec<Edit>) -> bool;
+    fn open_files(&self, files: Vec<PathBuf>) -> bool;
 }
 
 pub struct SourceFileDiff {

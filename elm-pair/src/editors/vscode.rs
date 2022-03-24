@@ -111,6 +111,9 @@ where
             }
         }
     }
+    fn open_files(&self, _files: Vec<PathBuf>) -> bool {
+        todo!()
+    }
 }
 
 fn write_refactor<W: Write>(
