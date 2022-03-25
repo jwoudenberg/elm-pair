@@ -113,6 +113,21 @@ where
         if array_len == 3 && type_ == 2 {
             let new_self = self.parse_notification_msg()?;
             Ok(Some(new_self))
+        } else if array_len == 4 && type_ == 1 {
+            println!("RETURN VALUE");
+            skip_objects(&mut self.read, 3)?;
+            // let _msgid = self.read.read_u32::<byteorder::BigEndian>().unwrap();
+            // let len = rmp::decode::read_str_len(&mut self.read)?;
+            // let mut buffer = vec![0; len as usize];
+            // self.read.read_exact(&mut buffer).map_err(|err| {
+            //     log::mk_err!(
+            //         "failed reading error out of neovim message: {:?}",
+            //         err
+            //     )
+            // })?;
+            // let err = from_utf8(&buffer)?.to_owned();
+            // dbg!(err);
+            Ok(None)
         } else {
             Err(log::mk_err!(
                 "received unknown msgpack-rpc message with length {:?} and type {:?}",

@@ -1,6 +1,6 @@
+use crate::lib::source_code::Buffers;
 use lib::log;
 use lib::log::Error;
-use mvar::MVar;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
@@ -102,15 +102,15 @@ fn run() -> Result<(), Error> {
     // 1. It would require cloning a snapshot on every change, which is often.
     // 2. By using a mutex we can block analysis of a snapshot currently being
     //    changed, meaning we already know it's no longer current.
-    let latest_code = Arc::new(MVar::new_empty());
+    let buffers = Arc::new(Mutex::new(Buffers::new()));
 
     // Start editor listener thread.
-    let latest_code_for_editor_listener = latest_code.clone();
+    let buffers_for_editor_listener = buffers.clone();
     let analysis_sender_for_editor_listener = analysis_sender.clone();
     spawn_thread(analysis_sender.clone(), || {
         editor_listener_thread::run(
             listener,
-            latest_code_for_editor_listener,
+            buffers_for_editor_listener,
             compilation_sender,
             analysis_sender_for_editor_listener,
         )
@@ -128,7 +128,7 @@ fn run() -> Result<(), Error> {
 
     // Main thread continues as analysis thread.
     log::info!("elm-pair has started");
-    analysis_thread::run(&latest_code, analysis_receiver, compiler)?;
+    analysis_thread::run(&buffers, analysis_receiver, compiler)?;
     log::info!("elm-pair exiting");
     Ok(())
 }
@@ -331,46 +331,6 @@ trait MsgLoop<E> {
                 Err(_) => return Ok(res),
             }
             msg = receiver.try_recv()?;
-        }
-    }
-}
-
-// A thread sync structure similar to Haskell's MVar. A variable, potentially
-// empty, that can be shared across threads. Doesn't (currently) do blocking
-// reads and writes though, because this codebase doesn't need it.
-mod mvar {
-    use crate::lock;
-    use std::sync::Mutex;
-
-    pub struct MVar<T> {
-        val: Mutex<Option<T>>,
-    }
-
-    impl<T> MVar<T> {
-        pub fn new_empty() -> MVar<T> {
-            MVar {
-                val: Mutex::new(None),
-            }
-        }
-
-        // Write a value to the MVar. If the MVar already contained a value, it
-        // is returned.
-        pub fn replace(&self, new: T) -> Option<T> {
-            let mut val = lock(&self.val);
-            val.replace(new)
-        }
-
-        // Take the value from an MVar if it has one, leaving the MVar empty.
-        pub fn try_take(&self) -> Option<T> {
-            lock(&self.val).take()
-        }
-
-        // Clone the current value in the MVar and return it.
-        pub fn try_read(&self) -> Option<T>
-        where
-            T: Clone,
-        {
-            crate::lock(&self.val).clone()
         }
     }
 }

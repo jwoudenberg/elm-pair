@@ -2,13 +2,14 @@ use crate::elm;
 use crate::elm::compiler::Compiler;
 use crate::lib::log;
 use crate::lib::source_code::{
-    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
+    Buffer, Buffers, Edit, RefactorAllowed, SourceFileSnapshot,
 };
-use crate::{Error, MVar, MsgLoop};
+use crate::{Error, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::sync::Mutex;
 use tree_sitter::{Node, TreeCursor};
 
 pub enum Msg {
@@ -27,12 +28,12 @@ impl From<Error> for Msg {
 }
 
 pub fn run(
-    latest_code: &MVar<(RefactorAllowed, SourceFileSnapshot)>,
+    buffers: &Mutex<Buffers>,
     analysis_receiver: Receiver<Msg>,
     compiler: Compiler,
 ) -> Result<(), Error> {
     AnalysisLoop {
-        latest_code,
+        buffers,
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new(compiler)?,
@@ -42,7 +43,7 @@ pub fn run(
 }
 
 struct AnalysisLoop<'a> {
-    latest_code: &'a MVar<(RefactorAllowed, SourceFileSnapshot)>,
+    buffers: &'a Mutex<Buffers>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
@@ -190,8 +191,18 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
 
 impl<'a> AnalysisLoop<'a> {
     fn source_file_diff(&self) -> Option<SourceFileDiff> {
-        let (refactor_allowed, new) = self.latest_code.try_read()?;
-        let old = self.last_compiling_code.get(&new.buffer)?.clone();
+        // If the buffers are currently locked it must mean that the editor
+        // listener thread holds the lock to apply an editor change to a buffer.
+        // We don't block here, so the analysis thread can do other work. After
+        // completing the change, the editor listener thread will let us know,
+        // and we'll make another attempt.
+        let buffers = match self.buffers.try_lock() {
+            Ok(buffers_) => Some(buffers_),
+            Err(_) => None,
+        }?;
+        let (buffer, refactor_allowed) = buffers.last_change?;
+        let new = buffers.by_id.get(&buffer)?.clone();
+        let old = self.last_compiling_code.get(&buffer)?.clone();
         if let RefactorAllowed::No = refactor_allowed {
             return None;
         }

@@ -3,27 +3,28 @@ use crate::compilation_thread;
 use crate::editors::neovim;
 use crate::editors::vscode;
 use crate::lib::log;
-use crate::lib::source_code::{Buffer, RefactorAllowed, SourceFileSnapshot};
-use crate::{Error, MVar};
+use crate::lib::source_code::{
+    Buffer, Buffers, RefactorAllowed, SourceFileSnapshot,
+};
+use crate::Error;
 use ropey::Rope;
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tree_sitter::InputEdit;
 
 struct EditorListenerLoop {
-    active_buffer: Arc<MVar<(RefactorAllowed, SourceFileSnapshot)>>,
-    inactive_buffers: HashMap<Buffer, SourceFileSnapshot>,
+    buffers: Arc<Mutex<Buffers>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 }
 
 pub fn run(
     listener: UnixListener,
-    active_buffer: Arc<MVar<(RefactorAllowed, SourceFileSnapshot)>>,
+    buffers: Arc<Mutex<Buffers>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
@@ -34,7 +35,7 @@ pub fn run(
                 continue;
             }
             Ok(accepted_socket) => spawn_editor_thread(
-                active_buffer.clone(),
+                buffers.clone(),
                 compilation_sender.clone(),
                 analysis_sender.clone(),
                 editor_id as u32,
@@ -71,7 +72,7 @@ fn read_editor_kind<R: Read>(read: &mut R) -> Result<EditorKind, Error> {
 }
 
 pub fn spawn_editor_thread(
-    active_buffer: Arc<MVar<(RefactorAllowed, SourceFileSnapshot)>>,
+    buffers: Arc<Mutex<Buffers>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
     editor_id: u32,
@@ -86,10 +87,9 @@ pub fn spawn_editor_thread(
     };
     std::thread::spawn(move || {
         let mut listener_loop = EditorListenerLoop {
-            active_buffer,
+            buffers,
             compilation_sender,
             analysis_sender,
-            inactive_buffers: HashMap::new(),
         };
         let res = match editor_kind {
             EditorKind::Neovim => neovim::Neovim::from_unix_socket(
@@ -131,8 +131,10 @@ impl EditorListenerLoop {
         self.analysis_sender
             .send(analysis_thread::Msg::EditorConnected(editor_id, boxed))?;
         editor.listen(|buffer, update| {
-            let event = update.apply_to_buffer(self.take_buffer(buffer))?;
-            let (refactor_allowed, code) = match event {
+            let mut buffers = crate::lock(&self.buffers);
+            let code = buffers.by_id.remove(&buffer);
+            let event = update.apply_to_buffer(code)?;
+            let code = match event {
                 BufferChange::NoChanges => return Ok(()),
                 BufferChange::ModifiedBuffer {
                     mut code,
@@ -140,7 +142,8 @@ impl EditorListenerLoop {
                     refactor_allowed,
                 } => {
                     code.apply_edit(edit)?;
-                    (refactor_allowed, code)
+                    buffers.last_change = Some((buffer, refactor_allowed));
+                    code
                 }
                 BufferChange::OpenedNewBuffer {
                     bytes,
@@ -160,10 +163,7 @@ impl EditorListenerLoop {
                             path,
                         },
                     )?;
-                    (
-                        RefactorAllowed::Yes,
-                        SourceFileSnapshot::new(buffer, bytes)?,
-                    )
+                    SourceFileSnapshot::new(buffer, bytes)?
                 }
             };
             if !code.tree.root_node().has_error()
@@ -174,7 +174,7 @@ impl EditorListenerLoop {
                     compilation_thread::Msg::CompilationRequested(code.clone()),
                 )?;
             }
-            self.put_active_buffer(code, refactor_allowed);
+            buffers.by_id.insert(buffer, code);
             self.analysis_sender
                 .send(analysis_thread::Msg::SourceCodeModified)?;
             Ok(())
@@ -183,30 +183,6 @@ impl EditorListenerLoop {
             .send(analysis_thread::Msg::EditorDisconnected(editor_id))?;
         log::info!("editor with id {:?} disconnected", editor_id);
         Ok(())
-    }
-
-    fn take_buffer(&mut self, buffer: Buffer) -> Option<SourceFileSnapshot> {
-        if let Some((_, code)) = self.active_buffer.try_take() {
-            if code.buffer == buffer {
-                return Some(code);
-            } else {
-                self.inactive_buffers.insert(code.buffer, code);
-            }
-        }
-        self.inactive_buffers.remove(&buffer)
-    }
-
-    fn put_active_buffer(
-        &mut self,
-        code: SourceFileSnapshot,
-        refactor: RefactorAllowed,
-    ) {
-        if let Some((_, prev_active)) =
-            self.active_buffer.replace((refactor, code))
-        {
-            self.inactive_buffers
-                .insert(prev_active.buffer, prev_active);
-        }
     }
 }
 
