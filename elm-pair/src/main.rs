@@ -1,4 +1,3 @@
-use crate::lib::source_code::Buffers;
 use lib::log;
 use lib::log::Error;
 use std::io::Write;
@@ -8,7 +7,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 mod analysis_thread;
 mod compilation_thread;
@@ -98,19 +97,12 @@ fn run() -> Result<(), Error> {
     // Create channels for inter-thread communication.
     let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
     let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
-    // We could send code updates over above channels too, but don't because:
-    // 1. It would require cloning a snapshot on every change, which is often.
-    // 2. By using a mutex we can block analysis of a snapshot currently being
-    //    changed, meaning we already know it's no longer current.
-    let buffers = Arc::new(Mutex::new(Buffers::new()));
 
     // Start editor listener thread.
-    let buffers_for_editor_listener = buffers.clone();
     let analysis_sender_for_editor_listener = analysis_sender.clone();
     spawn_thread(analysis_sender.clone(), || {
         editor_listener_thread::run(
             listener,
-            buffers_for_editor_listener,
             compilation_sender,
             analysis_sender_for_editor_listener,
         )
@@ -128,7 +120,7 @@ fn run() -> Result<(), Error> {
 
     // Main thread continues as analysis thread.
     log::info!("elm-pair has started");
-    analysis_thread::run(&buffers, analysis_receiver, compiler)?;
+    analysis_thread::run(analysis_receiver, compiler)?;
     log::info!("elm-pair exiting");
     Ok(())
 }

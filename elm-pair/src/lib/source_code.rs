@@ -3,7 +3,6 @@ use crate::lib::log::Error;
 use abomonation_derive::Abomonation;
 use core::ops::Range;
 use ropey::{Rope, RopeSlice};
-use std::collections::HashMap;
 use tree_sitter::{InputEdit, Node, Tree};
 
 // A unique identifier for a buffer that elm-pair is tracking in any connected
@@ -191,23 +190,6 @@ pub fn byte_to_point(code: &Rope, byte: usize) -> tree_sitter::Point {
     tree_sitter::Point {
         row,
         column: code.byte_to_char(byte) - code.line_to_char(row),
-    }
-}
-
-pub struct Buffers {
-    // All editor buffers currently known to Elm-pair, indexed by id.
-    pub by_id: HashMap<Buffer, SourceFileSnapshot>,
-    // The buffer last changed, and whether Elm-pair is allowed to refactor that
-    // change. Some changes (like undo's) shouldn't be reacted to.
-    pub last_change: Option<(Buffer, RefactorAllowed)>,
-}
-
-impl Buffers {
-    pub fn new() -> Buffers {
-        Buffers {
-            by_id: HashMap::new(),
-            last_change: None,
-        }
     }
 }
 

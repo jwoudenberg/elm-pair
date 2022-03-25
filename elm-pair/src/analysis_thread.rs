@@ -2,22 +2,27 @@ use crate::elm;
 use crate::elm::compiler::Compiler;
 use crate::lib::log;
 use crate::lib::source_code::{
-    Buffer, Buffers, Edit, RefactorAllowed, SourceFileSnapshot,
+    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
 use crate::{Error, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::sync::Mutex;
 use tree_sitter::{Node, TreeCursor};
 
 pub enum Msg {
-    SourceCodeModified,
+    SourceCodeModified {
+        code: SourceFileSnapshot,
+        refactor: RefactorAllowed,
+    },
     ThreadFailed(Error),
     EditorConnected(u32, Box<dyn EditorDriver>),
     EditorDisconnected(u32),
-    OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
+    OpenedNewSourceFile {
+        path: PathBuf,
+        code: SourceFileSnapshot,
+    },
     CompilationSucceeded(SourceFileSnapshot),
 }
 
@@ -28,12 +33,12 @@ impl From<Error> for Msg {
 }
 
 pub fn run(
-    buffers: &Mutex<Buffers>,
     analysis_receiver: Receiver<Msg>,
     compiler: Compiler,
 ) -> Result<(), Error> {
     AnalysisLoop {
-        buffers,
+        buffers: HashMap::new(),
+        last_change: None,
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new(compiler)?,
@@ -42,15 +47,16 @@ pub fn run(
     .start(analysis_receiver)
 }
 
-struct AnalysisLoop<'a> {
-    buffers: &'a Mutex<Buffers>,
+struct AnalysisLoop {
+    buffers: HashMap<Buffer, SourceFileSnapshot>,
+    last_change: Option<(Buffer, RefactorAllowed)>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
     previous_refactors: Vec<Vec<Edit>>,
 }
 
-impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
+impl MsgLoop<Error> for AnalysisLoop {
     type Msg = Msg;
 
     fn on_idle(&mut self) -> Result<(), Error> {
@@ -149,7 +155,10 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
 
     fn on_msg(&mut self, msg: Msg) -> Result<bool, Error> {
         match msg {
-            Msg::SourceCodeModified => {}
+            Msg::SourceCodeModified { code, refactor } => {
+                self.last_change = Some((code.buffer, refactor));
+                self.buffers.insert(code.buffer, code);
+            }
             Msg::ThreadFailed(err) => return Err(err),
             Msg::EditorConnected(editor_id, editor_driver) => {
                 self.editor_driver.insert(editor_id, editor_driver);
@@ -162,8 +171,9 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
                     return Ok(false);
                 }
             }
-            Msg::OpenedNewSourceFile { buffer, path } => {
-                self.refactor_engine.init_buffer(buffer, &path)?;
+            Msg::OpenedNewSourceFile { path, code } => {
+                self.refactor_engine.init_buffer(code.buffer, &path)?;
+                self.buffers.insert(code.buffer, code);
             }
             Msg::CompilationSucceeded(snapshot) => {
                 // Replace 'last compiling version' with a newer revision only.
@@ -189,19 +199,10 @@ impl<'a> MsgLoop<Error> for AnalysisLoop<'a> {
     }
 }
 
-impl<'a> AnalysisLoop<'a> {
+impl AnalysisLoop {
     fn source_file_diff(&self) -> Option<SourceFileDiff> {
-        // If the buffers are currently locked it must mean that the editor
-        // listener thread holds the lock to apply an editor change to a buffer.
-        // We don't block here, so the analysis thread can do other work. After
-        // completing the change, the editor listener thread will let us know,
-        // and we'll make another attempt.
-        let buffers = match self.buffers.try_lock() {
-            Ok(buffers_) => Some(buffers_),
-            Err(_) => None,
-        }?;
-        let (buffer, refactor_allowed) = buffers.last_change?;
-        let new = buffers.by_id.get(&buffer)?.clone();
+        let (buffer, refactor_allowed) = self.last_change?;
+        let new = self.buffers.get(&buffer)?.clone();
         let old = self.last_compiling_code.get(&buffer)?.clone();
         if let RefactorAllowed::No = refactor_allowed {
             return None;

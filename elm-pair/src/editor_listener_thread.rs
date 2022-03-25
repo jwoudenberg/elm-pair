@@ -3,9 +3,7 @@ use crate::compilation_thread;
 use crate::editors::neovim;
 use crate::editors::vscode;
 use crate::lib::log;
-use crate::lib::source_code::{
-    Buffer, Buffers, RefactorAllowed, SourceFileSnapshot,
-};
+use crate::lib::source_code::{Buffer, RefactorAllowed, SourceFileSnapshot};
 use crate::Error;
 use ropey::Rope;
 use std::collections::HashMap;
@@ -13,18 +11,16 @@ use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use tree_sitter::InputEdit;
 
 struct EditorListenerLoop {
-    buffers: Arc<Mutex<Buffers>>,
+    buffers: HashMap<Buffer, SourceFileSnapshot>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 }
 
 pub fn run(
     listener: UnixListener,
-    buffers: Arc<Mutex<Buffers>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 ) -> Result<(), Error> {
@@ -35,7 +31,6 @@ pub fn run(
                 continue;
             }
             Ok(accepted_socket) => spawn_editor_thread(
-                buffers.clone(),
                 compilation_sender.clone(),
                 analysis_sender.clone(),
                 editor_id as u32,
@@ -72,7 +67,6 @@ fn read_editor_kind<R: Read>(read: &mut R) -> Result<EditorKind, Error> {
 }
 
 pub fn spawn_editor_thread(
-    buffers: Arc<Mutex<Buffers>>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
     editor_id: u32,
@@ -87,7 +81,7 @@ pub fn spawn_editor_thread(
     };
     std::thread::spawn(move || {
         let mut listener_loop = EditorListenerLoop {
-            buffers,
+            buffers: HashMap::new(),
             compilation_sender,
             analysis_sender,
         };
@@ -131,10 +125,11 @@ impl EditorListenerLoop {
         self.analysis_sender
             .send(analysis_thread::Msg::EditorConnected(editor_id, boxed))?;
         editor.listen(|buffer, update| {
-            let mut buffers = crate::lock(&self.buffers);
-            let code = buffers.by_id.remove(&buffer);
-            let event = update.apply_to_buffer(code)?;
-            let code = match event {
+            // Remove the code for this buffer from our map so we can take
+            // ownership of it. We'll push updated code back in later.
+            let opt_code = self.buffers.remove(&buffer);
+            let event = update.apply_to_buffer(opt_code)?;
+            let new_code = match event {
                 BufferChange::NoChanges => return Ok(()),
                 BufferChange::ModifiedBuffer {
                     mut code,
@@ -142,7 +137,12 @@ impl EditorListenerLoop {
                     refactor_allowed,
                 } => {
                     code.apply_edit(edit)?;
-                    buffers.last_change = Some((buffer, refactor_allowed));
+                    self.analysis_sender.send(
+                        analysis_thread::Msg::SourceCodeModified {
+                            code: code.clone(),
+                            refactor: refactor_allowed,
+                        },
+                    )?;
                     code
                 }
                 BufferChange::OpenedNewBuffer {
@@ -157,26 +157,28 @@ impl EditorListenerLoop {
                             path: path.clone(),
                         },
                     )?;
+                    let code = SourceFileSnapshot::new(buffer, bytes)?;
                     self.analysis_sender.send(
                         analysis_thread::Msg::OpenedNewSourceFile {
-                            buffer,
                             path,
+                            code: code.clone(),
                         },
                     )?;
-                    SourceFileSnapshot::new(buffer, bytes)?
+                    code
                 }
             };
-            if !code.tree.root_node().has_error()
-                && Some(&code.revision) > last_compiled_candidates.get(&buffer)
+            if !new_code.tree.root_node().has_error()
+                && Some(&new_code.revision)
+                    > last_compiled_candidates.get(&buffer)
             {
-                last_compiled_candidates.insert(buffer, code.revision);
+                last_compiled_candidates.insert(buffer, new_code.revision);
                 self.compilation_sender.send(
-                    compilation_thread::Msg::CompilationRequested(code.clone()),
+                    compilation_thread::Msg::CompilationRequested(
+                        new_code.clone(),
+                    ),
                 )?;
             }
-            buffers.by_id.insert(buffer, code);
-            self.analysis_sender
-                .send(analysis_thread::Msg::SourceCodeModified)?;
+            self.buffers.insert(buffer, new_code);
             Ok(())
         })?;
         self.analysis_sender
