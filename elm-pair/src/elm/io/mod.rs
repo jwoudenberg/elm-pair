@@ -238,13 +238,20 @@ pub mod mock {
     }
 
     pub fn mk_module(path: &str) -> (PathBuf, Module) {
+        mk_module_with_imports(path, Vec::new())
+    }
+
+    pub fn mk_module_with_imports(
+        path: &str,
+        imports: Vec<ModuleName>,
+    ) -> (PathBuf, Module) {
         (
             PathBuf::from(path),
             (
                 vec![ExportedName::Value {
                     name: "bees".to_string(),
                 }],
-                vec![ModuleName::from_str("Json.Decode")],
+                imports,
             ),
         )
     }

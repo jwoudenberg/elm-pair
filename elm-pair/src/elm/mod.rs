@@ -10,6 +10,7 @@ use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
 use core::ops::Range;
 use ropey::Rope;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, QueryCursor};
@@ -135,8 +136,8 @@ impl Refactor {
         self.replacements.push((range, new_bytes))
     }
 
-    fn open_file(&mut self, file: PathBuf) {
-        self.files_to_open.push(file)
+    fn open_files(&mut self, files: Vec<PathBuf>) {
+        self.files_to_open = files;
     }
 
     pub fn edits(
@@ -187,6 +188,7 @@ impl RefactorEngine {
         &mut self,
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
+        buffers: &HashMap<Buffer, SourceFileSnapshot>,
     ) -> Result<Refactor, Error> {
         #[cfg(debug_assertions)]
         debug_print_tree_changes(diff, &changes);
@@ -533,6 +535,7 @@ impl RefactorEngine {
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
+                    buffers,
                     old_name,
                     new_name,
                     &changes.new_parent,
@@ -562,6 +565,7 @@ impl RefactorEngine {
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
+                    buffers,
                     old_name,
                     new_name,
                     &changes.new_parent,
@@ -591,6 +595,7 @@ impl RefactorEngine {
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
+                    buffers,
                     old_name,
                     new_name,
                     &changes.new_parent,

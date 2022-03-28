@@ -12,6 +12,7 @@ use crate::lib::included_answer_test as ia_test;
 use crate::lib::log;
 use crate::lib::simulation::Simulation;
 use crate::lib::source_code::{Buffer, SourceFileSnapshot};
+use std::collections::HashMap;
 use std::path::Path;
 
 #[macro_export]
@@ -70,7 +71,7 @@ fn run_simulation_test_helper(
         })?,
     )?;
     let (edits, _) = refactor_engine
-        .respond_to_change(&diff, tree_changes)?
+        .respond_to_change(&diff, tree_changes, &HashMap::new())?
         .edits(&mut diff.new)?;
     if edits.is_empty() || diff.old.bytes == diff.new.bytes {
         Ok("No refactor for this change.".to_owned())

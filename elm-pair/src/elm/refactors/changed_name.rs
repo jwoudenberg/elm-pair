@@ -5,7 +5,8 @@ use crate::elm::{
 };
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::SourceFileSnapshot;
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::FromIterator;
 use std::path::PathBuf;
@@ -16,6 +17,7 @@ pub fn refactor(
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
+    _buffers: &HashMap<Buffer, SourceFileSnapshot>,
     old_name: Name,
     new_name: Name,
     new_node: &Node,
@@ -40,9 +42,16 @@ pub fn refactor(
         // (i.e. shortes) scope will be the one the variable can be used in.
         .min_by_key(|(_, scope)| scope.len());
 
-    refactor.open_file(PathBuf::from(
-        "/home/jasper/dev/elm-pair/elm-pair/tests/src/Support/Date.elm",
-    ));
+    // TOOD: check if name is exposed. If not, skip this bit.
+    let files_to_open: Vec<PathBuf> = computation
+        .dependent_modules_cursor(code.buffer)
+        .iter()
+        .cloned()
+        .collect();
+    if !files_to_open.is_empty() {
+        refactor.open_files(files_to_open);
+        return Ok(());
+    }
 
     match opt_scope {
         Some((RenameKind::RecordFieldPattern, _)) => Ok(()),

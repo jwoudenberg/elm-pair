@@ -84,7 +84,7 @@ impl MsgLoop<Error> for AnalysisLoop {
             let mut refactored_code = diff.new.clone();
             let result = self
                 .refactor_engine
-                .respond_to_change(&diff, tree_changes)
+                .respond_to_change(&diff, tree_changes, &self.buffers)
                 .and_then(|refactor| refactor.edits(&mut refactored_code));
             match result {
                 Ok((edits, files_to_open))

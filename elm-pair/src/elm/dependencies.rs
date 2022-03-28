@@ -43,12 +43,14 @@ pub struct DataflowComputation {
     file_event_receiver: Receiver<notify::DebouncedEvent>,
     // A trace containing all exports from modules we're querying for.
     exports_output: dataflow::SelfTrace<ExportedName>,
+    // A trace containing all depedents on the buffer we're querying for.
+    dependents_output: dataflow::SelfTrace<PathBuf>,
 }
 
 #[derive(
     Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
-struct ProjectId(u8); // 256 Elm Project should be enough for everyone.
+struct ProjectId(u8); // 256 Elm projects should be enough for everyone.
 
 impl DataflowComputation {
     pub fn new(compiler: Compiler) -> Result<DataflowComputation, Error> {
@@ -77,85 +79,112 @@ impl DataflowComputation {
             log::mk_err!("failed creating file watcher: {:?}", err)
         })?;
 
-        let (exports_output, probes) = worker.dataflow(|scope| {
-            let queried_buffers = queried_buffers_input.to_collection(scope);
-            let queried_modules = queried_modules_input.to_collection(scope);
-            let buffers = buffers_input.to_collection(scope);
-            let filepath_events = filepath_events_input.to_collection(scope);
+        let (exports_output, dependents_output, probes) =
+            worker.dataflow(|scope| {
+                let queried_buffers =
+                    queried_buffers_input.to_collection(scope);
+                let queried_modules =
+                    queried_modules_input.to_collection(scope);
+                let buffers = buffers_input.to_collection(scope);
+                let filepath_events =
+                    filepath_events_input.to_collection(scope);
 
-            let buffer_projects =
-                buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
-                    match project::root(&path) {
-                        Ok(root) => {
-                            let next_project_id =
-                                ProjectId(project_ids.len() as u8);
-                            let project_id = project_ids
-                                .entry(root.to_owned())
-                                .or_insert(next_project_id);
-                            Some((buffer, *project_id, root.to_owned()))
-                        }
-                        Err(err) => {
-                            log::error!(
+                let buffer_projects =
+                    buffers.flat_map(
+                        move |(buffer, path): (Buffer, PathBuf)| {
+                            match project::root(&path) {
+                                Ok(root) => {
+                                    let next_project_id =
+                                        ProjectId(project_ids.len() as u8);
+                                    let project_id = project_ids
+                                        .entry(root.to_owned())
+                                        .or_insert(next_project_id);
+                                    Some((buffer, *project_id, root.to_owned()))
+                                }
+                                Err(err) => {
+                                    log::error!(
                             "Can't find Elm project root for path {:?}: {:?}",
                             path,
                             err,
                         );
-                            None
-                        }
-                    }
-                });
+                                    None
+                                }
+                            }
+                        },
+                    );
 
-            let project_roots = buffer_projects
-                .map(|(_, project, root)| (project, root))
-                .distinct();
+                let project_roots = buffer_projects
+                    .map(|(_, project, root)| (project, root))
+                    .distinct();
 
-            let (exports_by_project, paths_to_watch, _imports_by_module) =
-                dataflow_graph(elm_io, project_roots, filepath_events);
+                let (exports_by_project, paths_to_watch, dependent_modules) =
+                    dataflow_graph(elm_io, project_roots, filepath_events);
 
-            let watched_paths =
-                paths_to_watch.inspect(move |(path, _, diff)| {
-                    match std::cmp::Ord::cmp(diff, &0) {
-                        std::cmp::Ordering::Equal => {}
-                        std::cmp::Ordering::Less => {
-                            if let Err(err) = file_watcher.unwatch(path) {
-                                log::error!(
+                let watched_paths =
+                    paths_to_watch.inspect(move |(path, _, diff)| {
+                        match std::cmp::Ord::cmp(diff, &0) {
+                            std::cmp::Ordering::Equal => {}
+                            std::cmp::Ordering::Less => {
+                                if let Err(err) = file_watcher.unwatch(path) {
+                                    log::error!(
                 "failed while remove path {:?} to watch for changes: {:?}",
                                 path,
                                 err
                             )
+                                }
                             }
-                        }
-                        std::cmp::Ordering::Greater => {
-                            if let Err(err) = file_watcher
-                                .watch(path, notify::RecursiveMode::Recursive)
-                            {
-                                log::error!(
+                            std::cmp::Ordering::Greater => {
+                                if let Err(err) = file_watcher.watch(
+                                    path,
+                                    notify::RecursiveMode::Recursive,
+                                ) {
+                                    log::error!(
                 "failed while adding path {:?} to watch for changes: {:?}",
                                 path,
                                 err
                             )
+                                }
                             }
                         }
-                    }
-                });
+                    });
 
-            let queried_projects = buffer_projects
-                .map(|(buffer, project, _)| (buffer, project))
-                .semijoin(&queried_buffers)
-                .map(|(_, project)| project);
+                let queried_projects = buffer_projects
+                    .map(|(buffer, project, _)| (buffer, project))
+                    .semijoin(&queried_buffers)
+                    .map(|(_, project)| project);
 
-            let exports_output = exports_by_project
-                .semijoin(&queried_projects)
-                .map(|(_, x)| x)
-                .semijoin(&queried_modules)
-                .map(|(_, export)| export)
-                .arrange_by_self();
+                let exports_output = exports_by_project
+                    .semijoin(&queried_projects)
+                    .map(|(_, x)| x)
+                    .semijoin(&queried_modules)
+                    .map(|(_, export)| export)
+                    .arrange_by_self();
 
-            (
-                exports_output.trace,
-                vec![watched_paths.probe(), exports_output.stream.probe()],
-            )
-        });
+                let queried_paths: dataflow::Collection<(ProjectId, PathBuf)> =
+                    buffer_projects
+                        .map(|(buffer, project, _)| (buffer, project))
+                        .semijoin(&queried_buffers)
+                        .join_map(&buffers, |_buffer, project, path| {
+                            (*project, path.clone())
+                        });
+
+                let dependents_output: dataflow::Collection<PathBuf> =
+                    dependent_modules
+                        .semijoin(&queried_paths)
+                        .map(|(_, path)| path);
+
+                let dependents_output_arr = dependents_output.arrange_by_self();
+
+                (
+                    exports_output.trace,
+                    dependents_output_arr.trace,
+                    vec![
+                        watched_paths.probe(),
+                        exports_output.stream.probe(),
+                        dependents_output_arr.stream.probe(),
+                    ],
+                )
+            });
 
         let computation = DataflowComputation {
             worker,
@@ -166,6 +195,7 @@ impl DataflowComputation {
             filepath_events_input,
             file_event_receiver,
             exports_output,
+            dependents_output,
         };
 
         Ok(computation)
@@ -185,6 +215,7 @@ impl DataflowComputation {
             probes,
             file_event_receiver,
             exports_output,
+            dependents_output,
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -223,6 +254,7 @@ impl DataflowComputation {
                 buffers_input,
                 filepath_events_input,
                 exports_output,
+                dependents_output,
                 probes,
             ),
             worker,
@@ -245,6 +277,19 @@ impl DataflowComputation {
         let (cursor, storage) = self.exports_output.cursor();
         dataflow::Cursor { cursor, storage }
     }
+
+    pub fn dependent_modules_cursor(
+        &mut self,
+        buffer: Buffer,
+    ) -> dataflow::Cursor<dataflow::SelfTrace<PathBuf>> {
+        self.queried_buffers_input.insert(buffer);
+        self.advance();
+        // Remove the existing query as to not affect future queries.
+        // This change will take effect the next time we `advance()`.
+        self.queried_buffers_input.remove(buffer);
+        let (cursor, storage) = self.dependents_output.cursor();
+        dataflow::Cursor { cursor, storage }
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -255,7 +300,7 @@ fn dataflow_graph<'a, D>(
 ) -> (
     dataflow::Collection<'a, (ProjectId, (ModuleName, ExportedName))>,
     dataflow::Collection<'a, PathBuf>,
-    dataflow::Collection<'a, ((ProjectId, ModuleName), ModuleName)>,
+    dataflow::Collection<'a, ((ProjectId, PathBuf), PathBuf)>,
 )
 where
     D: ElmIO + 'static,
@@ -329,11 +374,11 @@ where
                 .map(move |export| (path.clone(), export))
         });
 
-    let imported_modules: dataflow::Collection<(PathBuf, ModuleName)> =
+    let modules_dependent_on_path: dataflow::Collection<(ModuleName, PathBuf)> =
         parsed_modules.flat_map(|(path, (_, imports))| {
             imports
                 .into_iter()
-                .map(move |import| (path.clone(), import))
+                .map(move |import| (import, path.clone()))
         });
 
     let module_paths: dataflow::Collection<PathBuf> = module_events.distinct();
@@ -406,31 +451,38 @@ where
             }
         });
 
-    let imports_by_module: dataflow::Collection<(
-        (ProjectId, ModuleName),
-        ModuleName,
-    )> = project_modules.join_map(
-        &imported_modules,
-        |_file_path, (project_id, module_name), imported_module| {
-            ((*project_id, module_name.clone()), imported_module.clone())
-        },
-    );
+    let dependent_modules: dataflow::Collection<(
+        (ProjectId, PathBuf),
+        PathBuf,
+    )> = project_modules
+        .map(|(imported_path, (project_id, imported_name))| {
+            (imported_name, (project_id, imported_path))
+        })
+        .join_map(
+            &modules_dependent_on_path,
+            |_imported_name, (project_id, imported_path), dependent_path| {
+                ((*project_id, imported_path.clone()), dependent_path.clone())
+            },
+        );
 
     (
         exports_by_project.concat(&idat_modules),
         paths_to_watch,
-        imports_by_module,
+        dependent_modules,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elm::io::mock::{mk_module, mk_project, FakeElmIO};
+    use crate::elm::io::mock::{
+        mk_module, mk_module_with_imports, mk_project, FakeElmIO,
+    };
     use differential_dataflow::operators::arrange::ArrangeByKey;
     use differential_dataflow::trace::cursor::CursorDebug;
     use std::collections::HashSet;
     use std::iter::FromIterator;
+    use std::path::Path;
 
     struct DependenciesCalculation {
         worker: dataflow::Worker,
@@ -440,8 +492,7 @@ mod tests {
         exports_by_project:
             dataflow::KeyTrace<ProjectId, (ModuleName, ExportedName)>,
         paths_to_watch: dataflow::SelfTrace<PathBuf>,
-        imports_by_module:
-            dataflow::KeyTrace<(ProjectId, ModuleName), ModuleName>,
+        dependent_modules: dataflow::KeyTrace<(ProjectId, PathBuf), PathBuf>,
     }
 
     impl DependenciesCalculation {
@@ -457,13 +508,13 @@ mod tests {
             let mut filepath_events_input =
                 differential_dataflow::input::InputSession::new();
 
-            let (exports_by_project, paths_to_watch, imports_by_module, probes) =
+            let (exports_by_project, paths_to_watch, dependent_modules, probes) =
                 worker.dataflow(|scope| {
                     let project_roots =
                         project_roots_input.to_collection(scope);
                     let filepath_events =
                         filepath_events_input.to_collection(scope);
-                    let (exports_by_project, paths_to_watch, imports_by_module) =
+                    let (exports_by_project, paths_to_watch, dependent_modules) =
                         dataflow_graph(
                             elm_io.clone(),
                             project_roots,
@@ -475,7 +526,7 @@ mod tests {
 
                     let paths_to_watch_arr = paths_to_watch.arrange_by_self();
 
-                    let imports_by_module_arr = imports_by_module.arrange_by_key();
+                    let imports_by_module_arr = dependent_modules.arrange_by_key();
 
                     (
                         exports_by_project_arr.trace,
@@ -495,7 +546,7 @@ mod tests {
                 filepath_events_input,
                 exports_by_project,
                 paths_to_watch,
-                imports_by_module,
+                dependent_modules,
             }
         }
 
@@ -505,7 +556,7 @@ mod tests {
                     &mut self.project_roots_input,
                     &mut self.filepath_events_input,
                     &mut self.exports_by_project,
-                    &mut self.imports_by_module,
+                    &mut self.dependent_modules,
                     &mut self.probes,
                 ),
                 &mut self.worker,
@@ -546,12 +597,12 @@ mod tests {
                 .collect()
         }
 
-        fn imports_by_module(
+        fn dependent_modules(
             &mut self,
             project: ProjectId,
-            module: &ModuleName,
-        ) -> HashSet<ModuleName> {
-            let (mut cursor, storage) = self.imports_by_module.cursor();
+            module: &Path,
+        ) -> HashSet<PathBuf> {
+            let (mut cursor, storage) = self.dependent_modules.cursor();
             cursor
                 .to_vec(&storage)
                 .into_iter()
@@ -559,9 +610,7 @@ mod tests {
                     |(((project_, module_), imported_module), counts)| {
                         let total: isize =
                             counts.into_iter().map(|(_, count)| count).sum();
-                        if total > 0
-                            && project_ == project
-                            && &module_ == module
+                        if total > 0 && project_ == project && module_ == module
                         {
                             Some(imported_module)
                         } else {
@@ -582,7 +631,10 @@ mod tests {
             vec![mk_project(&project_root, vec!["/project/src"], vec![])],
             vec![
                 mk_module("/project/src/Animals/Bat.elm"),
-                mk_module("/project/src/Care/Soap.elm"),
+                mk_module_with_imports(
+                    "/project/src/Care/Soap.elm",
+                    vec![ModuleName::from_str("Animals.Bat")],
+                ),
             ],
         );
         let mut computation = DependenciesCalculation::new(&elm_io);
@@ -612,11 +664,11 @@ mod tests {
         );
         // And imports are found...
         assert_eq!(
-            computation.imports_by_module(
+            computation.dependent_modules(
                 project_id,
-                &ModuleName::from_str("Animals.Bat")
+                Path::new("/project/src/Animals/Bat.elm"),
             ),
-            HashSet::from_iter([ModuleName::from_str("Json.Decode"),]),
+            HashSet::from_iter([PathBuf::from("/project/src/Care/Soap.elm")]),
         );
     }
 
