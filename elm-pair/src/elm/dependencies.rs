@@ -264,9 +264,6 @@ where
     let elm_io3 = elm_io.clone();
     let elm_io4 = elm_io.clone();
 
-    let project_roots: dataflow::Collection<(ProjectId, PathBuf)> =
-        project_roots.distinct();
-
     let elm_json_files: dataflow::Collection<(PathBuf, ProjectId)> =
         project_roots.map(move |(project_id, project_root)| {
             (project::elm_json_path(&project_root), project_id)
