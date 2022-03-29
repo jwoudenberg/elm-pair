@@ -25,6 +25,7 @@ pub fn add_qualifier_to_references(
         let (node, _, reference) = result?;
         if references.contains(&reference) && !should_skip(node) {
             refactor.add_change(
+                code.buffer,
                 node.start_byte()..node.start_byte(),
                 format!("{}.", import.aliased_name()),
             );

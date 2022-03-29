@@ -7,6 +7,7 @@ use crate::lib::source_code::{
 use crate::{Error, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
+use std::iter::FromIterator;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use tree_sitter::{Node, TreeCursor};
@@ -38,6 +39,7 @@ pub fn run(
 ) -> Result<(), Error> {
     AnalysisLoop {
         buffers: HashMap::new(),
+        buffers_by_path: HashMap::new(),
         last_change: None,
         last_compiling_code: HashMap::new(),
         editor_driver: HashMap::new(),
@@ -49,6 +51,7 @@ pub fn run(
 
 struct AnalysisLoop {
     buffers: HashMap<Buffer, SourceFileSnapshot>,
+    buffers_by_path: HashMap<PathBuf, Buffer>,
     last_change: Option<(Buffer, RefactorAllowed)>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
@@ -81,11 +84,30 @@ impl MsgLoop<Error> for AnalysisLoop {
                         return Ok(());
                     }
                 };
-            let mut refactored_code = diff.new.clone();
-            let result = self
-                .refactor_engine
-                .respond_to_change(&diff, tree_changes, &self.buffers)
-                .and_then(|refactor| refactor.edits(&mut refactored_code));
+            let res_refactor = self.refactor_engine.respond_to_change(
+                &diff,
+                tree_changes,
+                &self.buffers,
+                &self.buffers_by_path,
+            );
+            let refactor = match res_refactor {
+                Ok(refactor_) => refactor_,
+                Err(err) => {
+                    log::error!("failed to create refactor: {:?}", err);
+                    return Ok(());
+                }
+            };
+            let changed_buffers = refactor.changed_buffers();
+            let mut refactored_code = HashMap::from_iter(
+                self.buffers.iter().filter_map(|(buffer, code)| {
+                    if changed_buffers.contains(buffer) {
+                        Some((*buffer, code.clone()))
+                    } else {
+                        None
+                    }
+                }),
+            );
+            let result = refactor.edits(&mut refactored_code);
             match result {
                 Ok((edits, files_to_open))
                     if !diff.new.tree.root_node().has_error() =>
@@ -112,27 +134,28 @@ impl MsgLoop<Error> for AnalysisLoop {
                     log::info!("applying refactor to editor");
 
                     if editor_driver.apply_edits(edits.clone()) {
-                        // Increment the revision by one compared to the
-                        // unrefactored code. Code revisions coming from
-                        // the editor are all even numbers, so the
-                        // revisions created by refactors will be odd.
-                        // This is intended to help debugging.
-                        // The next revision coming from the editor,
-                        // being the next even number, will take
-                        // precendence over this one.
-                        refactored_code.revision = diff.new.revision + 1;
+                        for (buffer, mut code) in refactored_code.into_iter() {
+                            // Increment the revision by one compared to the
+                            // unrefactored code. Code revisions coming from
+                            // the editor are all even numbers, so the
+                            // revisions created by refactors will be odd.
+                            // This is intended to help debugging.
+                            // The next revision coming from the editor,
+                            // being the next even number, will take
+                            // precendence over this one.
+                            code.revision = diff.new.revision + 1;
 
-                        // Set the refactored code as the 'last
-                        // compiling version'. We're assuming here that
-                        // the refactor got applied in the editor
-                        // successfully. If we don't do this elm-pair
-                        // keeps comparing new changes to the old last
-                        // compiling version, until the editor
-                        // communicates the changes made by the refactor
-                        // back to us _and_ the compilation thread
-                        // compiles that version (which may be never).
-                        self.last_compiling_code
-                            .insert(refactored_code.buffer, refactored_code);
+                            // Set the refactored code as the 'last
+                            // compiling version'. We're assuming here that
+                            // the refactor got applied in the editor
+                            // successfully. If we don't do this elm-pair
+                            // keeps comparing new changes to the old last
+                            // compiling version, until the editor
+                            // communicates the changes made by the refactor
+                            // back to us _and_ the compilation thread
+                            // compiles that version (which may be never).
+                            self.last_compiling_code.insert(buffer, code);
+                        }
 
                         // Keep the last two refactors, for detecting cycles.
                         self.previous_refactors =
@@ -146,7 +169,7 @@ impl MsgLoop<Error> for AnalysisLoop {
                     log::error!("refactor produced invalid code")
                 }
                 Err(err) => {
-                    log::error!("failed to create refactor: {:?}", err)
+                    log::error!("failed to apply refactor: {:?}", err)
                 }
             }
         };
@@ -173,6 +196,7 @@ impl MsgLoop<Error> for AnalysisLoop {
             }
             Msg::OpenedNewSourceFile { path, code } => {
                 self.refactor_engine.init_buffer(code.buffer, &path)?;
+                self.buffers_by_path.insert(path.clone(), code.buffer);
                 self.buffers.insert(code.buffer, code);
             }
             Msg::CompilationSucceeded(snapshot) => {

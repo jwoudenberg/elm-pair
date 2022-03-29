@@ -17,7 +17,9 @@ pub fn refactor(
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
-    _buffers: &HashMap<Buffer, SourceFileSnapshot>,
+    buffers: &HashMap<Buffer, SourceFileSnapshot>,
+    // TODO: include EditorId in buffers_by_path key.
+    buffers_by_path: &HashMap<PathBuf, Buffer>,
     old_name: Name,
     new_name: Name,
     new_node: &Node,
@@ -43,15 +45,36 @@ pub fn refactor(
         .min_by_key(|(_, scope)| scope.len());
 
     // TOOD: check if name is exposed. If not, skip this bit.
-    let files_to_open: Vec<PathBuf> = computation
-        .dependent_modules_cursor(code.buffer)
-        .iter()
-        .cloned()
-        .collect();
+    let (files_to_rename, files_to_open): (Vec<PathBuf>, Vec<PathBuf>) =
+        computation
+            .dependent_modules_cursor(code.buffer)
+            .iter()
+            .cloned()
+            .partition(|path| buffers_by_path.contains_key(path));
     if !files_to_open.is_empty() {
         refactor.open_files(files_to_open);
         return Ok(());
     }
+
+    let buffers_to_rename: Vec<&SourceFileSnapshot> = files_to_rename
+        .into_iter()
+        .filter_map(|path| {
+            if let Some(buffer) = buffers_by_path.get(&path) {
+                if let Some(code) = buffers.get(buffer) {
+                    Some(code)
+                } else {
+                    log::error!(
+                        "could not find buffer {:?} in buffers list",
+                        buffer
+                    );
+                    None
+                }
+            } else {
+                log::error!("could not find buffer with path {:?}", path);
+                None
+            }
+        })
+        .collect();
 
     match opt_scope {
         Some((RenameKind::RecordFieldPattern, _)) => Ok(()),
@@ -104,6 +127,30 @@ pub fn refactor(
             )
         }
         Some((RenameKind::AnyOther, scope)) => {
+            for other_buffer_code in buffers_to_rename {
+                //TODO: only do unqualified rename if the value is exposed.
+                //TODO: perform rename of qualified values.
+                //TODO: also perform rename in RecordTypeAlias branch.
+                //TODO: also rename name in exposing list of import.
+                renaming::free_names(
+                    queries,
+                    computation,
+                    refactor,
+                    other_buffer_code,
+                    &HashSet::from_iter(std::iter::once(new_name.clone())),
+                    &[],
+                    &[],
+                )?;
+                renaming::rename(
+                    queries,
+                    refactor,
+                    other_buffer_code,
+                    &old_name,
+                    &new_name,
+                    &[],
+                    &[],
+                )?;
+            }
             renaming::free_names(
                 queries,
                 computation,

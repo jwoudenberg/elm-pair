@@ -120,7 +120,7 @@ pub struct Queries {
 }
 
 pub struct Refactor {
-    replacements: Vec<(Range<usize>, String)>,
+    replacements: Vec<(Buffer, Range<usize>, String)>,
     files_to_open: Vec<PathBuf>,
 }
 
@@ -132,17 +132,30 @@ impl Refactor {
         }
     }
 
-    fn add_change(&mut self, range: Range<usize>, new_bytes: String) {
-        self.replacements.push((range, new_bytes))
+    fn add_change(
+        &mut self,
+        buffer: Buffer,
+        range: Range<usize>,
+        new_bytes: String,
+    ) {
+        self.replacements.push((buffer, range, new_bytes))
     }
 
     fn open_files(&mut self, files: Vec<PathBuf>) {
         self.files_to_open = files;
     }
 
+    pub fn changed_buffers(&self) -> HashSet<Buffer> {
+        self.replacements
+            .iter()
+            .map(|(buffer, _, _)| buffer)
+            .copied()
+            .collect()
+    }
+
     pub fn edits(
         mut self,
-        code: &mut SourceFileSnapshot,
+        code_by_buffer: &mut HashMap<Buffer, SourceFileSnapshot>,
     ) -> Result<(Vec<Edit>, Vec<PathBuf>), Error> {
         // Sort edits in reverse order of where they change the source file. This
         // ensures when we apply the edits in sorted order that earlier edits don't
@@ -151,10 +164,19 @@ impl Refactor {
         // We're assuming here that the areas of operation of different edits never
         // overlap.
         self.replacements
-            .sort_by(|(x, _), (y, _)| y.start.cmp(&x.end));
+            .sort_by(|(_, x, _), (_, y, _)| y.start.cmp(&x.end));
 
         let mut edits = Vec::with_capacity(self.replacements.len());
-        for (range, new_bytes) in self.replacements {
+        for (buffer, range, new_bytes) in self.replacements {
+            let code = if let Some(code_) = code_by_buffer.get_mut(&buffer) {
+                code_
+            } else {
+                log::error!(
+                    "could not find code to edit for buffer {:?}",
+                    buffer
+                );
+                continue;
+            };
             let edit =
                 Edit::new(code.buffer, &mut code.bytes, &range, new_bytes);
             code.apply_edit(edit.input_edit)?;
@@ -189,6 +211,7 @@ impl RefactorEngine {
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
         buffers: &HashMap<Buffer, SourceFileSnapshot>,
+        buffers_by_path: &HashMap<PathBuf, Buffer>,
     ) -> Result<Refactor, Error> {
         #[cfg(debug_assertions)]
         debug_print_tree_changes(diff, &changes);
@@ -536,6 +559,7 @@ impl RefactorEngine {
                     &mut refactor,
                     &diff.new,
                     buffers,
+                    buffers_by_path,
                     old_name,
                     new_name,
                     &changes.new_parent,
@@ -566,6 +590,7 @@ impl RefactorEngine {
                     &mut refactor,
                     &diff.new,
                     buffers,
+                    buffers_by_path,
                     old_name,
                     new_name,
                     &changes.new_parent,
@@ -596,6 +621,7 @@ impl RefactorEngine {
                     &mut refactor,
                     &diff.new,
                     buffers,
+                    buffers_by_path,
                     old_name,
                     new_name,
                     &changes.new_parent,

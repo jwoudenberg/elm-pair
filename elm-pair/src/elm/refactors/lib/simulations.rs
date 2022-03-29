@@ -60,7 +60,10 @@ fn run_simulation_test_helper(
     };
     let old = SourceFileSnapshot::new(buffer, simulation.start_bytes)?;
     let new = SourceFileSnapshot::new(buffer, simulation.end_bytes)?;
-    let mut diff = SourceFileDiff { old, new };
+    let diff = SourceFileDiff {
+        old,
+        new: new.clone(),
+    };
     let tree_changes = diff_trees(&diff);
     let compiler = Compiler::new().unwrap();
     let mut refactor_engine = RefactorEngine::new(compiler)?;
@@ -70,18 +73,26 @@ fn run_simulation_test_helper(
             log::mk_err!("failed to canonicalize path: {:?}", err)
         })?,
     )?;
+    let mut buffers = HashMap::new();
+    buffers.insert(buffer, new);
     let (edits, _) = refactor_engine
-        .respond_to_change(&diff, tree_changes, &HashMap::new())?
-        .edits(&mut diff.new)?;
-    if edits.is_empty() || diff.old.bytes == diff.new.bytes {
+        .respond_to_change(
+            &diff,
+            tree_changes,
+            &HashMap::new(),
+            &HashMap::new(),
+        )?
+        .edits(&mut buffers)?;
+    let new_code = buffers.remove(&buffer).unwrap();
+    if edits.is_empty() || diff.old.bytes == new_code.bytes {
         Ok("No refactor for this change.".to_owned())
-    } else if diff.new.tree.root_node().has_error() {
+    } else if new_code.tree.root_node().has_error() {
         Ok(format!(
             "Refactor produced invalid code:\n{}",
-            diff.new.bytes
+            new_code.bytes
         ))
     } else {
-        Ok(diff.new.bytes.to_string())
+        Ok(new_code.bytes.to_string())
     }
 }
 

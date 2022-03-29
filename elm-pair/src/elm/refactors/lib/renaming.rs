@@ -135,10 +135,8 @@ pub fn imported_names(
         } else {
             for res in import.exposing_list() {
                 let (_, exposed) = res?;
-                let mut cursor = computation.exports_cursor(
-                    code.buffer,
-                    import.module_name(),
-                );
+                let mut cursor = computation
+                    .exports_cursor(code.buffer, import.module_name());
                 exposed.for_each_name(cursor.iter(), |name| {
                     names_from_other_modules
                         .insert(name, import.aliased_name().into());
@@ -186,7 +184,11 @@ pub fn rename(
     for res in unqualified_values {
         let (node, _, reference) = res?;
         if &reference == from && should_include(&node) && !should_skip(&node) {
-            refactor.add_change(node.byte_range(), to.name.to_string())
+            refactor.add_change(
+                code.buffer,
+                node.byte_range(),
+                to.name.to_string(),
+            )
         }
     }
     Ok(())

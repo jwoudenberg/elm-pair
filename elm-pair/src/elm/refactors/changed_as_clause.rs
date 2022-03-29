@@ -17,6 +17,7 @@ pub fn refactor(
         let old_qualifier_len = 1 + old_aliased_name.len_bytes();
         if reference.qualifier == old_aliased_name {
             refactor.add_change(
+                code.buffer,
                 node.start_byte()..(node.start_byte() + old_qualifier_len),
                 format!("{}.", new_aliased_name),
             );

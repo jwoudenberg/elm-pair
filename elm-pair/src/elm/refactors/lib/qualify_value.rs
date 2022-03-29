@@ -6,7 +6,7 @@ use crate::elm::refactors::lib::constructors_of_exports::constructors_of_exports
 use crate::elm::{Name, NameKind, Queries, Refactor, COMMA};
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::SourceFileSnapshot;
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use ropey::Rope;
 use std::collections::HashSet;
 use std::ops::Range;
@@ -48,9 +48,13 @@ pub fn qualify_value(
                     && reference.kind == NameKind::Type
                 {
                     if exposing_list_length == 1 {
-                        remove_exposing_list(refactor, &import);
+                        remove_exposing_list(code.buffer, refactor, &import);
                     } else {
-                        remove_from_exposing_list(refactor, &node)?;
+                        remove_from_exposing_list(
+                            code.buffer,
+                            refactor,
+                            &node,
+                        )?;
                     }
                     references_to_qualify.insert(Name {
                         name: type_.name.into(),
@@ -58,10 +62,8 @@ pub fn qualify_value(
                     });
                 }
 
-                let mut cursor = computation.exports_cursor(
-                    code.buffer,
-                    import.module_name(),
-                );
+                let mut cursor = computation
+                    .exports_cursor(code.buffer, import.module_name());
                 match constructors_of_exports(cursor.iter(), type_.name)? {
                     ExposedConstructors::FromTypeAlias(ctor) => {
                         if ctor == &reference.name {
@@ -70,9 +72,17 @@ pub fn qualify_value(
                             // TODO: Clean this up.
                             if reference.kind != NameKind::Type {
                                 if exposing_list_length == 1 {
-                                    remove_exposing_list(refactor, &import);
+                                    remove_exposing_list(
+                                        code.buffer,
+                                        refactor,
+                                        &import,
+                                    );
                                 } else {
-                                    remove_from_exposing_list(refactor, &node)?;
+                                    remove_from_exposing_list(
+                                        code.buffer,
+                                        refactor,
+                                        &node,
+                                    )?;
                                 }
                             }
                             references_to_qualify.insert(Name {
@@ -92,6 +102,7 @@ pub fn qualify_value(
                                 log::mk_err!("could not find `(..)` node behind exposed type")
                             })?;
                             refactor.add_change(
+                                code.buffer,
                                 exposing_ctors_node.byte_range(),
                                 String::new(),
                             );
@@ -116,9 +127,13 @@ pub fn qualify_value(
                     && reference.kind == NameKind::Value
                 {
                     if exposing_list_length == 1 {
-                        remove_exposing_list(refactor, &import);
+                        remove_exposing_list(code.buffer, refactor, &import);
                     } else {
-                        remove_from_exposing_list(refactor, &node)?;
+                        remove_from_exposing_list(
+                            code.buffer,
+                            refactor,
+                            &node,
+                        )?;
                     }
                     references_to_qualify.insert(Name {
                         name: val.name.into(),
@@ -131,10 +146,8 @@ pub fn qualify_value(
                 if remove_expose_all_if_necessary {
                     let mut exposed_names: Vec<(Name, &ExportedName)> =
                         Vec::new();
-                    let mut cursor = computation.exports_cursor(
-                        code.buffer,
-                        import.module_name(),
-                    );
+                    let mut cursor = computation
+                        .exports_cursor(code.buffer, import.module_name());
                     cursor.iter().for_each(|export| match export {
                         ExportedName::Value { name } => {
                             exposed_names.push((
@@ -218,7 +231,11 @@ pub fn qualify_value(
                             }
                         },
                     );
-                    refactor.add_change(node.byte_range(), new_exposed);
+                    refactor.add_change(
+                        code.buffer,
+                        node.byte_range(),
+                        new_exposed,
+                    );
                 }
 
                 match reference.kind {
@@ -235,10 +252,8 @@ pub fn qualify_value(
                         // type it belongs too. To find it, we iterate over all
                         // the exports from the module matching the qualifier we
                         // added. The type must be among them!
-                        let mut cursor = computation.exports_cursor(
-                            code.buffer,
-                            import.module_name(),
-                        );
+                        let mut cursor = computation
+                            .exports_cursor(code.buffer, import.module_name());
                         for export in cursor.iter() {
                             match export {
                                 ExportedName::Value { .. } => {}
@@ -279,14 +294,21 @@ pub fn qualify_value(
     Ok(())
 }
 
-fn remove_exposing_list(refactor: &mut Refactor, import: &Import) {
+fn remove_exposing_list(
+    buffer: Buffer,
+    refactor: &mut Refactor,
+    import: &Import,
+) {
     match import.exposing_list_node {
         None => {}
-        Some(node) => refactor.add_change(node.byte_range(), String::new()),
+        Some(node) => {
+            refactor.add_change(buffer, node.byte_range(), String::new())
+        }
     };
 }
 
 fn remove_from_exposing_list(
+    buffer: Buffer,
     refactor: &mut Refactor,
     node: &Node,
 ) -> Result<(), Error> {
@@ -314,7 +336,10 @@ fn remove_from_exposing_list(
         }
         exposed_node.byte_range()
     };
-    refactor
-        .add_change(range_including_comma_and_whitespace(node), String::new());
+    refactor.add_change(
+        buffer,
+        range_including_comma_and_whitespace(node),
+        String::new(),
+    );
     Ok(())
 }

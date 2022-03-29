@@ -5,7 +5,7 @@ use crate::elm::refactors::lib::remove_qualifier_from_references::remove_qualifi
 use crate::elm::{Name, NameKind, QualifiedName, Queries, Refactor};
 
 use crate::lib::log::Error;
-use crate::lib::source_code::SourceFileSnapshot;
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use ropey::Rope;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -47,6 +47,7 @@ pub fn refactor(
                             name: Rope::from_str(name),
                         });
                         add_to_exposing_list(
+                            code.buffer,
                             &import,
                             &Name {
                                 kind: NameKind::Type,
@@ -68,6 +69,7 @@ pub fn refactor(
                             });
                         }
                         add_to_exposing_list(
+                            code.buffer,
                             &import,
                             &unqualified_name,
                             Some(name),
@@ -80,7 +82,13 @@ pub fn refactor(
             }
         }
     } else {
-        add_to_exposing_list(&import, &unqualified_name, None, refactor)?;
+        add_to_exposing_list(
+            code.buffer,
+            &import,
+            &unqualified_name,
+            None,
+            refactor,
+        )?;
         references_to_unqualify.insert(unqualified_name);
     };
     remove_qualifier_from_references(
@@ -97,6 +105,7 @@ pub fn refactor(
 
 // Add a name to the list of values exposed from a particular module.
 fn add_to_exposing_list(
+    buffer: Buffer,
     import: &Import,
     reference: &Name,
     ctor_type: Option<&String>,
@@ -137,6 +146,7 @@ fn add_to_exposing_list(
                     if node.child(1).is_none() {
                         let insert_at = node.end_byte();
                         refactor.add_change(
+                            buffer,
                             insert_at..insert_at,
                             "(..)".to_string(),
                         );
@@ -147,6 +157,7 @@ fn add_to_exposing_list(
             std::cmp::Ordering::Less => {
                 let insert_at = node.start_byte();
                 refactor.add_change(
+                    buffer,
                     insert_at..insert_at,
                     format!("{}, ", insert_str),
                 );
@@ -162,14 +173,18 @@ fn add_to_exposing_list(
     match last_node {
         None => {
             refactor.add_change(
+                buffer,
                 import.root_node.end_byte()..import.root_node.end_byte(),
                 format!(" exposing ({})", insert_str),
             );
         }
         Some(node) => {
             let insert_at = node.end_byte();
-            refactor
-                .add_change(insert_at..insert_at, format!(", {}", insert_str));
+            refactor.add_change(
+                buffer,
+                insert_at..insert_at,
+                format!(", {}", insert_str),
+            );
         }
     }
     Ok(())

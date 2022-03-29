@@ -32,6 +32,7 @@ pub fn refactor(
                 .is_some()
         {
             refactor.add_change(
+                code.buffer,
                 insert_at_byte..insert_at_byte,
                 format!("import {}\n", new_import_name),
             );

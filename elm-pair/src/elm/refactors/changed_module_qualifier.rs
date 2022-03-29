@@ -32,12 +32,14 @@ pub fn refactor(
                         )
                     })?;
                 refactor.add_change(
+                    code.buffer,
                     (as_clause_node.start_byte() - 1)
                         ..as_clause_node.end_byte(),
                     String::new(),
                 )
             } else {
                 refactor.add_change(
+                    code.buffer,
                     as_clause_name_node.byte_range(),
                     new_name.qualifier.to_string(),
                 )
@@ -46,6 +48,7 @@ pub fn refactor(
         None => {
             let insert_point = import.name_node.end_byte();
             refactor.add_change(
+                code.buffer,
                 insert_point..insert_point,
                 format!(" as {}", new_name.qualifier),
             );
