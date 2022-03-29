@@ -46,7 +46,7 @@ pub fn run(analysis_receiver: Receiver<Msg>, compiler: Compiler) -> Result<(), E
 
 struct AnalysisLoop {
     buffers: HashMap<Buffer, SourceFileSnapshot>,
-    buffers_by_path: HashMap<PathBuf, Buffer>,
+    buffers_by_path: HashMap<(EditorId, PathBuf), Buffer>,
     last_change: Option<(Buffer, RefactorAllowed)>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
     editor_driver: HashMap<EditorId, Box<dyn EditorDriver>>,
@@ -184,7 +184,8 @@ impl MsgLoop<Error> for AnalysisLoop {
             }
             Msg::OpenedNewSourceFile { path, code } => {
                 self.refactor_engine.init_buffer(code.buffer, &path)?;
-                self.buffers_by_path.insert(path.clone(), code.buffer);
+                self.buffers_by_path
+                    .insert((code.buffer.editor_id, path.clone()), code.buffer);
                 self.buffers.insert(code.buffer, code);
             }
             Msg::CompilationSucceeded(snapshot) => {
