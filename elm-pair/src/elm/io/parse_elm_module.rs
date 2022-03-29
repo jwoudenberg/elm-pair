@@ -4,7 +4,7 @@ use crate::elm::queries::exports;
 use crate::elm::queries::imports;
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::{Buffer, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
 use std::io::Read;
 use std::path::Path;
 use tree_sitter::QueryCursor;
@@ -22,10 +22,7 @@ pub fn parse_elm_module(
             if let std::io::ErrorKind::NotFound = err.kind() {
                 return Ok((Vec::new(), Vec::new()));
             } else {
-                return Err(log::mk_err!(
-                    "failed to open module file: {:?}",
-                    err
-                ));
+                return Err(log::mk_err!("failed to open module file: {:?}", err));
             };
         }
     };
@@ -48,7 +45,7 @@ fn parse_bytes(
         tree,
         // TODO: Remove need to make up a buffer and revision here.
         buffer: Buffer {
-            editor_id: 0,
+            editor_id: EditorId::new(0),
             buffer_id: 0,
         },
         revision: 0,
@@ -82,14 +79,14 @@ mod tests {
     }
 
     fn run_exports_scanning_test(path: &Path) {
-        ia_test::for_file(path, |input| match run_exports_scanning_test_helper(
-            input,
-        ) {
-            Err(err) => {
-                eprintln!("{:?}", err);
-                panic!();
+        ia_test::for_file(path, |input| {
+            match run_exports_scanning_test_helper(input) {
+                Err(err) => {
+                    eprintln!("{:?}", err);
+                    panic!();
+                }
+                Ok(res) => res,
             }
-            Ok(res) => res,
         })
     }
 
@@ -97,11 +94,7 @@ mod tests {
         let language = tree_sitter_elm::language();
         let query_for_exports = exports::Query::init(language)?;
         let query_for_imports = imports::Query::init(language)?;
-        let (exports, _) = parse_bytes(
-            &query_for_exports,
-            &query_for_imports,
-            input.as_bytes(),
-        )?;
+        let (exports, _) = parse_bytes(&query_for_exports, &query_for_imports, input.as_bytes())?;
         let output = exports
             .into_iter()
             .map(|export| format!("{:?}", export))

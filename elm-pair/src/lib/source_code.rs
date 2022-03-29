@@ -8,12 +8,19 @@ use tree_sitter::{InputEdit, Node, Tree};
 // A unique identifier for a buffer that elm-pair is tracking in any connected
 // editor. First 32 bits uniquely identify the connected editor, while the last
 // 32 bits identify one of the buffers openen in that particular editor.
-#[derive(
-    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
+#[derive(Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Buffer {
-    pub editor_id: u32,
+    pub editor_id: EditorId,
     pub buffer_id: u32,
+}
+
+#[derive(Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EditorId(u32);
+
+impl EditorId {
+    pub fn new(id: u32) -> EditorId {
+        EditorId(id)
+    }
 }
 
 #[derive(Clone)]
@@ -37,10 +44,7 @@ pub struct SourceFileSnapshot {
 }
 
 impl SourceFileSnapshot {
-    pub fn new(
-        buffer: Buffer,
-        bytes: Rope,
-    ) -> Result<SourceFileSnapshot, Error> {
+    pub fn new(buffer: Buffer, bytes: Rope) -> Result<SourceFileSnapshot, Error> {
         let snapshot = SourceFileSnapshot {
             tree: parse_rope(None, &bytes)?,
             buffer,
@@ -80,12 +84,7 @@ fn parse_rope(prev_tree: Option<&Tree>, code: &Rope) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
-        .map_err(|err| {
-            log::mk_err!(
-                "failed setting tree-sitter parser language: {:?}",
-                err
-            )
-        })?;
+        .map_err(|err| log::mk_err!("failed setting tree-sitter parser language: {:?}", err))?;
     let mut callback = |offset, _| {
         let (chunk, chunk_byte_index, _, _) = code.chunk_at_byte(offset);
         &chunk[(offset - chunk_byte_index)..]
@@ -101,12 +100,7 @@ pub fn parse_bytes(bytes: impl AsRef<[u8]>) -> Result<Tree, Error> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(tree_sitter_elm::language())
-        .map_err(|err| {
-            log::mk_err!(
-                "failed setting tree-sitter parser language: {:?}",
-                err
-            )
-        })?;
+        .map_err(|err| log::mk_err!("failed setting tree-sitter parser language: {:?}", err))?;
     match parser.parse(bytes, None) {
         None => Err(log::mk_err!("tree-sitter failed to parse code")),
         Some(tree) => Ok(tree),
@@ -147,12 +141,7 @@ pub struct Edit {
 }
 
 impl Edit {
-    pub fn new(
-        buffer: Buffer,
-        bytes: &mut Rope,
-        range: &Range<usize>,
-        new_bytes: String,
-    ) -> Edit {
+    pub fn new(buffer: Buffer, bytes: &mut Rope, range: &Range<usize>, new_bytes: String) -> Edit {
         let new_end_byte = range.start + new_bytes.len();
         let start_position = byte_to_point(bytes, range.start);
         let old_end_position = byte_to_point(bytes, range.end);
@@ -173,12 +162,7 @@ impl Edit {
     }
 }
 
-fn apply_edit_helper(
-    bytes: &mut Rope,
-    start_byte: usize,
-    old_end_byte: usize,
-    new_bytes: &str,
-) {
+fn apply_edit_helper(bytes: &mut Rope, start_byte: usize, old_end_byte: usize, new_bytes: &str) {
     let start_char = bytes.byte_to_char(start_byte);
     let old_end_char = bytes.byte_to_char(old_end_byte);
     bytes.remove(start_char..old_end_char);

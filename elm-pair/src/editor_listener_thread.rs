@@ -3,7 +3,7 @@ use crate::compilation_thread;
 use crate::editors::neovim;
 use crate::editors::vscode;
 use crate::lib::log;
-use crate::lib::source_code::{Buffer, RefactorAllowed, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, EditorId, RefactorAllowed, SourceFileSnapshot};
 use crate::Error;
 use ropey::Rope;
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ pub fn run(
             Ok(accepted_socket) => spawn_editor_thread(
                 compilation_sender.clone(),
                 analysis_sender.clone(),
-                editor_id as u32,
+                EditorId::new(editor_id as u32),
                 accepted_socket,
             ),
         };
@@ -69,7 +69,7 @@ fn read_editor_kind<R: Read>(read: &mut R) -> Result<EditorKind, Error> {
 pub fn spawn_editor_thread(
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
-    editor_id: u32,
+    editor_id: EditorId,
     mut socket: UnixStream,
 ) {
     let editor_kind = match read_editor_kind(&mut socket) {
@@ -86,14 +86,10 @@ pub fn spawn_editor_thread(
             analysis_sender,
         };
         let res = match editor_kind {
-            EditorKind::Neovim => neovim::Neovim::from_unix_socket(
-                socket, editor_id,
-            )
-            .and_then(|editor| listener_loop.start(editor_id as u32, editor)),
-            EditorKind::VsCode => vscode::VsCode::from_unix_socket(
-                socket, editor_id,
-            )
-            .and_then(|editor| listener_loop.start(editor_id as u32, editor)),
+            EditorKind::Neovim => neovim::Neovim::from_unix_socket(socket, editor_id)
+                .and_then(|editor| listener_loop.start(editor_id, editor)),
+            EditorKind::VsCode => vscode::VsCode::from_unix_socket(socket, editor_id)
+                .and_then(|editor| listener_loop.start(editor_id, editor)),
         };
         match res {
             Ok(()) => {}
@@ -109,11 +105,7 @@ pub fn spawn_editor_thread(
 }
 
 impl EditorListenerLoop {
-    fn start<E: Editor>(
-        &mut self,
-        editor_id: u32,
-        editor: E,
-    ) -> Result<(), Error> {
+    fn start<E: Editor>(&mut self, editor_id: EditorId, editor: E) -> Result<(), Error> {
         log::info!(
             "editor {} connected and given id {:?}",
             editor.name(),
@@ -137,12 +129,11 @@ impl EditorListenerLoop {
                     refactor_allowed,
                 } => {
                     code.apply_edit(edit)?;
-                    self.analysis_sender.send(
-                        analysis_thread::Msg::SourceCodeModified {
+                    self.analysis_sender
+                        .send(analysis_thread::Msg::SourceCodeModified {
                             code: code.clone(),
                             refactor: refactor_allowed,
-                        },
-                    )?;
+                        })?;
                     code
                 }
                 BufferChange::OpenedNewBuffer {
@@ -151,32 +142,28 @@ impl EditorListenerLoop {
                     buffer,
                 } => {
                     log::info!("new buffer opened: {:?}", buffer);
-                    self.compilation_sender.send(
-                        compilation_thread::Msg::OpenedNewSourceFile {
+                    self.compilation_sender
+                        .send(compilation_thread::Msg::OpenedNewSourceFile {
                             buffer,
                             path: path.clone(),
-                        },
-                    )?;
+                        })?;
                     let code = SourceFileSnapshot::new(buffer, bytes)?;
-                    self.analysis_sender.send(
-                        analysis_thread::Msg::OpenedNewSourceFile {
+                    self.analysis_sender
+                        .send(analysis_thread::Msg::OpenedNewSourceFile {
                             path,
                             code: code.clone(),
-                        },
-                    )?;
+                        })?;
                     code
                 }
             };
             if !new_code.tree.root_node().has_error()
-                && Some(&new_code.revision)
-                    > last_compiled_candidates.get(&buffer)
+                && Some(&new_code.revision) > last_compiled_candidates.get(&buffer)
             {
                 last_compiled_candidates.insert(buffer, new_code.revision);
-                self.compilation_sender.send(
-                    compilation_thread::Msg::CompilationRequested(
+                self.compilation_sender
+                    .send(compilation_thread::Msg::CompilationRequested(
                         new_code.clone(),
-                    ),
-                )?;
+                    ))?;
             }
             self.buffers.insert(buffer, new_code);
             Ok(())
@@ -209,10 +196,7 @@ pub trait Editor {
 // the editor integration to copy new source code directly into the existing
 // code.
 pub trait EditorEvent {
-    fn apply_to_buffer(
-        &mut self,
-        code: Option<SourceFileSnapshot>,
-    ) -> Result<BufferChange, Error>;
+    fn apply_to_buffer(&mut self, code: Option<SourceFileSnapshot>) -> Result<BufferChange, Error>;
 }
 
 pub enum BufferChange {

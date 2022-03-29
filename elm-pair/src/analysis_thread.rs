@@ -1,9 +1,7 @@
 use crate::elm;
 use crate::elm::compiler::Compiler;
 use crate::lib::log;
-use crate::lib::source_code::{
-    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
-};
+use crate::lib::source_code::{Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot};
 use crate::{Error, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -18,8 +16,8 @@ pub enum Msg {
         refactor: RefactorAllowed,
     },
     ThreadFailed(Error),
-    EditorConnected(u32, Box<dyn EditorDriver>),
-    EditorDisconnected(u32),
+    EditorConnected(EditorId, Box<dyn EditorDriver>),
+    EditorDisconnected(EditorId),
     OpenedNewSourceFile {
         path: PathBuf,
         code: SourceFileSnapshot,
@@ -33,10 +31,7 @@ impl From<Error> for Msg {
     }
 }
 
-pub fn run(
-    analysis_receiver: Receiver<Msg>,
-    compiler: Compiler,
-) -> Result<(), Error> {
+pub fn run(analysis_receiver: Receiver<Msg>, compiler: Compiler) -> Result<(), Error> {
     AnalysisLoop {
         buffers: HashMap::new(),
         buffers_by_path: HashMap::new(),
@@ -54,7 +49,7 @@ struct AnalysisLoop {
     buffers_by_path: HashMap<PathBuf, Buffer>,
     last_change: Option<(Buffer, RefactorAllowed)>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
-    editor_driver: HashMap<u32, Box<dyn EditorDriver>>,
+    editor_driver: HashMap<EditorId, Box<dyn EditorDriver>>,
     refactor_engine: elm::RefactorEngine,
     previous_refactors: Vec<Vec<Edit>>,
 }
@@ -71,19 +66,16 @@ impl MsgLoop<Error> for AnalysisLoop {
                 diff.old.buffer,
             );
             let tree_changes = diff_trees(&diff);
-            if tree_changes.old_removed.is_empty()
-                && tree_changes.new_added.is_empty()
-            {
+            if tree_changes.old_removed.is_empty() && tree_changes.new_added.is_empty() {
                 // No changes were detected!
                 return Ok(());
             }
-            let editor_driver =
-                match self.editor_driver.get(&diff.new.buffer.editor_id) {
-                    Some(driver) => driver,
-                    None => {
-                        return Ok(());
-                    }
-                };
+            let editor_driver = match self.editor_driver.get(&diff.new.buffer.editor_id) {
+                Some(driver) => driver,
+                None => {
+                    return Ok(());
+                }
+            };
             let res_refactor = self.refactor_engine.respond_to_change(
                 &diff,
                 tree_changes,
@@ -98,20 +90,17 @@ impl MsgLoop<Error> for AnalysisLoop {
                 }
             };
             let changed_buffers = refactor.changed_buffers();
-            let mut refactored_code = HashMap::from_iter(
-                self.buffers.iter().filter_map(|(buffer, code)| {
+            let mut refactored_code =
+                HashMap::from_iter(self.buffers.iter().filter_map(|(buffer, code)| {
                     if changed_buffers.contains(buffer) {
                         Some((*buffer, code.clone()))
                     } else {
                         None
                     }
-                }),
-            );
+                }));
             let result = refactor.edits(&mut refactored_code);
             match result {
-                Ok((edits, files_to_open))
-                    if !diff.new.tree.root_node().has_error() =>
-                {
+                Ok((edits, files_to_open)) if !diff.new.tree.root_node().has_error() => {
                     if !files_to_open.is_empty() {
                         editor_driver.open_files(files_to_open);
                         return Ok(());
@@ -158,11 +147,10 @@ impl MsgLoop<Error> for AnalysisLoop {
                         }
 
                         // Keep the last two refactors, for detecting cycles.
-                        self.previous_refactors =
-                            match self.previous_refactors.pop() {
-                                None => vec![edits],
-                                Some(prev) => vec![prev, edits],
-                            };
+                        self.previous_refactors = match self.previous_refactors.pop() {
+                            None => vec![edits],
+                            Some(prev) => vec![prev, edits],
+                        };
                     }
                 }
                 Ok(_) => {
@@ -266,8 +254,7 @@ pub fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
     let mut old_parent = old.node();
     let mut new_parent = new.node();
     loop {
-        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new)
-        {
+        match goto_first_changed_sibling(old_code, new_code, &mut old, &mut new) {
             FirstChangedSibling::NoneFound => {
                 return TreeChanges {
                     old_parent,
@@ -296,12 +283,8 @@ pub fn diff_trees(diff: &SourceFileDiff) -> TreeChanges<'_> {
         };
         let first_old_changed = old.node();
         let first_new_changed = new.node();
-        let (old_removed_count, new_added_count) = count_changed_siblings(
-            old_code,
-            new_code,
-            &mut old.clone(),
-            &mut new.clone(),
-        );
+        let (old_removed_count, new_added_count) =
+            count_changed_siblings(old_code, new_code, &mut old.clone(), &mut new.clone());
 
         // If only a single sibling changed and it's kind remained the same,
         // then we descend into that child.
@@ -382,12 +365,8 @@ fn goto_first_changed_sibling(
             match (old.goto_next_sibling(), new.goto_next_sibling()) {
                 (true, true) => continue,
                 (false, false) => return FirstChangedSibling::NoneFound,
-                (true, false) => {
-                    return FirstChangedSibling::OldAtFirstAdditional
-                }
-                (false, true) => {
-                    return FirstChangedSibling::NewAtFirstAdditional
-                }
+                (true, false) => return FirstChangedSibling::OldAtFirstAdditional,
+                (false, true) => return FirstChangedSibling::NewAtFirstAdditional,
             }
         }
     }

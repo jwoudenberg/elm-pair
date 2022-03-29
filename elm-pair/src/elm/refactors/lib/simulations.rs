@@ -11,7 +11,7 @@ use crate::elm::RefactorEngine;
 use crate::lib::included_answer_test as ia_test;
 use crate::lib::log;
 use crate::lib::simulation::Simulation;
-use crate::lib::source_code::{Buffer, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -25,9 +25,7 @@ macro_rules! simulation_test {
             let module_name = stringify!($name);
             path.push(module_name.to_owned() + ".elm");
             println!("Run simulation {:?}", &path);
-            $crate::elm::refactors::lib::simulations::run_simulation_test(
-                &path,
-            );
+            $crate::elm::refactors::lib::simulations::run_simulation_test(&path);
         }
     };
 }
@@ -49,14 +47,11 @@ pub fn run_simulation_test(path: &Path) {
     })
 }
 
-fn run_simulation_test_helper(
-    path: &Path,
-    input: &str,
-) -> Result<String, Error> {
+fn run_simulation_test_helper(path: &Path, input: &str) -> Result<String, Error> {
     let simulation = Simulation::from_str(input)?;
     let buffer = Buffer {
         buffer_id: 0,
-        editor_id: 0,
+        editor_id: EditorId::new(0),
     };
     let old = SourceFileSnapshot::new(buffer, simulation.start_bytes)?;
     let new = SourceFileSnapshot::new(buffer, simulation.end_bytes)?;
@@ -69,19 +64,14 @@ fn run_simulation_test_helper(
     let mut refactor_engine = RefactorEngine::new(compiler)?;
     refactor_engine.init_buffer(
         buffer,
-        &path.canonicalize().map_err(|err| {
-            log::mk_err!("failed to canonicalize path: {:?}", err)
-        })?,
+        &path
+            .canonicalize()
+            .map_err(|err| log::mk_err!("failed to canonicalize path: {:?}", err))?,
     )?;
     let mut buffers = HashMap::new();
     buffers.insert(buffer, new);
     let (edits, _) = refactor_engine
-        .respond_to_change(
-            &diff,
-            tree_changes,
-            &HashMap::new(),
-            &HashMap::new(),
-        )?
+        .respond_to_change(&diff, tree_changes, &HashMap::new(), &HashMap::new())?
         .edits(&mut buffers)?;
     let new_code = buffers.remove(&buffer).unwrap();
     if edits.is_empty() || diff.old.bytes == new_code.bytes {

@@ -1,13 +1,11 @@
 // A module to support tests of the diffing logic by running simulations against
 // it.
 
-use crate::lib::source_code::{Buffer, Edit};
+use crate::lib::source_code::{Buffer, Edit, EditorId};
 use core::ops::Range;
 use ropey::Rope;
 
-fn find_start_simulation_script<'a, I>(
-    lines: &mut I,
-) -> Result<(String, usize), Error>
+fn find_start_simulation_script<'a, I>(lines: &mut I) -> Result<(String, usize), Error>
 where
     I: Iterator<Item = &'a str>,
 {
@@ -34,33 +32,26 @@ pub struct Simulation {
 impl Simulation {
     pub fn from_str(input: &str) -> Result<Simulation, Error> {
         let mut lines = input.lines();
-        let (code, simulation_script_padding) =
-            find_start_simulation_script(&mut lines)?;
+        let (code, simulation_script_padding) = find_start_simulation_script(&mut lines)?;
         let mut builder = SimulationBuilder::new(Rope::from_str(&code));
         loop {
             let line = match lines.next() {
                 None => return Err(Error::FileEndCameBeforeSimulationEnd),
                 Some(line) => line
                     .get(simulation_script_padding..)
-                    .ok_or(
-                        Error::SimulationInstructionsDontHaveConsistentPadding,
-                    )?
+                    .ok_or(Error::SimulationInstructionsDontHaveConsistentPadding)?
                     .to_string(),
             };
             match line.split(' ').collect::<Vec<&str>>().as_slice() {
                 ["END", "SIMULATION"] => break,
                 ["MOVE", "CURSOR", "TO", "LINE", line_str, strs @ ..] => {
-                    let line = line_str.parse().map_err(|_| {
-                        Error::CannotParseLineNumber(line.to_string())
-                    })?;
+                    let line = line_str
+                        .parse()
+                        .map_err(|_| Error::CannotParseLineNumber(line.to_string()))?;
                     builder = builder.move_cursor(line, &strs.join(" "))?
                 }
-                ["INSERT", strs @ ..] => {
-                    builder = builder.insert(&strs.join(" "))
-                }
-                ["DELETE", strs @ ..] => {
-                    builder = builder.delete(&strs.join(" "))?
-                }
+                ["INSERT", strs @ ..] => builder = builder.insert(&strs.join(" ")),
+                ["DELETE", strs @ ..] => builder = builder.delete(&strs.join(" "))?,
                 _ => return Err(Error::CannotParseSimulationLine(line)),
             };
         }
@@ -88,7 +79,7 @@ impl SimulationBuilder {
     fn add_edit(&mut self, range: &Range<usize>, new_bytes: String) {
         let edit = Edit::new(
             Buffer {
-                editor_id: 0,
+                editor_id: EditorId::new(0),
                 buffer_id: 0,
             },
             &mut self.current_bytes,
@@ -102,17 +93,13 @@ impl SimulationBuilder {
         if line == 0 {
             return Err(Error::MoveCursorFailedLineZeroNotAllowed);
         }
-        self.current_position =
-            self.current_bytes.try_line_to_char(line - 1)?;
+        self.current_position = self.current_bytes.try_line_to_char(line - 1)?;
         let line_end = self.current_bytes.try_line_to_char(line)?;
         let word_rope = Rope::from_str(word);
         while self.current_position < line_end {
             let prefix = self
                 .current_bytes
-                .get_slice(
-                    self.current_position
-                        ..(self.current_position + word_rope.len_chars()),
-                )
+                .get_slice(self.current_position..(self.current_position + word_rope.len_chars()))
                 .ok_or(Error::GettingRopeSlice)?;
             if prefix == word_rope {
                 return Ok(self);
@@ -130,8 +117,7 @@ impl SimulationBuilder {
 
     fn delete(mut self, to_delete: &str) -> Result<Self, Error> {
         let str_rope = Rope::from_str(to_delete);
-        let range = self.current_position
-            ..(self.current_position + str_rope.len_chars());
+        let range = self.current_position..(self.current_position + str_rope.len_chars());
         let at_cursor = self.current_bytes.slice(range.clone());
         if at_cursor != to_delete {
             return Err(Error::TextToDeleteDoesNotMatchStringAtCursor {
