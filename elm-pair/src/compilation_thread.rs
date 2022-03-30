@@ -6,38 +6,38 @@ use crate::sized_stack::SizedStack;
 use crate::{Error, MsgLoop};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 
 pub enum Msg {
     CompilationRequested(SourceFileSnapshot),
     OpenedNewSourceFile { buffer: Buffer, path: PathBuf },
 }
 
-pub fn run(
-    compilation_receiver: Receiver<Msg>,
+pub fn create(
     analysis_sender: Sender<analysis_thread::Msg>,
     compiler: Compiler,
-) -> Result<(), Error> {
-    CompilationLoop {
+) -> Result<CompilationLoop, Error> {
+    let compilation_loop = CompilationLoop {
         analysis_sender,
         buffer_info: HashMap::new(),
         compilation_candidates: SizedStack::with_capacity(
             crate::MAX_COMPILATION_CANDIDATES,
         ),
         compiler,
-    }
-    .start(compilation_receiver)
+    };
+    Ok(compilation_loop)
 }
 
-struct CompilationLoop {
+pub struct CompilationLoop {
     analysis_sender: Sender<analysis_thread::Msg>,
     buffer_info: HashMap<Buffer, BufferInfo>,
     compilation_candidates: SizedStack<SourceFileSnapshot>,
     compiler: Compiler,
 }
 
-impl MsgLoop<Error> for CompilationLoop {
+impl MsgLoop for CompilationLoop {
     type Msg = Msg;
+    type Err = Error;
 
     fn on_msg(&mut self, msg: Msg) -> Result<bool, Error> {
         match msg {

@@ -95,8 +95,9 @@ fn run() -> Result<(), Error> {
     let compiler = crate::elm::compiler::Compiler::new()?;
 
     // Create channels for inter-thread communication.
-    let (analysis_sender, analysis_receiver) = std::sync::mpsc::channel();
-    let (compilation_sender, compilation_receiver) = std::sync::mpsc::channel();
+    let (analysis_sender, mut analysis_receiver) = std::sync::mpsc::channel();
+    let (compilation_sender, mut compilation_receiver) =
+        std::sync::mpsc::channel();
 
     // Start editor listener thread.
     let analysis_sender_for_editor_listener = analysis_sender.clone();
@@ -110,17 +111,19 @@ fn run() -> Result<(), Error> {
 
     // Start compilation thread.
     let compiler_for_compilation = compiler.clone();
-    spawn_thread(analysis_sender.clone(), || {
-        compilation_thread::run(
-            compilation_receiver,
+    spawn_thread(analysis_sender.clone(), move || {
+        let mut compilation = compilation_thread::create(
             analysis_sender,
             compiler_for_compilation,
-        )
+        )?;
+        while MsgLoop::step(&mut compilation, &mut compilation_receiver)? {}
+        Ok(())
     });
 
     // Main thread continues as analysis thread.
     log::info!("elm-pair has started");
-    analysis_thread::run(analysis_receiver, compiler)?;
+    let mut analysis = analysis_thread::create(compiler)?;
+    while MsgLoop::step(&mut analysis, &mut analysis_receiver)? {}
     log::info!("elm-pair exiting");
     Ok(())
 }
@@ -245,11 +248,10 @@ fn elm_pair_dir() -> Result<PathBuf, Error> {
     Ok(dir)
 }
 
-fn spawn_thread<M, E, F>(error_channel: Sender<M>, f: F)
+fn spawn_thread<M, F>(error_channel: Sender<M>, f: F)
 where
-    M: Send + 'static,
-    F: FnOnce() -> Result<(), E>,
-    E: Into<M>,
+    M: Send + 'static + From<Error>,
+    F: FnOnce() -> Result<(), Error>,
     F: Send + 'static,
 {
     std::thread::spawn(move || {
@@ -274,32 +276,37 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<T> {
     mutex.lock().unwrap()
 }
 
-trait MsgLoop<E> {
+trait MsgLoop {
     type Msg;
+    type Err;
 
     // This function is called for every new message that arrives. If we return
     // a `false` value at any point we stop the loop.
     //
     // This function doesn't return until it has processed at least one message,
     // and then until it has emptied the current contents of the queue.
-    fn on_msg(&mut self, msg: Self::Msg) -> Result<bool, E>;
+    fn on_msg(&mut self, msg: Self::Msg) -> Result<bool, Self::Err>;
 
     // After each batch of messages this function is called once to do other
     // work. After it returns we wait for more messages.
-    fn on_idle(&mut self) -> Result<(), E>;
+    fn on_idle(&mut self) -> Result<(), Self::Err>;
 
     // --- Implementation, not for overriding ---
-    fn start(&mut self, mut receiver: Receiver<Self::Msg>) -> Result<(), E> {
-        while self.process_msg_batch(&mut receiver)? {
+    fn step(
+        &mut self,
+        receiver: &mut Receiver<Self::Msg>,
+    ) -> Result<bool, Self::Err> {
+        let more = self.process_msg_batch(receiver)?;
+        if more {
             self.on_idle()?;
         }
-        Ok(())
+        Ok(more)
     }
 
     fn process_msg_batch(
         &mut self,
         receiver: &mut Receiver<Self::Msg>,
-    ) -> Result<bool, E> {
+    ) -> Result<bool, Self::Err> {
         match self.process_msg_batch_helper(receiver) {
             Ok(res) => res,
             Err(TryRecvError::Empty) => Ok(true),
@@ -310,7 +317,7 @@ trait MsgLoop<E> {
     fn process_msg_batch_helper(
         &mut self,
         receiver: &mut Receiver<Self::Msg>,
-    ) -> Result<Result<bool, E>, TryRecvError> {
+    ) -> Result<Result<bool, Self::Err>, TryRecvError> {
         let mut msg = receiver.recv()?;
         loop {
             let res = self.on_msg(msg);
