@@ -106,15 +106,21 @@ impl MsgLoop for AnalysisLoop {
             );
             let result = refactor.edits(&mut refactored_code);
             match result {
-                Ok((edits, files_to_open))
-                    if !diff.new.tree.root_node().has_error() =>
-                {
+                Ok((edits, files_to_open)) => {
                     if !files_to_open.is_empty() {
                         editor_driver.open_files(files_to_open);
                         return Ok(());
                     }
 
                     if edits.is_empty() {
+                        return Ok(());
+                    }
+
+                    if refactored_code
+                        .values()
+                        .any(|code| code.tree.root_node().has_error())
+                    {
+                        log::error!("refactor produced invalid code");
                         return Ok(());
                     }
 
@@ -161,9 +167,6 @@ impl MsgLoop for AnalysisLoop {
                                 Some(prev) => vec![prev, edits],
                             };
                     }
-                }
-                Ok(_) => {
-                    log::error!("refactor produced invalid code")
                 }
                 Err(err) => {
                     log::error!("failed to apply refactor: {:?}", err)
