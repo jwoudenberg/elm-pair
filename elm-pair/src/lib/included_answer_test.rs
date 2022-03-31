@@ -34,7 +34,9 @@ where
     let files: Vec<PathBuf> = if dir.is_file() {
         vec![dir.to_owned()]
     } else {
-        DirWalker::new(dir).collect()
+        DirWalker::new(dir)
+            .map(|path| path.canonicalize().unwrap())
+            .collect()
     };
 
     for path in files {
@@ -83,7 +85,8 @@ where
     f(&mut inputs);
 
     for (path, output) in inputs.into_iter() {
-        let (reader, opt_expected_output, prefix) = readers.remove(&path).unwrap();
+        let (reader, opt_expected_output, prefix) =
+            readers.remove(&path).unwrap();
 
         let actual_output: String = output
             .lines()
