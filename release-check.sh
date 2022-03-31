@@ -40,3 +40,6 @@ fi
 # check github release tag exists
 git fetch --tags
 git tag -l --points-at HEAD | grep "^release-$release$"
+
+# Check `release-latest` branch points at latest release
+git branch -l --points-at HEAD | grep '^release-latest$'

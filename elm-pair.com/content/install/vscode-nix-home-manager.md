@@ -20,7 +20,7 @@ If you run into trouble we'd love to help. Please [reach out](/support)!
            elm-pair = pkgs.fetchFromGitHub {
              owner = "jwoudenberg";
              repo = "elm-pair";
-             rev = "main";
+             rev = "release-latest";
              sha256 = lib.fakeSha256;
            };
          in [ (import elm-pair).vscode-extension ];
