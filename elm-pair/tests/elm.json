@@ -1,7 +1,8 @@
 {
     "type": "application",
     "source-directories": [
-        "src"
+        "src",
+        "refactor-simulations/change_type_name_used_in_other_module"
     ],
     "elm-version": "0.19.1",
     "dependencies": {

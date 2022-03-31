@@ -1,6 +1,8 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::refactors::lib::renaming;
-use crate::elm::{Name, NameKind, Queries, Refactor, RECORD_PATTERN, RECORD_TYPE};
+use crate::elm::{
+    Name, NameKind, Queries, Refactor, RECORD_PATTERN, RECORD_TYPE,
+};
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
@@ -16,7 +18,6 @@ pub fn refactor(
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
     buffers: &HashMap<Buffer, SourceFileSnapshot>,
-    // TODO: include EditorId in buffers_by_path key.
     buffers_by_path: &HashMap<(EditorId, PathBuf), Buffer>,
     old_name: Name,
     new_name: Name,
@@ -42,12 +43,16 @@ pub fn refactor(
         // (i.e. shortes) scope will be the one the variable can be used in.
         .min_by_key(|(_, scope)| scope.len());
 
-    // TOOD: check if name is exposed. If not, skip this bit.
-    let (files_to_rename, files_to_open): (Vec<PathBuf>, Vec<PathBuf>) = computation
-        .dependent_modules_cursor(code.buffer)
-        .iter()
-        .cloned()
-        .partition(|path| buffers_by_path.contains_key(&(code.buffer.editor_id, path.clone())));
+    // TODO: check if name is exposed. If not, skip this bit.
+    let (files_to_rename, files_to_open): (Vec<PathBuf>, Vec<PathBuf>) =
+        computation
+            .dependent_modules_cursor(code.buffer)
+            .iter()
+            .cloned()
+            .partition(|path| {
+                buffers_by_path
+                    .contains_key(&(code.buffer.editor_id, path.clone()))
+            });
     if !files_to_open.is_empty() {
         refactor.open_files(files_to_open);
         return Ok(());
@@ -61,7 +66,10 @@ pub fn refactor(
                 if let Some(code) = buffers.get(buffer) {
                     Some(code)
                 } else {
-                    log::error!("could not find buffer {:?} in buffers list", buffer);
+                    log::error!(
+                        "could not find buffer {:?} in buffers list",
+                        buffer
+                    );
                     None
                 }
             } else {
@@ -99,7 +107,10 @@ pub fn refactor(
                 computation,
                 refactor,
                 code,
-                &HashSet::from_iter([new_constructor.clone(), new_type.clone()]),
+                &HashSet::from_iter([
+                    new_constructor.clone(),
+                    new_type.clone(),
+                ]),
                 &[&scope],
                 &[&new_node.byte_range()],
             )?;
@@ -214,7 +225,9 @@ mod tests {
 
     simulation_test!(change_variable_name_in_let_binding);
     simulation_test!(change_variable_name_in_let_binding_pattern);
-    simulation_test!(change_variable_name_in_let_binding_to_name_already_in_use);
+    simulation_test!(
+        change_variable_name_in_let_binding_to_name_already_in_use
+    );
     simulation_test!(change_name_of_function_in_type_definition_in_let_binding);
     simulation_test!(change_function_argument_name);
     simulation_test!(change_variable_name_in_case_pattern);
@@ -226,6 +239,7 @@ mod tests {
     simulation_test!(change_constructor_name);
     simulation_test!(change_type_alias_name);
     simulation_test!(change_record_type_alias_name);
+    simulation_test!(change_type_name_used_in_other_module);
 
     // Using a different constructor in a function should not trigger a rename.
     simulation_test!(use_different_constructor);
