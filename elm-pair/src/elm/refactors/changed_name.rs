@@ -1,4 +1,5 @@
 use crate::elm::dependencies::DataflowComputation;
+use crate::elm::queries::qualified_values::QualifiedName;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
     Name, NameKind, Queries, Refactor, RECORD_PATTERN, RECORD_TYPE,
@@ -40,48 +41,23 @@ pub fn refactor(
             }
         })
         // If the variable definition is in multiple scopes, the innermost
-        // (i.e. shortes) scope will be the one the variable can be used in.
+        // (i.e. shortest) scope will be the one the variable can be used in.
         .min_by_key(|(_, scope)| scope.len());
 
     // TODO: check if name is exposed. If not, skip this bit.
-    let (files_to_rename, files_to_open): (Vec<PathBuf>, Vec<PathBuf>) =
-        computation
-            .dependent_modules_cursor(code.buffer)
-            .iter()
-            .cloned()
-            .partition(|path| {
-                buffers_by_path
-                    .contains_key(&(code.buffer.editor_id, path.clone()))
-            });
+    let files_to_open: Vec<PathBuf> = computation
+        .dependent_modules_cursor(code.buffer)
+        .iter()
+        .cloned()
+        .filter(|path| {
+            !buffers_by_path
+                .contains_key(&(code.buffer.editor_id, path.clone()))
+        })
+        .collect();
     if !files_to_open.is_empty() {
         refactor.open_files(files_to_open);
         return Ok(());
     }
-
-    let buffers_to_rename: Vec<&SourceFileSnapshot> = files_to_rename
-        .into_iter()
-        .filter_map(|path| {
-            let key = (code.buffer.editor_id, path);
-            if let Some(buffer) = buffers_by_path.get(&key) {
-                if let Some(code) = buffers.get(buffer) {
-                    Some(code)
-                } else {
-                    log::error!(
-                        "could not find buffer {:?} in buffers list",
-                        buffer
-                    );
-                    None
-                }
-            } else {
-                log::error!(
-                    "could not find buffer with editor_id {:?} and path {:?}",
-                    key.0,
-                    key.1
-                );
-                None
-            }
-        })
-        .collect();
 
     match opt_scope {
         Some((RenameKind::RecordFieldPattern, _)) => Ok(()),
@@ -134,9 +110,37 @@ pub fn refactor(
             )
         }
         Some((RenameKind::AnyOther, scope)) => {
-            for other_buffer_code in buffers_to_rename {
+            let module_name = queries
+                .query_for_module_declaration
+                .run(&mut cursor, code)?;
+            for other_buffer_code in buffers.values() {
+                let opt_import = queries
+                    .query_for_imports
+                    .run(&mut cursor, other_buffer_code)
+                    .find(|import| import.module_name() == module_name);
+
+                let import = if let Some(import_) = opt_import {
+                    import_
+                } else {
+                    continue;
+                };
+
+                let qualifier = import.aliased_name();
+                renaming::rename_qualified(
+                    queries,
+                    refactor,
+                    other_buffer_code,
+                    &QualifiedName {
+                        qualifier: qualifier.into(),
+                        unqualified_name: old_name.clone(),
+                    },
+                    &QualifiedName {
+                        qualifier: qualifier.into(),
+                        unqualified_name: new_name.clone(),
+                    },
+                )?;
+
                 //TODO: only do unqualified rename if the value is exposed.
-                //TODO: perform rename of qualified values.
                 //TODO: also perform rename in RecordTypeAlias branch.
                 renaming::free_names(
                     queries,

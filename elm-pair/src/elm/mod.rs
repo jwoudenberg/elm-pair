@@ -114,6 +114,7 @@ pub struct RefactorEngine {
 
 pub struct Queries {
     query_for_imports: queries::imports::Query,
+    query_for_module_declaration: queries::module_declaration::Query,
     query_for_unqualified_values: queries::unqualified_values::Query,
     query_for_qualified_values: queries::qualified_values::Query,
     query_for_scopes: queries::scopes::Query,
@@ -132,7 +133,12 @@ impl Refactor {
         }
     }
 
-    fn add_change(&mut self, buffer: Buffer, range: Range<usize>, new_bytes: String) {
+    fn add_change(
+        &mut self,
+        buffer: Buffer,
+        range: Range<usize>,
+        new_bytes: String,
+    ) {
         self.replacements.push((buffer, range, new_bytes))
     }
 
@@ -166,10 +172,14 @@ impl Refactor {
             let code = if let Some(code_) = code_by_buffer.get_mut(&buffer) {
                 code_
             } else {
-                log::error!("could not find code to edit for buffer {:?}", buffer);
+                log::error!(
+                    "could not find code to edit for buffer {:?}",
+                    buffer
+                );
                 continue;
             };
-            let edit = Edit::new(code.buffer, &mut code.bytes, &range, new_bytes);
+            let edit =
+                Edit::new(code.buffer, &mut code.bytes, &range, new_bytes);
             code.apply_edit(edit.input_edit)?;
             edits.push(edit);
         }
@@ -184,8 +194,12 @@ impl RefactorEngine {
             dataflow_computation: DataflowComputation::new(compiler)?,
             queries: Queries {
                 query_for_imports: queries::imports::Query::init(language)?,
-                query_for_unqualified_values: queries::unqualified_values::Query::init(language)?,
-                query_for_qualified_values: queries::qualified_values::Query::init(language)?,
+                query_for_module_declaration:
+                    queries::module_declaration::Query::init(language)?,
+                query_for_unqualified_values:
+                    queries::unqualified_values::Query::init(language)?,
+                query_for_qualified_values:
+                    queries::qualified_values::Query::init(language)?,
                 query_for_scopes: queries::scopes::Query::init(language)?,
             },
         };
@@ -233,11 +247,19 @@ impl RefactorEngine {
                 let old_import_node = changes.old_parent.parent().ok_or_else(|| {
                     log::mk_err!("could not find parent import node of exposing list")
                 })?;
-                let old_import = parse_import_node(&self.queries, &diff.old, old_import_node)?;
+                let old_import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    old_import_node,
+                )?;
                 let new_import_node = changes.new_parent.parent().ok_or_else(|| {
                     log::mk_err!("could not find import node as parent of exposing list node")
                 })?;
-                let new_import = parse_import_node(&self.queries, &diff.new, new_import_node)?;
+                let new_import = parse_import_node(
+                    &self.queries,
+                    &diff.new,
+                    new_import_node,
+                )?;
                 refactors::changed_values_in_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -273,7 +295,9 @@ impl RefactorEngine {
                     .run_in(&mut cursor, &diff.new, changes.new_parent)
                     .next()
                     .ok_or_else(|| {
-                        log::mk_err!("parsing qualified value node using query failed")
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
                     })??;
                 if old_name.name == qualified_name.unqualified_name.name {
                     refactors::added_module_qualifier_to_name::refactor(
@@ -307,7 +331,9 @@ impl RefactorEngine {
                     .run_in(&mut cursor, &diff.new, changes.new_parent)
                     .next()
                     .ok_or_else(|| {
-                        log::mk_err!("parsing unqualified value node using query failed")
+                        log::mk_err!(
+                            "parsing unqualified value node using query failed"
+                        )
                     })??;
                 let mut cursor2 = QueryCursor::new();
                 let (_, qualified_name) = self
@@ -316,7 +342,9 @@ impl RefactorEngine {
                     .run_in(&mut cursor2, &diff.old, changes.old_parent)
                     .next()
                     .ok_or_else(|| {
-                        log::mk_err!("parsing qualified value node using query failed")
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
                     })??;
                 if new_reference.name == qualified_name.unqualified_name.name {
                     refactors::removed_module_qualifier_from_name::refactor(
@@ -334,7 +362,11 @@ impl RefactorEngine {
                 after: [EXPOSING_LIST],
                 parent: _,
             } => {
-                let import = parse_import_node(&self.queries, &diff.new, changes.new_parent)?;
+                let import = parse_import_node(
+                    &self.queries,
+                    &diff.new,
+                    changes.new_parent,
+                )?;
                 refactors::added_exposing_list_to_import::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -348,7 +380,11 @@ impl RefactorEngine {
                 after: [],
                 parent: _,
             } => {
-                let import = parse_import_node(&self.queries, &diff.old, changes.old_parent)?;
+                let import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    changes.old_parent,
+                )?;
                 refactors::removed_exposing_list_from_import::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -371,9 +407,12 @@ impl RefactorEngine {
                     .parent()
                     .and_then(|n| n.parent())
                     .ok_or_else(|| {
-                        log::mk_err!("did not find parent import of exposed constructor")
+                        log::mk_err!(
+                            "did not find parent import of exposed constructor"
+                        )
                     })?;
-                let import = parse_import_node(&self.queries, &diff.new, import_node)?;
+                let import =
+                    parse_import_node(&self.queries, &diff.new, import_node)?;
                 refactors::added_constructors_to_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -388,10 +427,12 @@ impl RefactorEngine {
                 after: [],
                 parent: _,
             } => {
-                let type_name_node = changes
-                    .old_parent
-                    .child(0)
-                    .ok_or_else(|| log::mk_err!("could not find name node of exposed type node"))?;
+                let type_name_node =
+                    changes.old_parent.child(0).ok_or_else(|| {
+                        log::mk_err!(
+                            "could not find name node of exposed type node"
+                        )
+                    })?;
                 let type_name = diff.old.slice(&type_name_node.byte_range());
                 let old_import_node = changes
                     .old_parent
@@ -400,7 +441,11 @@ impl RefactorEngine {
                     .ok_or_else(|| {
                         log::mk_err!("could not find import parent node of exposed type node")
                     })?;
-                let old_import = parse_import_node(&self.queries, &diff.old, old_import_node)?;
+                let old_import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    old_import_node,
+                )?;
                 refactors::removed_constructors_from_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -424,18 +469,30 @@ impl RefactorEngine {
                     if changes.old_parent.kind_id() == AS_CLAUSE {
                         (
                             changes.old_parent.parent().ok_or_else(|| {
-                                log::mk_err!("found an unexpected root as_clause node")
+                                log::mk_err!(
+                                    "found an unexpected root as_clause node"
+                                )
                             })?,
                             changes.new_parent.parent().ok_or_else(|| {
-                                log::mk_err!("found an unexpected root as_clause node")
+                                log::mk_err!(
+                                    "found an unexpected root as_clause node"
+                                )
                             })?,
                         )
                     } else {
                         (changes.old_parent, changes.new_parent)
                     };
-                let new_import = parse_import_node(&self.queries, &diff.new, new_import_node)?;
+                let new_import = parse_import_node(
+                    &self.queries,
+                    &diff.new,
+                    new_import_node,
+                )?;
                 let new_aliased_name = new_import.aliased_name();
-                let old_import = parse_import_node(&self.queries, &diff.old, old_import_node)?;
+                let old_import = parse_import_node(
+                    &self.queries,
+                    &diff.old,
+                    old_import_node,
+                )?;
                 let old_aliased_name = old_import.aliased_name();
                 refactors::changed_as_clause::refactor(
                     &self.queries,
@@ -457,7 +514,9 @@ impl RefactorEngine {
                     .run_in(&mut cursor, &diff.old, changes.old_parent)
                     .next()
                     .ok_or_else(|| {
-                        log::mk_err!("parsing qualified value node using query failed")
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
                     })??;
                 let (_, new_name) = self
                     .queries
@@ -465,7 +524,9 @@ impl RefactorEngine {
                     .run_in(&mut cursor, &diff.new, changes.new_parent)
                     .next()
                     .ok_or_else(|| {
-                        log::mk_err!("parsing qualified value node using query failed")
+                        log::mk_err!(
+                            "parsing qualified value node using query failed"
+                        )
                     })??;
                 refactors::changed_module_qualifier::refactor(
                     &self.queries,
@@ -478,14 +539,21 @@ impl RefactorEngine {
             Change {
                 before: [LOWER_CASE_IDENTIFIER],
                 after: [LOWER_CASE_IDENTIFIER],
-                parent: FUNCTION_DECLARATION_LEFT | LOWER_PATTERN | TYPE_ANNOTATION,
+                parent:
+                    FUNCTION_DECLARATION_LEFT | LOWER_PATTERN | TYPE_ANNOTATION,
             } => {
                 let old_name = Name {
-                    name: diff.old.slice(&changes.old_removed[0].byte_range()).into(),
+                    name: diff
+                        .old
+                        .slice(&changes.old_removed[0].byte_range())
+                        .into(),
                     kind: NameKind::Value,
                 };
                 let new_name = Name {
-                    name: diff.new.slice(&changes.new_added[0].byte_range()).into(),
+                    name: diff
+                        .new
+                        .slice(&changes.new_added[0].byte_range())
+                        .into(),
                     kind: NameKind::Value,
                 };
                 refactors::changed_name::refactor(
@@ -506,11 +574,17 @@ impl RefactorEngine {
                 parent: TYPE_DECLARATION | TYPE_ALIAS_DECLARATION,
             } => {
                 let old_name = Name {
-                    name: diff.old.slice(&changes.old_removed[0].byte_range()).into(),
+                    name: diff
+                        .old
+                        .slice(&changes.old_removed[0].byte_range())
+                        .into(),
                     kind: NameKind::Type,
                 };
                 let new_name = Name {
-                    name: diff.new.slice(&changes.new_added[0].byte_range()).into(),
+                    name: diff
+                        .new
+                        .slice(&changes.new_added[0].byte_range())
+                        .into(),
                     kind: NameKind::Type,
                 };
                 refactors::changed_name::refactor(
@@ -531,11 +605,17 @@ impl RefactorEngine {
                 parent: UNION_VARIANT,
             } => {
                 let old_name = Name {
-                    name: diff.old.slice(&changes.old_removed[0].byte_range()).into(),
+                    name: diff
+                        .old
+                        .slice(&changes.old_removed[0].byte_range())
+                        .into(),
                     kind: NameKind::Constructor,
                 };
                 let new_name = Name {
-                    name: diff.new.slice(&changes.new_added[0].byte_range()).into(),
+                    name: diff
+                        .new
+                        .slice(&changes.new_added[0].byte_range())
+                        .into(),
                     kind: NameKind::Constructor,
                 };
                 refactors::changed_name::refactor(
@@ -551,8 +631,11 @@ impl RefactorEngine {
                 )?;
             }
             _ => {
-                let unimported_qualifiers =
-                    find_unimported_qualifiers(&self.queries, &diff.new, changes.new_parent)?;
+                let unimported_qualifiers = find_unimported_qualifiers(
+                    &self.queries,
+                    &diff.new,
+                    changes.new_parent,
+                )?;
                 if !unimported_qualifiers.is_empty() {
                     refactors::typed_unimported_qualified_value::refactor(
                         &mut self.dataflow_computation,
@@ -566,7 +649,11 @@ impl RefactorEngine {
         Ok(refactor)
     }
 
-    pub fn init_buffer(&mut self, buffer: Buffer, path: &Path) -> Result<(), Error> {
+    pub fn init_buffer(
+        &mut self,
+        buffer: Buffer,
+        path: &Path,
+    ) -> Result<(), Error> {
         self.dataflow_computation
             .track_buffer(buffer, path.to_owned());
         self.dataflow_computation.advance();
@@ -593,15 +680,17 @@ fn find_unimported_qualifiers(
         .map(|import| import.aliased_name().into())
         .collect();
     let mut unimported_qualifiers = HashSet::new();
-    for result in queries
-        .query_for_qualified_values
-        .run_in(&mut cursor, code, parent)
+    for result in
+        queries
+            .query_for_qualified_values
+            .run_in(&mut cursor, code, parent)
     {
         let (_, reference) = result?;
         if reference.unqualified_name.name.len_bytes() > 0
             && !existing_imports.contains(&reference.qualifier)
         {
-            unimported_qualifiers.insert(ModuleName(reference.qualifier.to_string()));
+            unimported_qualifiers
+                .insert(ModuleName(reference.qualifier.to_string()));
         }
     }
     Ok(unimported_qualifiers)
@@ -647,7 +736,9 @@ fn parse_import_node<'a>(
         .query_for_imports
         .run_in(&mut cursor, code, node)
         .next()
-        .ok_or_else(|| log::mk_err!("query of import node did not result in any matches"))
+        .ok_or_else(|| {
+            log::mk_err!("query of import node did not result in any matches")
+        })
 }
 
 fn attach_kinds(nodes: &[Node]) -> Vec<u16> {

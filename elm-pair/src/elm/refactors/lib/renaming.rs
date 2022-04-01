@@ -1,4 +1,5 @@
 use crate::elm::dependencies::DataflowComputation;
+use crate::elm::queries::qualified_values::QualifiedName;
 use crate::elm::queries::unqualified_values::IsDefinition;
 use crate::elm::refactors::lib::qualify_value::qualify_value;
 use crate::elm::{Name, Queries, Refactor};
@@ -190,6 +191,32 @@ pub fn rename(
                 to.name.to_string(),
             )
         }
+    }
+    Ok(())
+}
+
+// Give an unqualied variable another name.
+// This might introduce naming conflicts!
+pub fn rename_qualified(
+    queries: &Queries,
+    refactor: &mut Refactor,
+    code: &SourceFileSnapshot,
+    from: &QualifiedName,
+    to: &QualifiedName,
+) -> Result<(), Error> {
+    let mut cursor = QueryCursor::new();
+    let nodes_to_rename =
+        queries.query_for_qualified_values.run(&mut cursor, code);
+    for res in nodes_to_rename {
+        let (node, name) = res?;
+        if &name != from {
+            continue;
+        }
+        refactor.add_change(
+            code.buffer,
+            node.byte_range(),
+            format!("{}.{}", to.qualifier, to.unqualified_name.name),
+        )
     }
     Ok(())
 }

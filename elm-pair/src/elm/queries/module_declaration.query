@@ -1,0 +1,12 @@
+(module_declaration
+  name: (module_identifier) @name
+)
+
+=== test input below ===
+
+module Garden.Vegetation.Trees exposing (..)
+
+type Tree = Elm | Oak | Chestnut
+
+=== expected output below ===
+name: [2:7] Garden.Vegetation.Trees
