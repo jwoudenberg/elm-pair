@@ -1,4 +1,4 @@
-module ModuleImportingType exposing (..)
+module ModuleImportingTypeExposingAll exposing (..)
 
 import ModuleExposingType exposing (..)
 
@@ -10,7 +10,7 @@ snore =
 
 
 -- === expected output below ===
--- module ModuleImportingType exposing (..)
+-- module ModuleImportingTypeExposingAll exposing (..)
 --
 -- import ModuleExposingType exposing (..)
 --

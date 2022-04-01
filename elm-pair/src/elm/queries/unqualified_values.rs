@@ -9,6 +9,7 @@ crate::elm::queries::query!(
     value,
     value_definition,
     type_,
+    type_definition,
     constructor,
 );
 
@@ -73,6 +74,7 @@ impl<'a, 'tree> Iterator for UnqualifiedValues<'a, 'tree> {
             index if index == self.query.value_definition => (IsDefinition::Yes, NameKind::Value),
             // TODO: Add IsDefinition::Yes branches for type and construtor names.
             index if index == self.query.type_ => (IsDefinition::No, NameKind::Type),
+            index if index == self.query.type_definition => (IsDefinition::Yes, NameKind::Type),
             index if index == self.query.constructor => (IsDefinition::No, NameKind::Constructor),
             index => {
                 return Some(Err(log::mk_err!(

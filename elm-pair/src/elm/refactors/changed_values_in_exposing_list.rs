@@ -15,8 +15,8 @@ pub fn refactor(
     old_import: Import,
     new_import: Import,
 ) -> Result<(), Error> {
-    let mut cursor = computation
-        .exports_cursor(code.buffer, old_import.module_name());
+    let mut cursor =
+        computation.exports_cursor(code.buffer, old_import.module_name());
     let mut old_references = HashSet::new();
     for result in old_import.exposing_list() {
         let (_, exposed) = result?;
@@ -98,14 +98,5 @@ mod tests {
     simulation_test!(
         expose_value_with_same_name_as_value_from_other_module_exposing_all
     );
-
-    // --- TESTS DEMONSTRATING CURRENT BUGS ---
-    // When we expose a value with the same name as a local variable the local
-    // variable gets renamed to something else. This test demonstrates an edge
-    // case in this logic where the renaming logic is failing. When we expose
-    // multiple variables at the same time, one of which has the same name as
-    // a local variable and the other which has the name we would rename the
-    // local variable too, then we still end up with a naming conflict when all
-    // is done.
     simulation_test!( add_value_to_exposing_list_of_import_with_same_name_as_local_variable_and_another_with_the_same_name_plus_trailing_2);
 }

@@ -26,7 +26,7 @@ incDecoder =
 -- incDecoder : Decoder Int
 -- incDecoder =
 --     let
---         map2 =
+--         map3 =
 --             42
 --     in
 --     map (\n -> n + 1) int

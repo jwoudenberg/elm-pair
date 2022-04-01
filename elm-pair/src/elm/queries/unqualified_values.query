@@ -12,17 +12,15 @@
     (lower_pattern
         (lower_case_identifier) @value_definition
     )
-    (module_declaration
-      exposing: (exposing_list
+    (exposing_list
         [
-          (exposed_value
-              (lower_case_identifier) @value_definition
-          )
-          (exposed_type
-              (type_identifier) @type_
-          )
+            (exposed_value
+                (lower_case_identifier) @value_definition
+            )
+            (exposed_type
+                (type_identifier) @type_definition
+            )
         ]
-      )
     )
     (type_alias_declaration
         (type_identifier) @type_
@@ -79,9 +77,15 @@ decoder kind =
         (Json.Decode.field "liters" float)
 
 === expected output below ===
-type_: [2:22] Beverage
+type_definition: [2:22] Beverage
 
 value_definition: [2:32] decoder
+
+type_definition: [4:29] Decoder
+
+value_definition: [4:38] float
+
+value_definition: [4:45] succeed
 
 type_: [7:11] Beverage
 

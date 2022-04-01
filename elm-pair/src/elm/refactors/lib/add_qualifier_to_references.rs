@@ -1,4 +1,5 @@
 use crate::elm::queries::imports::Import;
+use crate::elm::queries::unqualified_values::IsDefinition;
 use crate::elm::{Name, Queries, Refactor};
 use crate::lib::log::Error;
 use crate::lib::source_code::SourceFileSnapshot;
@@ -22,8 +23,11 @@ pub fn add_qualifier_to_references(
             .any(|skip_range| skip_range.contains(&node.start_byte()))
     };
     for result in results {
-        let (node, _, reference) = result?;
-        if references.contains(&reference) && !should_skip(node) {
+        let (node, is_definition, reference) = result?;
+        if references.contains(&reference)
+            && !should_skip(node)
+            && matches!(is_definition, IsDefinition::No)
+        {
             refactor.add_change(
                 code.buffer,
                 node.start_byte()..node.start_byte(),

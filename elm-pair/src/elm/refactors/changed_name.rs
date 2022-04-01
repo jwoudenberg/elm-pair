@@ -138,7 +138,6 @@ pub fn refactor(
                 //TODO: only do unqualified rename if the value is exposed.
                 //TODO: perform rename of qualified values.
                 //TODO: also perform rename in RecordTypeAlias branch.
-                //TODO: also rename name in exposing list of import.
                 renaming::free_names(
                     queries,
                     computation,
