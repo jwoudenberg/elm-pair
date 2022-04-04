@@ -154,7 +154,7 @@ fn run_simulation_test_helper(
     drop(sender);
 
     // Editor-driver should now have received refactors resulting from messages.
-    let mut refactored_code_by_path = new_code_by_path.clone();
+    let mut refactored_code_by_path = new_code_by_path;
     let apply_edits_calls = editor_driver.apply_edits_calls.lock().unwrap();
     let path_by_buffer_id: HashMap<Buffer, PathBuf> = HashMap::from_iter(
         old_code_by_path
@@ -176,11 +176,9 @@ fn run_simulation_test_helper(
     // Return post-refactor code, for comparison against expected value.
     for (path, input) in inputs {
         let old_code = old_code_by_path.get(path).unwrap();
-        let new_code = new_code_by_path.get(path).unwrap();
         let refactored_code = refactored_code_by_path.get(path).unwrap();
         *input = if apply_edits_calls.is_empty()
             || old_code.bytes == refactored_code.bytes
-            || new_code.bytes == refactored_code.bytes
         {
             "No refactor for this change.".to_owned()
         } else {

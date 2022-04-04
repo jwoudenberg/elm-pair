@@ -1,4 +1,4 @@
-module ModuleImprotingTypeQualified exposing (..)
+module ModuleUsingTypeQualified exposing (..)
 
 import ModuleExposingType
 
@@ -10,7 +10,7 @@ snore =
 
 
 -- === expected output below ===
--- module ModuleImprotingTypeQualified exposing (..)
+-- module ModuleUsingTypeQualified exposing (..)
 --
 -- import ModuleExposingType
 --

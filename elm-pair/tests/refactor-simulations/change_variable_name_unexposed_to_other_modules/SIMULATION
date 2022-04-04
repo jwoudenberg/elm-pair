@@ -1,0 +1,9 @@
+START SIMULATION
+OPEN FILE ModuleNotExposingVariable.elm
+MOVE CURSOR TO LINE 4 greeting
+DELETE greeting
+INSERT greetz
+END SIMULATION
+
+=== expected output below ===
+No refactor for this change.

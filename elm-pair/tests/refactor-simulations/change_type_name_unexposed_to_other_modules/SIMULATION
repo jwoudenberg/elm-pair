@@ -1,0 +1,9 @@
+START SIMULATION
+OPEN FILE ModuleNotExposingType.elm
+MOVE CURSOR TO LINE 4 Snore
+DELETE Snore
+INSERT SleepySounds
+END SIMULATION
+
+=== expected output below ===
+No refactor for this change.

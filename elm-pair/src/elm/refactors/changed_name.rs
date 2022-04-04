@@ -1,4 +1,5 @@
 use crate::elm::dependencies::DataflowComputation;
+use crate::elm::io::ExportedName;
 use crate::elm::queries::qualified_values::QualifiedName;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
@@ -113,53 +114,79 @@ pub fn refactor(
             let module_name = queries
                 .query_for_module_declaration
                 .run(&mut cursor, code)?;
-            for other_buffer_code in buffers.values() {
-                let opt_import = queries
-                    .query_for_imports
-                    .run(&mut cursor, other_buffer_code)
-                    .find(|import| import.module_name() == module_name);
+            let exposed = computation
+                .exports_cursor(code.buffer, module_name.clone())
+                .iter()
+                .any(|exported_name| match (old_name.kind, exported_name) {
+                    (NameKind::Value, ExportedName::Value { name }) => {
+                        &old_name.name == name
+                    }
+                    (NameKind::Type, ExportedName::Type { name, .. }) => {
+                        &old_name.name == name
+                    }
+                    (
+                        NameKind::Constructor,
+                        ExportedName::Type { constructors, .. },
+                    ) => constructors.iter().any(|name| &old_name.name == name),
+                    (
+                        NameKind::Type,
+                        ExportedName::RecordTypeAlias { name },
+                    ) => &old_name.name == name,
+                    (
+                        NameKind::Constructor,
+                        ExportedName::RecordTypeAlias { name },
+                    ) => &old_name.name == name,
+                    _ => false,
+                });
+            if exposed {
+                for other_buffer_code in buffers.values() {
+                    let opt_import = queries
+                        .query_for_imports
+                        .run(&mut cursor, other_buffer_code)
+                        .find(|import| import.module_name() == module_name);
 
-                let import = if let Some(import_) = opt_import {
-                    import_
-                } else {
-                    continue;
-                };
+                    let import = if let Some(import_) = opt_import {
+                        import_
+                    } else {
+                        continue;
+                    };
 
-                let qualifier = import.aliased_name();
-                renaming::rename_qualified(
-                    queries,
-                    refactor,
-                    other_buffer_code,
-                    &QualifiedName {
-                        qualifier: qualifier.into(),
-                        unqualified_name: old_name.clone(),
-                    },
-                    &QualifiedName {
-                        qualifier: qualifier.into(),
-                        unqualified_name: new_name.clone(),
-                    },
-                )?;
+                    let qualifier = import.aliased_name();
+                    renaming::rename_qualified(
+                        queries,
+                        refactor,
+                        other_buffer_code,
+                        &QualifiedName {
+                            qualifier: qualifier.into(),
+                            unqualified_name: old_name.clone(),
+                        },
+                        &QualifiedName {
+                            qualifier: qualifier.into(),
+                            unqualified_name: new_name.clone(),
+                        },
+                    )?;
 
-                //TODO: only do unqualified rename if the value is exposed.
-                //TODO: also perform rename in RecordTypeAlias branch.
-                renaming::free_names(
-                    queries,
-                    computation,
-                    refactor,
-                    other_buffer_code,
-                    &HashSet::from_iter(std::iter::once(new_name.clone())),
-                    &[],
-                    &[],
-                )?;
-                renaming::rename(
-                    queries,
-                    refactor,
-                    other_buffer_code,
-                    &old_name,
-                    &new_name,
-                    &[],
-                    &[],
-                )?;
+                    //TODO: only do unqualified rename if the value is exposed.
+                    //TODO: also perform rename in RecordTypeAlias branch.
+                    renaming::free_names(
+                        queries,
+                        computation,
+                        refactor,
+                        other_buffer_code,
+                        &HashSet::from_iter(std::iter::once(new_name.clone())),
+                        &[],
+                        &[],
+                    )?;
+                    renaming::rename(
+                        queries,
+                        refactor,
+                        other_buffer_code,
+                        &old_name,
+                        &new_name,
+                        &[],
+                        &[],
+                    )?;
+                }
             }
             renaming::free_names(
                 queries,
@@ -242,7 +269,14 @@ mod tests {
     simulation_test!(change_constructor_name);
     simulation_test!(change_type_alias_name);
     simulation_test!(change_record_type_alias_name);
+
+    // Cross-file renaming
+    simulation_test!(change_constructor_name_used_in_other_module);
+    simulation_test!(change_constructor_name_unexposed_to_other_modules);
     simulation_test!(change_type_name_used_in_other_module);
+    simulation_test!(change_type_name_unexposed_to_other_modules);
+    simulation_test!(change_variable_name_used_in_other_module);
+    simulation_test!(change_variable_name_unexposed_to_other_modules);
 
     // Using a different constructor in a function should not trigger a rename.
     simulation_test!(use_different_constructor);

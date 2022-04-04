@@ -1,0 +1,9 @@
+START SIMULATION
+OPEN FILE ModuleNotExposingConstructor.elm
+MOVE CURSOR TO LINE 5 Zzz
+DELETE Zzz
+INSERT SleepySounds
+END SIMULATION
+
+=== expected output below ===
+No refactor for this change.
