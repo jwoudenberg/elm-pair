@@ -3,7 +3,9 @@ use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
 use crate::lib::bytes;
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::{Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot};
+use crate::lib::source_code::{
+    Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot,
+};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::ops::DerefMut;
@@ -24,10 +26,13 @@ pub struct VsCode<R, W> {
 }
 
 impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
-    pub fn from_unix_socket(socket: UnixStream, editor_id: EditorId) -> Result<Self, crate::Error> {
-        let write = socket
-            .try_clone()
-            .map_err(|err| log::mk_err!("failed cloning vscode socket: {:?}", err))?;
+    pub fn from_unix_socket(
+        socket: UnixStream,
+        editor_id: EditorId,
+    ) -> Result<Self, crate::Error> {
+        let write = socket.try_clone().map_err(|err| {
+            log::mk_err!("failed cloning vscode socket: {:?}", err)
+        })?;
         let vscode = VsCode {
             editor_id,
             read: BufReader::new(socket),
@@ -116,7 +121,8 @@ fn write_refactor<W: Write>(
     buffer_paths: &HashMap<Buffer, PathBuf>,
     refactor: Vec<Edit>,
 ) -> Result<(), Error> {
-    bytes::write_u32(write, refactor.len() as u32)?;
+    bytes::write_u8(write, 0)?; //commandId
+    bytes::write_u32(write, refactor.len() as u32)?; //no. of edits in refactor
     for edit in refactor {
         let path = buffer_paths.get(&edit.buffer).unwrap();
         let path_bytes = path.as_os_str().as_bytes();
@@ -126,20 +132,20 @@ fn write_refactor<W: Write>(
             ..
         } = edit.input_edit;
         bytes::write_u32(write, path_bytes.len() as u32)?;
-        write
-            .write_all(path_bytes)
-            .map_err(|err| log::mk_err!("failed writing path to vscode: {:?}", err))?;
+        write.write_all(path_bytes).map_err(|err| {
+            log::mk_err!("failed writing path to vscode: {:?}", err)
+        })?;
         bytes::write_u32(write, start_position.row as u32)?;
         bytes::write_u32(write, start_position.column as u32)?;
         bytes::write_u32(write, old_end_position.row as u32)?;
         bytes::write_u32(write, old_end_position.column as u32)?;
         bytes::write_u32(write, edit.new_bytes.len() as u32)?;
-        write
-            .write_all(edit.new_bytes.as_bytes())
-            .map_err(|err| log::mk_err!("failed writing change to vscode: {:?}", err))?;
-        write
-            .flush()
-            .map_err(|err| log::mk_err!("failed flushing refactor to vscode: {:?}", err))?;
+        write.write_all(edit.new_bytes.as_bytes()).map_err(|err| {
+            log::mk_err!("failed writing change to vscode: {:?}", err)
+        })?;
+        write.flush().map_err(|err| {
+            log::mk_err!("failed flushing refactor to vscode: {:?}", err)
+        })?;
     }
     Ok(())
 }
@@ -165,7 +171,9 @@ impl<R: Read> EditorEvent for VsCodeEvent<R> {
                 if let Some(code) = opt_code {
                     parse_file_changed_msg(&mut self.read, code)
                 } else {
-                    Err(log::mk_err!("vscode FILE_CHANGED_MSG for unknown buffer"))
+                    Err(log::mk_err!(
+                        "vscode FILE_CHANGED_MSG for unknown buffer"
+                    ))
                 }
             }
             other => Err(log::mk_err!("unknown vscode msg type {}", other)),
@@ -214,13 +222,15 @@ fn parse_file_changed_msg<R: Read>(
     let start_char = bytes::read_u32(read)?;
     let end_line = bytes::read_u32(read)?;
     let end_char = bytes::read_u32(read)?;
-    let mut start_idx = code.bytes.line_to_char(start_line as usize) + start_char as usize;
+    let mut start_idx =
+        code.bytes.line_to_char(start_line as usize) + start_char as usize;
     let start_byte = code.bytes.char_to_byte(start_idx);
     let start_position = Point {
         row: start_line as usize,
         column: start_char as usize,
     };
-    let end_idx = code.bytes.line_to_char(end_line as usize) + end_char as usize;
+    let end_idx =
+        code.bytes.line_to_char(end_line as usize) + end_char as usize;
     let old_end_byte = code.bytes.char_to_byte(end_idx);
     let old_end_position = Point {
         row: end_line as usize,

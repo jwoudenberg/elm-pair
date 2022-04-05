@@ -74,6 +74,12 @@ where
     Ok(())
 }
 
+pub fn write_u8<W: Write>(write: &mut W, n: u8) -> Result<(), Error> {
+    write
+        .write_all(&[n])
+        .map_err(|err| log::mk_err!("failed to write u8: {:?}", err))
+}
+
 pub fn write_u32<W: Write>(write: &mut W, n: u32) -> Result<(), Error> {
     write
         .write_all(&std::primitive::u32::to_be_bytes(n))

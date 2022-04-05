@@ -36,7 +36,7 @@ function listenOnSocket(vscode, socket) {
   writeInt32(socket, 0);
   const elmFileIdsByPath = {};
 
-  const processData = processRefactors(vscode);
+  const processData = listenForCommands(vscode);
   processData.next(); // Run to first `yield` (moment we need data).
   socket.on('data', (data) => { processData.next(data); });
 
@@ -132,9 +132,23 @@ function getElmPairSocket(context) {
 
 // Parse refactors streamed from Elm-pair and apply them to vscode files.
 // This is a generator function so it can 'yield's when it needs more bytes.
-async function* processRefactors(vscode) {
-  const edit = new vscode.WorkspaceEdit();
+async function* listenForCommands(vscode) {
   let buffer = yield;
+  while (true) {
+    [commandId, buffer] = yield* readInt8(buffer);
+    switch (commandId) {
+      case 0:
+        buffer = yield* processRefactor(vscode, buffer);
+        break;
+      default:
+        await reportError(vscode, "Unknown command id: " + commandId);
+        return;
+    }
+  }
+}
+
+async function* processRefactor(vscode, buffer) {
+  const edit = new vscode.WorkspaceEdit();
   let editsInRefactor;
 
   [editsInRefactor, buffer] = yield* readInt32(buffer);
@@ -155,7 +169,14 @@ async function* processRefactors(vscode) {
   }
 
   await vscode.workspace.applyEdit(edit);
-  yield* processRefactors(vscode);
+
+  return buffer;
+}
+
+function* readInt8(buffer) {
+  const [sample, newBuffer] = yield* takeFromBuffer(buffer, 1);
+  const num = sample.readInt8();
+  return [ num, newBuffer ];
 }
 
 function* readInt32(buffer) {

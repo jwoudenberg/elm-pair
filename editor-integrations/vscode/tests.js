@@ -121,6 +121,7 @@ const suite = () => {
 
   test("refactor sent by elm-pair gets applied to editor", async () => {
     const refactorBuffer = Buffer.concat([
+      int8ToChunk(0), // command id, indicating a refactor.
       int32ToChunk(2), // Number of included changes.
 
       // Change 1
