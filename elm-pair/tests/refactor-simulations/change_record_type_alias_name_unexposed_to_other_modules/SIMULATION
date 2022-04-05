@@ -1,0 +1,9 @@
+START SIMULATION
+OPEN FILE ModuleNotExposingRecordTypeAlias.elm
+MOVE CURSOR TO LINE 4 Person
+DELETE Person
+INSERT Friend
+END SIMULATION
+
+=== expected output below ===
+No refactor for this change.

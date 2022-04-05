@@ -4,6 +4,8 @@
         "src",
         "refactor-simulations/change_constructor_name_used_in_other_module",
         "refactor-simulations/change_constructor_name_unexposed_to_other_modules",
+        "refactor-simulations/change_record_type_alias_name_used_in_other_module",
+        "refactor-simulations/change_record_type_alias_name_unexposed_to_other_modules",
         "refactor-simulations/change_type_name_unexposed_to_other_modules",
         "refactor-simulations/change_type_name_used_in_other_module",
         "refactor-simulations/change_variable_name_unexposed_to_other_modules",

@@ -7,12 +7,14 @@ use crate::elm::refactors::lib::renaming;
 use crate::elm::{
     Name, NameKind, Queries, Refactor, RECORD_PATTERN, RECORD_TYPE,
 };
+use crate::lib::dataflow;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::FromIterator;
+use std::ops::Range;
 use std::path::PathBuf;
 use tree_sitter::{Node, QueryCursor};
 
@@ -81,94 +83,32 @@ pub fn refactor(
                 name: new_name.name,
                 kind: NameKind::Type,
             };
-            renaming::free_names(
+            batch_rename(
                 queries,
                 computation,
                 refactor,
                 code,
-                &HashSet::from_iter([
-                    new_constructor.clone(),
-                    new_type.clone(),
+                buffers,
+                &mut cursor,
+                HashMap::from([
+                    (old_constructor, new_constructor),
+                    (old_type, new_type),
                 ]),
-                &[&scope],
-                &[&new_node.byte_range()],
-            )?;
-            renaming::rename(
-                queries,
-                refactor,
-                code,
-                &old_type,
-                &new_type,
-                &[&scope],
-                &[],
-            )?;
-            renaming::rename(
-                queries,
-                refactor,
-                code,
-                &old_constructor,
-                &new_constructor,
-                &[&scope],
-                &[],
+                new_node,
+                &scope,
             )
         }
-        Some((RenameKind::AnyOther, scope)) => {
-            //TODO: also perform rename in RecordTypeAlias branch.
-
-            // Propopage new name in buffer where the name is defined.
-            renaming::free_names(
-                queries,
-                computation,
-                refactor,
-                code,
-                &HashSet::from_iter(std::iter::once(new_name.clone())),
-                &[&scope],
-                &[&new_node.byte_range()],
-            )?;
-            renaming::rename(
-                queries,
-                refactor,
-                code,
-                &old_name,
-                &new_name,
-                &[&scope],
-                &[],
-            )?;
-
-            // Check if the name is exported. If so, update buffers that import
-            // and use the name.
-            let module_name = queries
-                .query_for_module_declaration
-                .run(&mut cursor, code)?;
-            let opt_exported_name = find_exported_name(
-                computation,
-                code.buffer,
-                module_name.clone(),
-                &old_name,
-            );
-            if let Some(exported_name) = opt_exported_name {
-                for other_buffer_code in buffers.values() {
-                    if let Some(import) = code_imports_module(
-                        queries,
-                        &mut cursor,
-                        other_buffer_code,
-                        &module_name,
-                    ) {
-                        rename_imported_name(
-                            queries,
-                            computation,
-                            refactor,
-                            other_buffer_code,
-                            &import,
-                            &old_name,
-                            &new_name,
-                            &exported_name,
-                        )?;
-                    }
-                }
-            }
-            Ok(())
-        }
+        Some((RenameKind::AnyOther, scope)) => batch_rename(
+            queries,
+            computation,
+            refactor,
+            code,
+            buffers,
+            &mut cursor,
+            HashMap::from_iter(std::iter::once((old_name, new_name))),
+            new_node,
+            &scope,
+        ),
         None => Err(log::mk_err!(
             "Could not find variable definition for rename"
         )),
@@ -211,17 +151,83 @@ fn is_record_type_alias(node: &Node) -> bool {
     kind == RECORD_TYPE
 }
 
+fn batch_rename(
+    queries: &Queries,
+    computation: &mut DataflowComputation,
+    refactor: &mut Refactor,
+    code: &SourceFileSnapshot,
+    buffers: &HashMap<Buffer, SourceFileSnapshot>,
+    cursor: &mut QueryCursor,
+    new_name_by_old: HashMap<Name, Name>,
+    new_node: &Node,
+    scope: &Range<usize>,
+) -> Result<(), Error> {
+    // Propopage new name in buffer where the name is defined.
+    renaming::free_names(
+        queries,
+        computation,
+        refactor,
+        code,
+        &HashSet::from_iter(new_name_by_old.values().cloned()),
+        &[scope],
+        &[&new_node.byte_range()],
+    )?;
+    for (old_name, new_name) in new_name_by_old.iter() {
+        renaming::rename(
+            queries,
+            refactor,
+            code,
+            old_name,
+            new_name,
+            &[scope],
+            &[],
+        )?;
+    }
+
+    // Update other buffers that import and use the name.
+    let module_name = queries.query_for_module_declaration.run(cursor, code)?;
+    let mut exports_cursor =
+        computation.exports_cursor(code.buffer, module_name.clone());
+    let exported_names: Vec<(Name, Name, ExportedName)> = new_name_by_old
+        .into_iter()
+        .filter_map(|(old_name, new_name)| {
+            let exported_name =
+                find_exported_name(&mut exports_cursor, &old_name)?;
+            Some((old_name, new_name, exported_name))
+        })
+        .collect();
+    for other_buffer_code in buffers.values() {
+        if let Some(import) = code_imports_module(
+            queries,
+            cursor,
+            other_buffer_code,
+            &module_name,
+        ) {
+            for (old_name, new_name, exported_name) in exported_names.iter() {
+                rename_imported_name(
+                    queries,
+                    computation,
+                    refactor,
+                    other_buffer_code,
+                    &import,
+                    old_name,
+                    new_name,
+                    exported_name,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 // Find the ExportedName describing the export of a given name from a module.
 // If the module is not exporting the provided name this function will return
 // None.
 fn find_exported_name(
-    computation: &mut DataflowComputation,
-    buffer: Buffer,
-    module_name: ModuleName,
+    exports_cursor: &mut dataflow::Cursor<dataflow::SelfTrace<ExportedName>>,
     name_: &Name,
 ) -> Option<ExportedName> {
-    computation
-        .exports_cursor(buffer, module_name)
+    exports_cursor
         .iter()
         .find(|exported_name| match (name_.kind, exported_name) {
             (NameKind::Value, ExportedName::Value { name }) => {
@@ -310,21 +316,33 @@ fn rename_imported_name(
             exposes_all || exposes_type
         }),
         NameKind::Constructor => exposed_names.any(|exposed_name| {
-            if let ExportedName::Type { name, .. } = &exported_name {
-                let exposes_all = matches!(exposed_name, ExposedName::All);
-                let exposes_constructor = matches!(
-                     exposed_name,
-                    ExposedName::Type(type_)
-                    if type_.exposing_constructors
-                    && &type_.name == name
-                );
-                exposes_all || exposes_constructor
-            } else {
-                log::error!(
-                    "expected exported constructor, got: {:?}",
-                    exported_name
-                );
-                false
+            if matches!(exposed_name, ExposedName::All) {
+                return true;
+            }
+
+            match &exported_name {
+                ExportedName::Type { name, .. } => {
+                    matches!(
+                        exposed_name,
+                        ExposedName::Type(type_)
+                        if type_.exposing_constructors
+                        && &type_.name == name
+                    )
+                }
+                ExportedName::RecordTypeAlias { name, .. } => {
+                    matches!(
+                        exposed_name,
+                        ExposedName::Type(type_)
+                        if &type_.name == name
+                    )
+                }
+                _ => {
+                    log::error!(
+                        "expected exported constructor, got: {:?}",
+                        exported_name
+                    );
+                    false
+                }
             }
         }),
     };
@@ -377,6 +395,8 @@ mod tests {
     // Cross-file renaming
     simulation_test!(change_constructor_name_used_in_other_module);
     simulation_test!(change_constructor_name_unexposed_to_other_modules);
+    simulation_test!(change_record_type_alias_name_used_in_other_module);
+    simulation_test!(change_record_type_alias_name_unexposed_to_other_modules);
     simulation_test!(change_type_name_used_in_other_module);
     simulation_test!(change_type_name_unexposed_to_other_modules);
     simulation_test!(change_variable_name_used_in_other_module);
