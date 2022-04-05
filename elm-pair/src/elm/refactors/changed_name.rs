@@ -1,6 +1,7 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
-use crate::elm::queries::imports::ExposedName;
+use crate::elm::module_name::ModuleName;
+use crate::elm::queries::imports::{ExposedName, Import};
 use crate::elm::queries::qualified_values::QualifiedName;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
@@ -113,146 +114,8 @@ pub fn refactor(
         }
         Some((RenameKind::AnyOther, scope)) => {
             //TODO: also perform rename in RecordTypeAlias branch.
-            let module_name = queries
-                .query_for_module_declaration
-                .run(&mut cursor, code)?;
-            let mut exports_cursor =
-                computation.exports_cursor(code.buffer, module_name.clone());
-            let opt_exported_name =
-                exports_cursor.iter().find(|exported_name| {
-                    match (old_name.kind, exported_name) {
-                        (NameKind::Value, ExportedName::Value { name }) => {
-                            &old_name.name == name
-                        }
-                        (NameKind::Type, ExportedName::Type { name, .. }) => {
-                            &old_name.name == name
-                        }
-                        (
-                            NameKind::Constructor,
-                            ExportedName::Type { constructors, .. },
-                        ) => constructors
-                            .iter()
-                            .any(|name| &old_name.name == name),
-                        (
-                            NameKind::Type,
-                            ExportedName::RecordTypeAlias { name },
-                        ) => &old_name.name == name,
-                        (
-                            NameKind::Constructor,
-                            ExportedName::RecordTypeAlias { name },
-                        ) => &old_name.name == name,
-                        _ => false,
-                    }
-                });
-            if let Some(exported_name) = opt_exported_name {
-                for other_buffer_code in buffers.values() {
-                    let opt_import = queries
-                        .query_for_imports
-                        .run(&mut cursor, other_buffer_code)
-                        .find(|import| import.module_name() == module_name);
 
-                    let import = if let Some(import_) = opt_import {
-                        import_
-                    } else {
-                        continue;
-                    };
-
-                    let mut exposed_names =
-                        import.exposing_list().filter_map(|res| match res {
-                            Ok((_, name)) => Some(name),
-                            Err(err) => {
-                                log::error!(
-                                    "error parsing exposing list: {:?}",
-                                    err
-                                );
-                                None
-                            }
-                        });
-
-                    let qualifier = import.aliased_name();
-                    renaming::rename_qualified(
-                        queries,
-                        refactor,
-                        other_buffer_code,
-                        &QualifiedName {
-                            qualifier: qualifier.into(),
-                            unqualified_name: old_name.clone(),
-                        },
-                        &QualifiedName {
-                            qualifier: qualifier.into(),
-                            unqualified_name: new_name.clone(),
-                        },
-                    )?;
-
-                    let exposed = match old_name.kind {
-                        NameKind::Value | NameKind::Operator => exposed_names
-                            .any(|exposed_name| {
-                                let exposes_all =
-                                    matches!(exposed_name, ExposedName::All);
-                                let exposes_val = matches!(exposed_name,
-                                    ExposedName::Value(val)
-                                    if val.name == old_name.name);
-                                exposes_all || exposes_val
-                            }),
-                        NameKind::Type => exposed_names.any(|exposed_name| {
-                            let exposes_all =
-                                matches!(exposed_name, ExposedName::All);
-                            let exposes_type = matches!(exposed_name,
-                                    ExposedName::Type(type_)
-                                    if type_.name == old_name.name);
-                            exposes_all || exposes_type
-                        }),
-                        NameKind::Constructor => {
-                            exposed_names.any(|exposed_name| {
-                                if let ExportedName::Type { name, .. } =
-                                    exported_name
-                                {
-                                    let exposes_all = matches!(
-                                        exposed_name,
-                                        ExposedName::All
-                                    );
-                                    let exposes_constructor = matches!(
-                                         exposed_name,
-                                        ExposedName::Type(type_)
-                                        if type_.exposing_constructors
-                                        && &type_.name == name
-                                    );
-                                    exposes_all || exposes_constructor
-                                } else {
-                                    log::error!(
-                                    "expected exported constructor, got: {:?}",
-                                        exported_name
-                                    );
-                                    false
-                                }
-                            })
-                        }
-                    };
-
-                    if exposed {
-                        renaming::free_names(
-                            queries,
-                            computation,
-                            refactor,
-                            other_buffer_code,
-                            &HashSet::from_iter(std::iter::once(
-                                new_name.clone(),
-                            )),
-                            &[],
-                            &[],
-                        )?;
-                        renaming::rename(
-                            queries,
-                            refactor,
-                            other_buffer_code,
-                            &old_name,
-                            &new_name,
-                            &[],
-                            &[],
-                        )?;
-                    }
-                }
-            }
+            // Propopage new name in buffer where the name is defined.
             renaming::free_names(
                 queries,
                 computation,
@@ -270,7 +133,41 @@ pub fn refactor(
                 &new_name,
                 &[&scope],
                 &[],
-            )
+            )?;
+
+            // Check if the name is exported. If so, update buffers that import
+            // and use the name.
+            let module_name = queries
+                .query_for_module_declaration
+                .run(&mut cursor, code)?;
+            let opt_exported_name = find_exported_name(
+                computation,
+                code.buffer,
+                module_name.clone(),
+                &old_name,
+            );
+            if let Some(exported_name) = opt_exported_name {
+                for other_buffer_code in buffers.values() {
+                    if let Some(import) = code_imports_module(
+                        queries,
+                        &mut cursor,
+                        other_buffer_code,
+                        &module_name,
+                    ) {
+                        rename_imported_name(
+                            queries,
+                            computation,
+                            refactor,
+                            other_buffer_code,
+                            &import,
+                            &old_name,
+                            &new_name,
+                            &exported_name,
+                        )?;
+                    }
+                }
+            }
+            Ok(())
         }
         None => Err(log::mk_err!(
             "Could not find variable definition for rename"
@@ -312,6 +209,148 @@ fn is_record_type_alias(node: &Node) -> bool {
         .unwrap_or(node)
         .kind_id();
     kind == RECORD_TYPE
+}
+
+// Find the ExportedName describing the export of a given name from a module.
+// If the module is not exporting the provided name this function will return
+// None.
+fn find_exported_name(
+    computation: &mut DataflowComputation,
+    buffer: Buffer,
+    module_name: ModuleName,
+    name_: &Name,
+) -> Option<ExportedName> {
+    computation
+        .exports_cursor(buffer, module_name)
+        .iter()
+        .find(|exported_name| match (name_.kind, exported_name) {
+            (NameKind::Value, ExportedName::Value { name }) => {
+                &name_.name == name
+            }
+            (NameKind::Type, ExportedName::Type { name, .. }) => {
+                &name_.name == name
+            }
+            (
+                NameKind::Constructor,
+                ExportedName::Type { constructors, .. },
+            ) => constructors.iter().any(|name| &name_.name == name),
+            (NameKind::Type, ExportedName::RecordTypeAlias { name }) => {
+                &name_.name == name
+            }
+            (NameKind::Constructor, ExportedName::RecordTypeAlias { name }) => {
+                &name_.name == name
+            }
+            _ => false,
+        })
+        .cloned()
+}
+
+fn code_imports_module<'a>(
+    queries: &Queries,
+    cursor: &'a mut QueryCursor,
+    code: &'a SourceFileSnapshot,
+    module_name: &ModuleName,
+) -> Option<Import<'a>> {
+    queries
+        .query_for_imports
+        .run(cursor, code)
+        .find(|import| &import.module_name() == module_name)
+}
+
+// Rename a name imported from another module.
+fn rename_imported_name(
+    queries: &Queries,
+    computation: &mut DataflowComputation,
+    refactor: &mut Refactor,
+    code: &SourceFileSnapshot,
+    import: &Import,
+    old_name: &Name,
+    new_name: &Name,
+    exported_name: &ExportedName,
+) -> Result<(), Error> {
+    let mut exposed_names =
+        import.exposing_list().filter_map(|res| match res {
+            Ok((_, name)) => Some(name),
+            Err(err) => {
+                log::error!("error parsing exposing list: {:?}", err);
+                None
+            }
+        });
+
+    let qualifier = import.aliased_name();
+    renaming::rename_qualified(
+        queries,
+        refactor,
+        code,
+        &QualifiedName {
+            qualifier: qualifier.into(),
+            unqualified_name: old_name.clone(),
+        },
+        &QualifiedName {
+            qualifier: qualifier.into(),
+            unqualified_name: new_name.clone(),
+        },
+    )?;
+
+    let exposed = match old_name.kind {
+        NameKind::Value | NameKind::Operator => {
+            exposed_names.any(|exposed_name| {
+                let exposes_all = matches!(exposed_name, ExposedName::All);
+                let exposes_val = matches!(exposed_name,
+                                    ExposedName::Value(val)
+                                    if val.name == old_name.name);
+                exposes_all || exposes_val
+            })
+        }
+        NameKind::Type => exposed_names.any(|exposed_name| {
+            let exposes_all = matches!(exposed_name, ExposedName::All);
+            let exposes_type = matches!(exposed_name,
+                                    ExposedName::Type(type_)
+                                    if type_.name == old_name.name);
+            exposes_all || exposes_type
+        }),
+        NameKind::Constructor => exposed_names.any(|exposed_name| {
+            if let ExportedName::Type { name, .. } = &exported_name {
+                let exposes_all = matches!(exposed_name, ExposedName::All);
+                let exposes_constructor = matches!(
+                     exposed_name,
+                    ExposedName::Type(type_)
+                    if type_.exposing_constructors
+                    && &type_.name == name
+                );
+                exposes_all || exposes_constructor
+            } else {
+                log::error!(
+                    "expected exported constructor, got: {:?}",
+                    exported_name
+                );
+                false
+            }
+        }),
+    };
+
+    if exposed {
+        renaming::free_names(
+            queries,
+            computation,
+            refactor,
+            code,
+            &HashSet::from_iter(std::iter::once(new_name.clone())),
+            &[],
+            &[],
+        )?;
+        renaming::rename(
+            queries,
+            refactor,
+            code,
+            old_name,
+            new_name,
+            &[],
+            &[],
+        )?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

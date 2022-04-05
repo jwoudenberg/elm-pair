@@ -261,6 +261,7 @@ impl DataflowComputation {
         );
     }
 
+    // TODO: Make it so exports_cursor does not need to take the module arg.
     pub fn exports_cursor(
         &mut self,
         buffer: Buffer,
