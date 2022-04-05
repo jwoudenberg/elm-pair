@@ -181,7 +181,7 @@ impl<'a> Iterator for ExposedList<'a> {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ExposedName<'a> {
     Operator(ExposedOperator<'a>),
     Value(ExposedValue<'a>),
@@ -189,17 +189,17 @@ pub enum ExposedName<'a> {
     All,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct ExposedOperator<'a> {
     pub name: RopeSlice<'a>,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct ExposedValue<'a> {
     pub name: RopeSlice<'a>,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct ExposedType<'a> {
     pub name: RopeSlice<'a>,
     pub exposing_constructors: bool,

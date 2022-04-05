@@ -1,5 +1,6 @@
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
+use crate::elm::queries::imports::ExposedName;
 use crate::elm::queries::qualified_values::QualifiedName;
 use crate::elm::refactors::lib::renaming;
 use crate::elm::{
@@ -111,34 +112,39 @@ pub fn refactor(
             )
         }
         Some((RenameKind::AnyOther, scope)) => {
+            //TODO: also perform rename in RecordTypeAlias branch.
             let module_name = queries
                 .query_for_module_declaration
                 .run(&mut cursor, code)?;
-            let exposed = computation
-                .exports_cursor(code.buffer, module_name.clone())
-                .iter()
-                .any(|exported_name| match (old_name.kind, exported_name) {
-                    (NameKind::Value, ExportedName::Value { name }) => {
-                        &old_name.name == name
+            let mut exports_cursor =
+                computation.exports_cursor(code.buffer, module_name.clone());
+            let opt_exported_name =
+                exports_cursor.iter().find(|exported_name| {
+                    match (old_name.kind, exported_name) {
+                        (NameKind::Value, ExportedName::Value { name }) => {
+                            &old_name.name == name
+                        }
+                        (NameKind::Type, ExportedName::Type { name, .. }) => {
+                            &old_name.name == name
+                        }
+                        (
+                            NameKind::Constructor,
+                            ExportedName::Type { constructors, .. },
+                        ) => constructors
+                            .iter()
+                            .any(|name| &old_name.name == name),
+                        (
+                            NameKind::Type,
+                            ExportedName::RecordTypeAlias { name },
+                        ) => &old_name.name == name,
+                        (
+                            NameKind::Constructor,
+                            ExportedName::RecordTypeAlias { name },
+                        ) => &old_name.name == name,
+                        _ => false,
                     }
-                    (NameKind::Type, ExportedName::Type { name, .. }) => {
-                        &old_name.name == name
-                    }
-                    (
-                        NameKind::Constructor,
-                        ExportedName::Type { constructors, .. },
-                    ) => constructors.iter().any(|name| &old_name.name == name),
-                    (
-                        NameKind::Type,
-                        ExportedName::RecordTypeAlias { name },
-                    ) => &old_name.name == name,
-                    (
-                        NameKind::Constructor,
-                        ExportedName::RecordTypeAlias { name },
-                    ) => &old_name.name == name,
-                    _ => false,
                 });
-            if exposed {
+            if let Some(exported_name) = opt_exported_name {
                 for other_buffer_code in buffers.values() {
                     let opt_import = queries
                         .query_for_imports
@@ -150,6 +156,18 @@ pub fn refactor(
                     } else {
                         continue;
                     };
+
+                    let mut exposed_names =
+                        import.exposing_list().filter_map(|res| match res {
+                            Ok((_, name)) => Some(name),
+                            Err(err) => {
+                                log::error!(
+                                    "error parsing exposing list: {:?}",
+                                    err
+                                );
+                                None
+                            }
+                        });
 
                     let qualifier = import.aliased_name();
                     renaming::rename_qualified(
@@ -166,26 +184,73 @@ pub fn refactor(
                         },
                     )?;
 
-                    //TODO: only do unqualified rename if the value is exposed.
-                    //TODO: also perform rename in RecordTypeAlias branch.
-                    renaming::free_names(
-                        queries,
-                        computation,
-                        refactor,
-                        other_buffer_code,
-                        &HashSet::from_iter(std::iter::once(new_name.clone())),
-                        &[],
-                        &[],
-                    )?;
-                    renaming::rename(
-                        queries,
-                        refactor,
-                        other_buffer_code,
-                        &old_name,
-                        &new_name,
-                        &[],
-                        &[],
-                    )?;
+                    let exposed = match old_name.kind {
+                        NameKind::Value | NameKind::Operator => exposed_names
+                            .any(|exposed_name| {
+                                let exposes_all =
+                                    matches!(exposed_name, ExposedName::All);
+                                let exposes_val = matches!(exposed_name,
+                                    ExposedName::Value(val)
+                                    if val.name == old_name.name);
+                                exposes_all || exposes_val
+                            }),
+                        NameKind::Type => exposed_names.any(|exposed_name| {
+                            let exposes_all =
+                                matches!(exposed_name, ExposedName::All);
+                            let exposes_type = matches!(exposed_name,
+                                    ExposedName::Type(type_)
+                                    if type_.name == old_name.name);
+                            exposes_all || exposes_type
+                        }),
+                        NameKind::Constructor => {
+                            exposed_names.any(|exposed_name| {
+                                if let ExportedName::Type { name, .. } =
+                                    exported_name
+                                {
+                                    let exposes_all = matches!(
+                                        exposed_name,
+                                        ExposedName::All
+                                    );
+                                    let exposes_constructor = matches!(
+                                         exposed_name,
+                                        ExposedName::Type(type_)
+                                        if type_.exposing_constructors
+                                        && &type_.name == name
+                                    );
+                                    exposes_all || exposes_constructor
+                                } else {
+                                    log::error!(
+                                    "expected exported constructor, got: {:?}",
+                                        exported_name
+                                    );
+                                    false
+                                }
+                            })
+                        }
+                    };
+
+                    if exposed {
+                        renaming::free_names(
+                            queries,
+                            computation,
+                            refactor,
+                            other_buffer_code,
+                            &HashSet::from_iter(std::iter::once(
+                                new_name.clone(),
+                            )),
+                            &[],
+                            &[],
+                        )?;
+                        renaming::rename(
+                            queries,
+                            refactor,
+                            other_buffer_code,
+                            &old_name,
+                            &new_name,
+                            &[],
+                            &[],
+                        )?;
+                    }
                 }
             }
             renaming::free_names(
