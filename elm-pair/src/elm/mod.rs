@@ -114,6 +114,7 @@ pub struct RefactorEngine {
 
 pub struct Queries {
     query_for_imports: queries::imports::Query,
+    query_for_exports: queries::exports::Query,
     query_for_module_declaration: queries::module_declaration::Query,
     query_for_unqualified_values: queries::unqualified_values::Query,
     query_for_qualified_values: queries::qualified_values::Query,
@@ -194,6 +195,7 @@ impl RefactorEngine {
             dataflow_computation: DataflowComputation::new(compiler)?,
             queries: Queries {
                 query_for_imports: queries::imports::Query::init(language)?,
+                query_for_exports: queries::exports::Query::init(language)?,
                 query_for_module_declaration:
                     queries::module_declaration::Query::init(language)?,
                 query_for_unqualified_values:
@@ -561,6 +563,7 @@ impl RefactorEngine {
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
+                    &diff.old,
                     buffers,
                     buffers_by_path,
                     old_name,
@@ -592,6 +595,7 @@ impl RefactorEngine {
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
+                    &diff.old,
                     buffers,
                     buffers_by_path,
                     old_name,
@@ -623,6 +627,7 @@ impl RefactorEngine {
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
+                    &diff.old,
                     buffers,
                     buffers_by_path,
                     old_name,

@@ -202,7 +202,18 @@ impl DataflowComputation {
     }
 
     pub fn track_buffer(&mut self, buffer: Buffer, path: PathBuf) {
-        self.buffers_input.insert((buffer, path));
+        let canonical_path = match path.canonicalize() {
+            Ok(canonical_path) => canonical_path,
+            Err(err) => {
+                log::error!(
+                    "Failed to canonicalize path {:?}: {:?}",
+                    path,
+                    err
+                );
+                path
+            }
+        };
+        self.buffers_input.insert((buffer, canonical_path));
     }
 
     pub fn advance(&mut self) {

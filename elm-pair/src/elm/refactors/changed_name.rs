@@ -7,7 +7,6 @@ use crate::elm::refactors::lib::renaming;
 use crate::elm::{
     Name, NameKind, Queries, Refactor, RECORD_PATTERN, RECORD_TYPE,
 };
-use crate::lib::dataflow;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
@@ -23,6 +22,7 @@ pub fn refactor(
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
+    old_code: &SourceFileSnapshot,
     buffers: &HashMap<Buffer, SourceFileSnapshot>,
     buffers_by_path: &HashMap<(EditorId, PathBuf), Buffer>,
     old_name: Name,
@@ -49,15 +49,13 @@ pub fn refactor(
         // (i.e. shortest) scope will be the one the variable can be used in.
         .min_by_key(|(_, scope)| scope.len());
 
-    // TODO: check if name is exposed. If not, skip this bit.
     let files_to_open: Vec<PathBuf> = computation
         .dependent_modules_cursor(code.buffer)
         .iter()
-        .cloned()
         .filter(|path| {
-            !buffers_by_path
-                .contains_key(&(code.buffer.editor_id, path.clone()))
+            !buffers_by_path.contains_key(&(code.buffer.editor_id, path.into()))
         })
+        .cloned()
         .collect();
     if !files_to_open.is_empty() {
         refactor.open_files(files_to_open);
@@ -88,6 +86,7 @@ pub fn refactor(
                 computation,
                 refactor,
                 code,
+                old_code,
                 buffers,
                 &mut cursor,
                 HashMap::from([
@@ -103,6 +102,7 @@ pub fn refactor(
             computation,
             refactor,
             code,
+            old_code,
             buffers,
             &mut cursor,
             HashMap::from_iter(std::iter::once((old_name, new_name))),
@@ -156,6 +156,7 @@ fn batch_rename(
     computation: &mut DataflowComputation,
     refactor: &mut Refactor,
     code: &SourceFileSnapshot,
+    old_code: &SourceFileSnapshot,
     buffers: &HashMap<Buffer, SourceFileSnapshot>,
     cursor: &mut QueryCursor,
     new_name_by_old: HashMap<Name, Name>,
@@ -186,13 +187,11 @@ fn batch_rename(
 
     // Update other buffers that import and use the name.
     let module_name = queries.query_for_module_declaration.run(cursor, code)?;
-    let mut exports_cursor =
-        computation.exports_cursor(code.buffer, module_name.clone());
+    let exports = queries.query_for_exports.run(old_code)?;
     let exported_names: Vec<(Name, Name, ExportedName)> = new_name_by_old
         .into_iter()
         .filter_map(|(old_name, new_name)| {
-            let exported_name =
-                find_exported_name(&mut exports_cursor, &old_name)?;
+            let exported_name = find_exported_name(&exports, &old_name)?;
             Some((old_name, new_name, exported_name))
         })
         .collect();
@@ -224,10 +223,10 @@ fn batch_rename(
 // If the module is not exporting the provided name this function will return
 // None.
 fn find_exported_name(
-    exports_cursor: &mut dataflow::Cursor<dataflow::SelfTrace<ExportedName>>,
+    exports: &[ExportedName],
     name_: &Name,
 ) -> Option<ExportedName> {
-    exports_cursor
+    exports
         .iter()
         .find(|exported_name| match (name_.kind, exported_name) {
             (NameKind::Value, ExportedName::Value { name }) => {
