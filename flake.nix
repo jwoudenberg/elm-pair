@@ -112,7 +112,7 @@
 
             # For VSCode plugin development
             pkgs.nodejs
-            pkgs.nodePackages.typescript
+            pkgs.nodePackages.prettier
 
             # Site development
             pkgs.zola

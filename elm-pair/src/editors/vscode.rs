@@ -11,12 +11,15 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::ops::DerefMut;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tree_sitter::{InputEdit, Point};
 
-const NEW_FILE_MSG: u8 = 0;
-const FILE_CHANGED_MSG: u8 = 1;
+const MSG_NEW_FILE: u8 = 0;
+const MSG_FILE_CHANGED: u8 = 1;
+
+const CMD_REFACTOR: u8 = 0;
+const CMD_OPEN_FILES: u8 = 1;
 
 pub struct VsCode<R, W> {
     editor_id: EditorId,
@@ -111,8 +114,16 @@ where
             }
         }
     }
-    fn open_files(&self, _files: Vec<PathBuf>) -> bool {
-        todo!()
+    fn open_files(&self, files: Vec<PathBuf>) -> bool {
+        let mut write_guard = crate::lock(&self.write);
+        let mut write = write_guard.deref_mut();
+        match write_open_files(&mut write, files) {
+            Ok(()) => true,
+            Err(err) => {
+                log::error!("failed to write open files to vscode: {:?}", err);
+                false
+            }
+        }
     }
 }
 
@@ -121,20 +132,16 @@ fn write_refactor<W: Write>(
     buffer_paths: &HashMap<Buffer, PathBuf>,
     refactor: Vec<Edit>,
 ) -> Result<(), Error> {
-    bytes::write_u8(write, 0)?; //commandId
+    bytes::write_u8(write, CMD_REFACTOR)?;
     bytes::write_u32(write, refactor.len() as u32)?; //no. of edits in refactor
     for edit in refactor {
         let path = buffer_paths.get(&edit.buffer).unwrap();
-        let path_bytes = path.as_os_str().as_bytes();
+        write_path(write, path)?;
         let InputEdit {
             start_position,
             old_end_position,
             ..
         } = edit.input_edit;
-        bytes::write_u32(write, path_bytes.len() as u32)?;
-        write.write_all(path_bytes).map_err(|err| {
-            log::mk_err!("failed writing path to vscode: {:?}", err)
-        })?;
         bytes::write_u32(write, start_position.row as u32)?;
         bytes::write_u32(write, start_position.column as u32)?;
         bytes::write_u32(write, old_end_position.row as u32)?;
@@ -143,11 +150,32 @@ fn write_refactor<W: Write>(
         write.write_all(edit.new_bytes.as_bytes()).map_err(|err| {
             log::mk_err!("failed writing change to vscode: {:?}", err)
         })?;
-        write.flush().map_err(|err| {
-            log::mk_err!("failed flushing refactor to vscode: {:?}", err)
-        })?;
     }
-    Ok(())
+    write.flush().map_err(|err| {
+        log::mk_err!("failed flushing refactor to vscode: {:?}", err)
+    })
+}
+
+fn write_open_files<W: Write>(
+    write: &mut W,
+    files: Vec<PathBuf>,
+) -> Result<(), Error> {
+    bytes::write_u8(write, CMD_OPEN_FILES)?;
+    bytes::write_u32(write, files.len() as u32)?;
+    for path in files {
+        write_path(write, &path)?;
+    }
+    write.flush().map_err(|err| {
+        log::mk_err!("failed flushing open files cmd to vscode: {:?}", err)
+    })
+}
+
+fn write_path<W: Write>(write: &mut W, path: &Path) -> Result<(), Error> {
+    let path_bytes = path.as_os_str().as_bytes();
+    bytes::write_u32(write, path_bytes.len() as u32)?;
+    write
+        .write_all(path_bytes)
+        .map_err(|err| log::mk_err!("failed writing path to vscode: {:?}", err))
 }
 
 pub struct VsCodeEvent<R> {
@@ -162,17 +190,17 @@ impl<R: Read> EditorEvent for VsCodeEvent<R> {
         opt_code: Option<SourceFileSnapshot>,
     ) -> Result<BufferChange, crate::Error> {
         match bytes::read_u8(&mut self.read)? {
-            NEW_FILE_MSG => parse_new_file_msg(
+            MSG_NEW_FILE => parse_new_file_msg(
                 &mut self.read,
                 &mut crate::lock(&self.buffer_paths),
                 self.buffer,
             ),
-            FILE_CHANGED_MSG => {
+            MSG_FILE_CHANGED => {
                 if let Some(code) = opt_code {
                     parse_file_changed_msg(&mut self.read, code)
                 } else {
                     Err(log::mk_err!(
-                        "vscode FILE_CHANGED_MSG for unknown buffer"
+                        "vscode MSG_FILE_CHANGED for unknown buffer"
                     ))
                 }
             }

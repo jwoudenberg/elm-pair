@@ -1,21 +1,26 @@
-const {Buffer} = require('buffer');
-const cp = require('child_process');
-const fs = require('fs');
-const net = require('net');
-const path = require('path');
+const { Buffer } = require("buffer");
+const cp = require("child_process");
+const fs = require("fs");
+const net = require("net");
+const path = require("path");
 
 const ELM_PAIR_NIX_PATH = "nix-build-put-path-to-elm-pair-here";
-const NEW_FILE_MSG = 0;
-const FILE_CHANGED_MSG = 1;
+
+const MSG_NEW_FILE = 0;
+const MSG_FILE_CHANGED = 1;
+
+const CMD_REFACTOR = 0;
+const CMD_OPEN_FILES = 1;
+
 const EDIT_METADATA = {
-  label : "Change by Elm-pair",
-  needsConfirmation : false,
+  label: "Change by Elm-pair",
+  needsConfirmation: false,
 };
 
 let deactivate_;
 module.exports = {
-  activate : async function activate(context) {
-    const vscode = require('vscode');
+  activate: async function activate(context) {
+    const vscode = require("vscode");
     try {
       const socketPath = await getElmPairSocket(context);
       const socket = await connectToElmPair(socketPath);
@@ -25,10 +30,12 @@ module.exports = {
       throw err;
     }
   },
-  deactivate : function deactivate() { deactivate_(); },
+  deactivate: function deactivate() {
+    deactivate_();
+  },
 
   // Exported for testing.
-  listenOnSocket
+  listenOnSocket,
 };
 
 function listenOnSocket(vscode, socket) {
@@ -38,23 +45,25 @@ function listenOnSocket(vscode, socket) {
 
   const processData = listenForCommands(vscode);
   processData.next(); // Run to first `yield` (moment we need data).
-  socket.on('data', (data) => { processData.next(data); });
+  socket.on("data", (data) => {
+    processData.next(data);
+  });
 
   let deactivating = false;
-  socket.on('end', () => {
+  socket.on("end", () => {
     if (!deactivating) {
       const err = new Error("Connection to elm-pair daemon closed.");
       reportError(vscode, err);
     }
   });
 
-  vscode.workspace.onDidOpenTextDocument(doc => {
+  vscode.workspace.onDidOpenTextDocument((doc) => {
     if (doc.languageId === "elm") {
       onNewElmFile(socket, doc, elmFileIdsByPath);
     }
   });
 
-  vscode.workspace.onDidChangeTextDocument(changeEvent => {
+  vscode.workspace.onDidChangeTextDocument((changeEvent) => {
     const doc = changeEvent.document;
     if (doc.languageId !== "elm") {
       return;
@@ -68,11 +77,11 @@ function listenOnSocket(vscode, socket) {
       // We don't want Elm-pair to respond to undo or redo changes, as it might
       // result in programmers getting stuck in a loop.
       const doNotRefactor =
-          changeEvent.reason === 1 || changeEvent.reason === 2;
+        changeEvent.reason === 1 || changeEvent.reason === 2;
       for (const change of changeEvent.contentChanges) {
         const range = change.range;
         writeInt32(socket, fileId);
-        writeInt8(socket, FILE_CHANGED_MSG);
+        writeInt8(socket, MSG_FILE_CHANGED);
         writeInt8(socket, doNotRefactor ? 0 : 1);
         writeInt32(socket, range.start.line);
         writeInt32(socket, range.start.character);
@@ -88,7 +97,7 @@ function listenOnSocket(vscode, socket) {
     if (doc.languageId === "elm") {
       onNewElmFile(socket, doc, elmFileIdsByPath);
     }
-  };
+  }
 
   return function deactivate() {
     deactivating = true;
@@ -97,10 +106,10 @@ function listenOnSocket(vscode, socket) {
 }
 
 function onNewElmFile(socket, doc, elmFileIdsByPath) {
-  const fileId = elmFileIdsByPath[doc.fileName] =
-      Object.keys(elmFileIdsByPath).length;
+  const fileId = (elmFileIdsByPath[doc.fileName] =
+    Object.keys(elmFileIdsByPath).length);
   writeInt32(socket, fileId);
-  writeInt8(socket, NEW_FILE_MSG);
+  writeInt8(socket, MSG_NEW_FILE);
   writeString(socket, doc.fileName);
   writeString(socket, doc.getText());
 }
@@ -108,15 +117,16 @@ function onNewElmFile(socket, doc, elmFileIdsByPath) {
 async function reportError(vscode, err) {
   let message = err.message || err;
   await vscode.window.showErrorMessage(
-      "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: " +
-      message);
+    "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: " +
+      message
+  );
 }
 
 function getElmPairSocket(context) {
   return new Promise((resolve, reject) => {
     const elmPairBin = fs.existsSync(ELM_PAIR_NIX_PATH)
-                           ? ELM_PAIR_NIX_PATH
-                           : path.join(context.extensionPath, "elm-pair");
+      ? ELM_PAIR_NIX_PATH
+      : path.join(context.extensionPath, "elm-pair");
     cp.exec(elmPairBin, (err, stdout, stderr) => {
       if (stderr) {
         console.log(stderr);
@@ -137,8 +147,11 @@ async function* listenForCommands(vscode) {
   while (true) {
     [commandId, buffer] = yield* readInt8(buffer);
     switch (commandId) {
-      case 0:
+      case CMD_REFACTOR:
         buffer = yield* processRefactor(vscode, buffer);
+        break;
+      case CMD_OPEN_FILES:
+        buffer = yield* processOpenFiles(vscode, buffer);
         break;
       default:
         await reportError(vscode, "Unknown command id: " + commandId);
@@ -173,41 +186,58 @@ async function* processRefactor(vscode, buffer) {
   return buffer;
 }
 
+async function* processOpenFiles(vscode, buffer) {
+  let amountOfFiles, path;
+
+  [amountOfFiles, buffer] = yield* readInt32(buffer);
+
+  for (let i = 0; i < amountOfFiles; i++) {
+    [path, buffer] = yield* readString(buffer);
+    await vscode.workspace.openTextDocument(path);
+  }
+
+  return buffer;
+}
+
 function* readInt8(buffer) {
   const [sample, newBuffer] = yield* takeFromBuffer(buffer, 1);
   const num = sample.readInt8();
-  return [ num, newBuffer ];
+  return [num, newBuffer];
 }
 
 function* readInt32(buffer) {
   const [sample, newBuffer] = yield* takeFromBuffer(buffer, 4);
   const num = sample.readInt32BE();
-  return [ num, newBuffer ];
+  return [num, newBuffer];
 }
 
 function* readString(buffer) {
   const [stringLength, buffer2] = yield* readInt32(buffer);
   const [sample, buffer3] = yield* takeFromBuffer(buffer2, stringLength);
-  const string = sample.toString('utf8');
-  return [ string, buffer3 ];
+  const string = sample.toString("utf8");
+  return [string, buffer3];
 }
 
 // Read a specific number of bytes from a buffer, waiting for additional data if
 // necessary.
 function* takeFromBuffer(buffer, bytes) {
   while (buffer.length < bytes) {
-    buffer = Buffer.concat([ buffer, yield ]);
+    buffer = Buffer.concat([buffer, yield]);
   }
   const sample = buffer.subarray(0, bytes);
   const rest = buffer.subarray(bytes);
-  return [ sample, rest ];
+  return [sample, rest];
 }
 
 function connectToElmPair(socketPath) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
-    socket.on('connect', () => { resolve(socket); });
-    socket.on('error', (err) => { reject(err); });
+    socket.on("connect", () => {
+      resolve(socket);
+    });
+    socket.on("error", (err) => {
+      reject(err);
+    });
     return socket;
   });
 }
@@ -225,7 +255,7 @@ function writeInt32(socket, int) {
 }
 
 function writeString(socket, str) {
-  const len = Buffer.byteLength(str, 'utf8');
+  const len = Buffer.byteLength(str, "utf8");
   writeInt32(socket, len);
-  socket.write(str, 'utf8');
+  socket.write(str, "utf8");
 }

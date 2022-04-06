@@ -108,6 +108,7 @@ impl MsgLoop for AnalysisLoop {
             match result {
                 Ok((edits, files_to_open)) => {
                     if !files_to_open.is_empty() {
+                        log::info!("directing editor to open files");
                         editor_driver.open_files(files_to_open);
                         return Ok(());
                     }

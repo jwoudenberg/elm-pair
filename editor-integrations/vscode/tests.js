@@ -2,15 +2,15 @@
 
 const assert = require("assert");
 const stream = require("stream");
-const {listenOnSocket} = require("./extension.js");
+const { listenOnSocket } = require("./extension.js");
 
 const suite = () => {
   const fakeSocket = makeFakeSocket();
   const fakeVscode = makeFakeVscode();
   fakeVscode.vscode.workspace.textDocuments.push({
-    languageId : "elm",
-    fileName : "Existing.elm",
-    getText : () => "elm!"
+    languageId: "elm",
+    fileName: "Existing.elm",
+    getText: () => "elm!",
   });
   const deactivate = listenOnSocket(fakeVscode.vscode, fakeSocket.socket);
 
@@ -28,7 +28,7 @@ const suite = () => {
   });
 
   test("opening a non-elm file is ignored", () => {
-    const document = {languageId : "md"};
+    const document = { languageId: "md" };
     fakeVscode.simulateOpen(document);
     const chunk = fakeSocket.read();
     assert.equal(chunk, undefined);
@@ -36,9 +36,9 @@ const suite = () => {
 
   test("opening Elm puts whole file source on socket", () => {
     const document = {
-      languageId : "elm",
-      fileName : "New.elm",
-      getText : () => "abcd"
+      languageId: "elm",
+      fileName: "New.elm",
+      getText: () => "abcd",
     };
     fakeVscode.simulateOpen(document);
 
@@ -52,7 +52,7 @@ const suite = () => {
   });
 
   test("change to non-elm file is ignored", () => {
-    const change = {document : {languageId : "md"}};
+    const change = { document: { languageId: "md" } };
     fakeVscode.simulateChange(change);
     const chunk = fakeSocket.read();
     assert.equal(chunk, undefined);
@@ -60,8 +60,11 @@ const suite = () => {
 
   test("first change to elm file puts whole file source on socket", () => {
     const change = {
-      document :
-          {languageId : "elm", fileName : "Test.elm", getText : () => "abcd"}
+      document: {
+        languageId: "elm",
+        fileName: "Test.elm",
+        getText: () => "abcd",
+      },
     };
     fakeVscode.simulateChange(change);
 
@@ -76,23 +79,23 @@ const suite = () => {
 
   test("second change to elm file reports diff on socket", () => {
     const change = {
-      document : {languageId : "elm", fileName : "Test.elm"},
-      contentChanges : [
+      document: { languageId: "elm", fileName: "Test.elm" },
+      contentChanges: [
         {
-          range : {
-            start : {line : 1, character : 2},
-            end : {line : 3, character : 4},
+          range: {
+            start: { line: 1, character: 2 },
+            end: { line: 3, character: 4 },
           },
-          text : 'pqr'
+          text: "pqr",
         },
         {
-          range : {
-            start : {line : 5, character : 6},
-            end : {line : 7, character : 8},
+          range: {
+            start: { line: 5, character: 6 },
+            end: { line: 7, character: 8 },
           },
-          text : 'xyz'
-        }
-      ]
+          text: "xyz",
+        },
+      ],
     };
     fakeVscode.simulateChange(change);
 
@@ -148,47 +151,76 @@ const suite = () => {
     // Feed the data to the extension as individual bytes to stress-test logic
     // in extension responsible for blocking on limited data.
     for (const byte of refactorBuffer) {
-      fakeSocket.push(Buffer.from([ byte ]));
+      fakeSocket.push(Buffer.from([byte]));
     }
 
     const edit = await fakeVscode.recordedEdits.next();
     assert.deepEqual(edit.value.replacements, [
       {
-        metadata : {label : 'Change by Elm-pair', needsConfirmation : false},
-        newText : 'newCode',
-        range : {end : {column : 4, line : 3}, start : {column : 2, line : 1}},
-        uri : 'uri:Test.elm'
+        metadata: { label: "Change by Elm-pair", needsConfirmation: false },
+        newText: "newCode",
+        range: { end: { column: 4, line: 3 }, start: { column: 2, line: 1 } },
+        uri: "uri:Test.elm",
       },
       {
-        metadata : {label : 'Change by Elm-pair', needsConfirmation : false},
-        newText : 'moreCode',
-        range : {end : {column : 8, line : 7}, start : {column : 6, line : 5}},
-        uri : 'uri:Test2.elm'
-      }
+        metadata: { label: "Change by Elm-pair", needsConfirmation: false },
+        newText: "moreCode",
+        range: { end: { column: 8, line: 7 }, start: { column: 6, line: 5 } },
+        uri: "uri:Test2.elm",
+      },
     ]);
+  });
+
+  test("command to open files sent by elm-pair is executed", async () => {
+    const openFilesBuffer = Buffer.concat([
+      int8ToChunk(1), // command id, indicating a an open files command.
+      int32ToChunk(2), // Number of files to open.
+
+      // File 1
+      int32ToChunk("/My/Module.elm".length),
+      stringToChunk("/My/Module.elm"),
+
+      // File 2
+      int32ToChunk("/My/SecondModule.elm".length),
+      stringToChunk("/My/SecondModule.elm"),
+    ]);
+
+    // Feed the data to the extension as individual bytes to stress-test logic
+    // in extension responsible for blocking on limited data.
+    for (const byte of openFilesBuffer) {
+      fakeSocket.push(Buffer.from([byte]));
+    }
+
+    const path1 = await fakeVscode.recordedOpenFiles.next();
+    assert.deepEqual(path1.value, "/My/Module.elm");
+    const path2 = await fakeVscode.recordedOpenFiles.next();
+    assert.deepEqual(path2.value, "/My/SecondModule.elm");
   });
 
   test("deactivating plugin calls finishes the socket", async () => {
     deactivate();
-    await new Promise(
-        (resolve,
-         reject) => { fakeSocket.socket.on('finish', () => resolve()); });
+    await new Promise((resolve, reject) => {
+      fakeSocket.socket.on("finish", () => resolve());
+    });
   });
 
   test("plugin thows an error if socket is closed unexpectedly", async () => {
-    const {socket} = makeFakeSocket();
+    const { socket } = makeFakeSocket();
     listenOnSocket(fakeVscode.vscode, socket);
     socket.push(null);
-    const {value : err} = await fakeVscode.recordedErrors.next();
+    const { value: err } = await fakeVscode.recordedErrors.next();
     assert.equal(
-        err,
-        "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: Connection to elm-pair daemon closed.");
+      err,
+      "Elm-pair crashed. A bug report will be much appreciated! You can submit this bug at https://github.com/jwoudenberg/elm-pair/issues. Error reads: Connection to elm-pair daemon closed."
+    );
   });
 };
 
 // Test helpers.
 
-function int8ToChunk(int8) { return Buffer.from([ int8 ]); }
+function int8ToChunk(int8) {
+  return Buffer.from([int8]);
+}
 
 function int32ToChunk(int32) {
   const buffer = Buffer.alloc(4);
@@ -196,7 +228,9 @@ function int32ToChunk(int32) {
   return buffer;
 }
 
-function stringToChunk(string) { return Buffer.from(string, 'utf8'); }
+function stringToChunk(string) {
+  return Buffer.from(string, "utf8");
+}
 
 function int8FromChunk(buffer) {
   assert.equal(buffer.length, 1);
@@ -208,7 +242,9 @@ function int32FromChunk(buffer) {
   return buffer.readInt32BE();
 }
 
-function stringFromChunk(buffer) { return buffer.toString('utf8'); }
+function stringFromChunk(buffer) {
+  return buffer.toString("utf8");
+}
 
 function makeFakeSocket() {
   const written = [];
@@ -221,9 +257,13 @@ function makeFakeSocket() {
     },
   });
 
-  function push(chunk) { socket.push(chunk); }
+  function push(chunk) {
+    socket.push(chunk);
+  }
 
-  function read() { return written.shift(); }
+  function read() {
+    return written.shift();
+  }
 
   return {
     socket,
@@ -233,24 +273,37 @@ function makeFakeSocket() {
 }
 
 function makeFakeVscode() {
-  const editsStream = new stream.PassThrough({objectMode : true})
-  const errorStream = new stream.PassThrough({objectMode : true});
+  const editsStream = new stream.PassThrough({ objectMode: true });
+  const openFileStream = new stream.PassThrough({ objectMode: true });
+  const errorStream = new stream.PassThrough({ objectMode: true });
   const ret = {
-    recordedEdits : editsStream[Symbol.asyncIterator](),
-    recordedErrors : errorStream[Symbol.asyncIterator]()
+    recordedEdits: editsStream[Symbol.asyncIterator](),
+    recordedOpenFiles: openFileStream[Symbol.asyncIterator](),
+    recordedErrors: errorStream[Symbol.asyncIterator](),
   };
   ret.vscode = {
-    workspace : {
+    workspace: {
       textDocuments: [],
-      onDidChangeTextDocument(callback) { ret.simulateChange = callback; },
-      onDidOpenTextDocument(callback) { ret.simulateOpen = callback; },
-      applyEdit(edit) { editsStream.write(edit); }
+      onDidChangeTextDocument(callback) {
+        ret.simulateChange = callback;
+      },
+      onDidOpenTextDocument(callback) {
+        ret.simulateOpen = callback;
+      },
+      applyEdit(edit) {
+        editsStream.write(edit);
+      },
+      openTextDocument(path) {
+        openFileStream.write(path);
+      },
     },
-    window : {
-      showErrorMessage(err) { errorStream.write(err); },
+    window: {
+      showErrorMessage(err) {
+        errorStream.write(err);
+      },
     },
     WorkspaceEdit,
-    Uri : {file : (path) => `uri:${path}`},
+    Uri: { file: (path) => `uri:${path}` },
     Position,
     Range,
   };
@@ -258,18 +311,24 @@ function makeFakeVscode() {
 }
 
 class WorkspaceEdit {
-  constructor() { this.replacements = []; }
+  constructor() {
+    this.replacements = [];
+  }
   replace(uri, range, newText, metadata) {
-    this.replacements.push({uri, range, newText, metadata});
+    this.replacements.push({ uri, range, newText, metadata });
   }
 }
 
 class Position {
-  constructor(line, column) { return {line, column}; }
+  constructor(line, column) {
+    return { line, column };
+  }
 }
 
 class Range {
-  constructor(start, end) { return {start, end}; }
+  constructor(start, end) {
+    return { start, end };
+  }
 }
 
 let testPromise = Promise.resolve();
@@ -285,12 +344,12 @@ function test(name, body) {
   });
 }
 suite();
-Promise
-    .race([
-      testPromise, new Promise((resolve, reject) => setTimeout(
-                                   () => reject("Tests took too long."), 10))
-    ])
-    .catch((err) => {
-      console.log(err);
-      process.exit(1)
-    });
+Promise.race([
+  testPromise,
+  new Promise((resolve, reject) =>
+    setTimeout(() => reject("Tests took too long."), 10)
+  ),
+]).catch((err) => {
+  console.log(err);
+  process.exit(1);
+});
