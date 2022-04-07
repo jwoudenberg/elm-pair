@@ -42,4 +42,4 @@ git fetch --tags
 git tag -l --points-at HEAD | grep "^release-$release$"
 
 # Check `release-latest` branch points at latest release
-git branch -l --points-at HEAD | grep '^release-latest$'
+git branch -l --points-at HEAD | grep 'release-latest$'
