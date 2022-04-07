@@ -210,7 +210,9 @@ mod tests {
     simulation_test!(
         remove_module_qualifier_from_variable_with_same_name_as_local_variable
     );
-    simulation_test!( remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module);
+    simulation_test!(
+        remove_module_qualifier_from_variable_with_same_name_as_value_exposed_from_other_module
+    );
     simulation_test!(
         remove_module_qualifier_from_type_with_same_name_as_local_type_alias
     );
@@ -218,4 +220,10 @@ mod tests {
         remove_module_qualifier_from_type_with_same_name_as_local_type
     );
     simulation_test!(remove_module_qualifier_from_constructor_with_same_name_as_local_constructor);
+    simulation_test!(
+        remove_module_qualifier_from_type_with_same_name_as_other_exposed_type
+    );
+    simulation_test!(
+        remove_module_qualifier_from_type_with_same_name_as_other_imported_type
+    );
 }

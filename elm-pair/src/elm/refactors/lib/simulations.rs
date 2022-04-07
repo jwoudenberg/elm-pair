@@ -13,6 +13,7 @@ use crate::analysis_thread;
 use crate::analysis_thread::{EditorDriver, Msg};
 use crate::elm::compiler::Compiler;
 use crate::lib::included_answer_test as ia_test;
+use crate::lib::log;
 use crate::lib::simulation;
 use crate::lib::source_code::{
     update_bytes, Buffer, Edit, EditorId, SourceFileSnapshot,
@@ -138,7 +139,9 @@ fn run_simulation_test_helper(
     }
 
     let new_code_by_path = simulation::run(
-        opt_simulation.unwrap(),
+        opt_simulation.ok_or_else(|| {
+            log::mk_err!("Did not find test file containing simulation.")
+        })?,
         old_code_by_path.clone(),
         sender.clone(),
     )?;

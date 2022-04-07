@@ -1,0 +1,8 @@
+START SIMULATION
+OPEN FILE ModuleImportingTwoTypesWithSameNameExposingOne.elm
+MOVE CURSOR TO LINE 8 BookOne
+DELETE BookOne.
+END SIMULATION
+
+=== expected output below ===
+No refactor for this change.

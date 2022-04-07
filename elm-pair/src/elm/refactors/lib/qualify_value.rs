@@ -96,8 +96,10 @@ pub fn qualify_value(
                         }
                     }
                     ExposedConstructors::FromCustomType(ctors) => {
-                        if ctors.iter().any(|ctor| *ctor == reference.name) {
-                            // Remove `(..)` behind type from constructor this.
+                        if type_.exposing_constructors
+                            && ctors.iter().any(|ctor| *ctor == reference.name)
+                        {
+                            // Remove `(..)` behind the type of this constructor.
                             let exposing_ctors_node = node.child(1).ok_or_else(|| {
                                 log::mk_err!("could not find `(..)` node behind exposed type")
                             })?;

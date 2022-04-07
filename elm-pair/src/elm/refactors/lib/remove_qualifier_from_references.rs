@@ -36,7 +36,9 @@ pub fn remove_qualifier_from_references(
     );
     for reference_or_error in qualified_references {
         let (node, qualified) = reference_or_error?;
-        if names.contains(&qualified.unqualified_name) {
+        if qualified.qualifier == qualifier
+            && names.contains(&qualified.unqualified_name)
+        {
             refactor.add_change(
                 code.buffer,
                 // The +1 makes it include the trailing dot between qualifier

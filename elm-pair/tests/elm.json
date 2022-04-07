@@ -9,7 +9,9 @@
         "refactor-simulations/change_type_name_unexposed_to_other_modules",
         "refactor-simulations/change_type_name_used_in_other_module",
         "refactor-simulations/change_variable_name_unexposed_to_other_modules",
-        "refactor-simulations/change_variable_name_used_in_other_module"
+        "refactor-simulations/change_variable_name_used_in_other_module",
+        "refactor-simulations/remove_module_qualifier_from_type_with_same_name_as_other_exposed_type",
+        "refactor-simulations/remove_module_qualifier_from_type_with_same_name_as_other_imported_type"
     ],
     "elm-version": "0.19.1",
     "dependencies": {

@@ -1,0 +1,8 @@
+START SIMULATION
+OPEN FILE ModuleImportingTwoTypesWithSameName.elm
+MOVE CURSOR TO LINE 9 PageTwo
+DELETE PageTwo.
+END SIMULATION
+
+=== expected output below ===
+No refactor for this change.
