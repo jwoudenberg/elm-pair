@@ -12,13 +12,13 @@ function fail {
 release="$1"
 
 # check elm-pair/Cargo.toml contains the expected version
-grep "^version = \"0.$release.0\"$" < elm-pair/Cargo.toml
+grep "^version = \"$release.0.0\"$" < elm-pair/Cargo.toml
 
 # check elm-pair/Cargo.lock contains the expected version
-grep -zlP "name = \"elm-pair\"\nversion = \"0.$release.0\"" < elm-pair/Cargo.toml
+grep -zlP "name = \"elm-pair\"\nversion = \"$release.0.0\"" < elm-pair/Cargo.toml
 
 # check vscode-extension/package.json contains the expected version
-grep "^\s*\"version\": \"0.$release.0\",$" < editor-integrations/vscode/package.json
+grep "^\s*\"version\": \"$release.0.0\",$" < editor-integrations/vscode/package.json
 
 # check changelog contains an entry for this version
 grep -P "## \d{4}-\d{2}-\d{2}: Release $release$" < CHANGELOG.md

@@ -6,7 +6,7 @@
   "keywords": ["elm"],
   "homepage": "https://elm-pair.com",
   "icon": "icon.png",
-  "version": "0.14.0",
+  "version": "15.0.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/jwoudenberg/elm-pair.git"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2022-04-07: Release 15
+
+- When changing a name Elm-pair will now change usages of that name in other files as well.
+- Fixed a bug in the Visual Studio Code extension, where the first change made to an Elm file would never result in a refactor by Elm-pair.
+- Fixed a bug where Elm-pair would remove the wrong qualifier from a name.
+
 ## 2022-03-22: Release 14
 
 - Linux binaries are now statically linked. This will let them run on some previously unsupported linux systems.
