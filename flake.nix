@@ -11,7 +11,7 @@
   };
 
   outputs = { self, nixpkgs, utils, naersk, fenix }:
-    let supportedSystems = [ "x86_64-linux" "x86_64-darwin" ];
+    let supportedSystems = [ "x86_64-linux" "x86_64-darwin" "aarch64-darwin" ];
     in utils.lib.eachSystem supportedSystems (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
