@@ -1,5 +1,5 @@
 use crate::analysis_thread as analysis;
-use crate::editor_listener_thread::{BufferChange, Editor, EditorEvent};
+use crate::editor_listener_thread::{Editor, EditorEvent};
 use crate::lib::bytes;
 use crate::lib::log;
 use crate::lib::log::Error;
@@ -25,6 +25,7 @@ pub struct VsCode<R, W> {
     editor_id: EditorId,
     read: R,
     write: Arc<Mutex<W>>,
+    buffers: HashMap<Buffer, SourceFileSnapshot>,
     buffer_paths: Arc<Mutex<HashMap<Buffer, PathBuf>>>,
 }
 
@@ -40,6 +41,7 @@ impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
             editor_id,
             read: BufReader::new(socket),
             write: Arc::new(Mutex::new(BufWriter::new(write))),
+            buffers: HashMap::new(),
             buffer_paths: Arc::new(Mutex::new(HashMap::new())),
         };
         Ok(vscode)
@@ -48,7 +50,6 @@ impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
 
 impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
     type Driver = VsCodeDriver<W>;
-    type Event = VsCodeEvent<R>;
 
     fn driver(&self) -> VsCodeDriver<W> {
         VsCodeDriver {
@@ -61,14 +62,13 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
         "vs-code"
     }
 
-    fn listen<F>(self, mut on_event: F) -> Result<(), crate::Error>
+    fn listen<F>(mut self, mut on_event: F) -> Result<(), crate::Error>
     where
-        F: FnMut(Buffer, &mut Self::Event) -> Result<(), crate::Error>,
+        F: FnMut(EditorEvent) -> Result<(), crate::Error>,
     {
-        let mut read = self.read;
         loop {
             let mut u32_buffer = [0; 4];
-            let buffer_id = match read.read_exact(&mut u32_buffer) {
+            let buffer_id = match self.read.read_exact(&mut u32_buffer) {
                 Ok(()) => std::primitive::u32::from_be_bytes(u32_buffer),
                 Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok(());
@@ -81,14 +81,36 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
                 buffer_id,
                 editor_id: self.editor_id,
             };
-            let mut event = VsCodeEvent {
+
+            let opt_code = self.buffers.remove(&buffer);
+
+            let event = match bytes::read_u8(&mut self.read)? {
+                MSG_NEW_FILE => parse_new_file_msg(
+                    &mut self.read,
+                    &mut crate::lock(&self.buffer_paths),
+                    buffer,
+                ),
+                MSG_FILE_CHANGED => {
+                    if let Some(code) = opt_code {
+                        parse_file_changed_msg(&mut self.read, code)
+                    } else {
+                        Err(log::mk_err!(
+                            "vscode MSG_FILE_CHANGED for unknown buffer"
+                        ))
+                    }
+                }
+                other => Err(log::mk_err!("unknown vscode msg type {}", other)),
+            }?;
+
+            self.buffers.insert(
                 buffer,
-                read,
-                // TODO: Avoid this clone by parsing the file path here.
-                buffer_paths: self.buffer_paths.clone(),
-            };
-            on_event(buffer, &mut event).unwrap();
-            read = event.read;
+                match &event {
+                    EditorEvent::ModifiedBuffer { code, .. } => code.clone(),
+                    EditorEvent::OpenedNewBuffer { code, .. } => code.clone(),
+                },
+            );
+
+            on_event(event)?;
         }
     }
 }
@@ -178,42 +200,11 @@ fn write_path<W: Write>(write: &mut W, path: &Path) -> Result<(), Error> {
         .map_err(|err| log::mk_err!("failed writing path to vscode: {:?}", err))
 }
 
-pub struct VsCodeEvent<R> {
-    read: R,
-    buffer: Buffer,
-    buffer_paths: Arc<Mutex<HashMap<Buffer, PathBuf>>>,
-}
-
-impl<R: Read> EditorEvent for VsCodeEvent<R> {
-    fn apply_to_buffer(
-        &mut self,
-        opt_code: Option<SourceFileSnapshot>,
-    ) -> Result<BufferChange, crate::Error> {
-        match bytes::read_u8(&mut self.read)? {
-            MSG_NEW_FILE => parse_new_file_msg(
-                &mut self.read,
-                &mut crate::lock(&self.buffer_paths),
-                self.buffer,
-            ),
-            MSG_FILE_CHANGED => {
-                if let Some(code) = opt_code {
-                    parse_file_changed_msg(&mut self.read, code)
-                } else {
-                    Err(log::mk_err!(
-                        "vscode MSG_FILE_CHANGED for unknown buffer"
-                    ))
-                }
-            }
-            other => Err(log::mk_err!("unknown vscode msg type {}", other)),
-        }
-    }
-}
-
 fn parse_new_file_msg<R: Read>(
     read: &mut R,
     buffer_paths: &mut HashMap<Buffer, PathBuf>,
     buffer: Buffer,
-) -> Result<BufferChange, Error> {
+) -> Result<EditorEvent, Error> {
     let path_len = bytes::read_u32(read)?;
     let path_string = bytes::read_string(read, path_len as usize)?;
     let path = PathBuf::from(path_string);
@@ -229,10 +220,9 @@ fn parse_new_file_msg<R: Read>(
             Ok(())
         },
     )?;
-    let change = BufferChange::OpenedNewBuffer {
-        buffer,
+    let change = EditorEvent::OpenedNewBuffer {
+        code: SourceFileSnapshot::new(buffer, bytes_builder.finish())?,
         path,
-        bytes: bytes_builder.finish(),
     };
     Ok(change)
 }
@@ -240,7 +230,7 @@ fn parse_new_file_msg<R: Read>(
 fn parse_file_changed_msg<R: Read>(
     read: &mut R,
     mut code: SourceFileSnapshot,
-) -> Result<BufferChange, Error> {
+) -> Result<EditorEvent, Error> {
     let refactor_allowed = if bytes::read_u8(read)? == 0 {
         RefactorAllowed::No
     } else {
@@ -282,17 +272,17 @@ fn parse_file_changed_msg<R: Read>(
         row: new_end_row,
         column: start_idx - new_end_row,
     };
-    let change = BufferChange::ModifiedBuffer {
+    code.apply_edit(InputEdit {
+        start_byte,
+        old_end_byte,
+        new_end_byte,
+        start_position,
+        old_end_position,
+        new_end_position,
+    })?;
+    let change = EditorEvent::ModifiedBuffer {
         code,
         refactor_allowed,
-        edit: InputEdit {
-            start_byte,
-            old_end_byte,
-            new_end_byte,
-            start_position,
-            old_end_position,
-            new_end_position,
-        },
     };
     Ok(change)
 }

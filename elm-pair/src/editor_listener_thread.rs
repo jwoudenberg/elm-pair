@@ -3,18 +3,14 @@ use crate::compilation_thread;
 use crate::editors::neovim;
 use crate::editors::vscode;
 use crate::lib::log;
-use crate::lib::source_code::{Buffer, EditorId, RefactorAllowed, SourceFileSnapshot};
+use crate::lib::source_code::{EditorId, RefactorAllowed, SourceFileSnapshot};
 use crate::Error;
-use ropey::Rope;
-use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use tree_sitter::InputEdit;
 
 struct EditorListenerLoop {
-    buffers: HashMap<Buffer, SourceFileSnapshot>,
     compilation_sender: Sender<compilation_thread::Msg>,
     analysis_sender: Sender<analysis_thread::Msg>,
 }
@@ -81,15 +77,18 @@ pub fn spawn_editor_thread(
     };
     std::thread::spawn(move || {
         let mut listener_loop = EditorListenerLoop {
-            buffers: HashMap::new(),
             compilation_sender,
             analysis_sender,
         };
         let res = match editor_kind {
-            EditorKind::Neovim => neovim::Neovim::from_unix_socket(socket, editor_id)
-                .and_then(|editor| listener_loop.start(editor_id, editor)),
-            EditorKind::VsCode => vscode::VsCode::from_unix_socket(socket, editor_id)
-                .and_then(|editor| listener_loop.start(editor_id, editor)),
+            EditorKind::Neovim => {
+                neovim::Neovim::from_unix_socket(socket, editor_id)
+                    .and_then(|editor| listener_loop.start(editor_id, editor))
+            }
+            EditorKind::VsCode => {
+                vscode::VsCode::from_unix_socket(socket, editor_id)
+                    .and_then(|editor| listener_loop.start(editor_id, editor))
+            }
         };
         match res {
             Ok(()) => {}
@@ -105,7 +104,11 @@ pub fn spawn_editor_thread(
 }
 
 impl EditorListenerLoop {
-    fn start<E: Editor>(&mut self, editor_id: EditorId, editor: E) -> Result<(), Error> {
+    fn start<E: Editor>(
+        &mut self,
+        editor_id: EditorId,
+        editor: E,
+    ) -> Result<(), Error> {
         log::info!(
             "editor {} connected and given id {:?}",
             editor.name(),
@@ -113,59 +116,44 @@ impl EditorListenerLoop {
         );
         let driver = editor.driver();
         let boxed = Box::new(driver);
-        let mut last_compiled_candidates = HashMap::new();
         self.analysis_sender
             .send(analysis_thread::Msg::EditorConnected(editor_id, boxed))?;
-        editor.listen(|buffer, update| {
-            // Remove the code for this buffer from our map so we can take
-            // ownership of it. We'll push updated code back in later.
-            let opt_code = self.buffers.remove(&buffer);
-            let event = update.apply_to_buffer(opt_code)?;
+        editor.listen(|event| {
             let new_code = match event {
-                BufferChange::NoChanges => return Ok(()),
-                BufferChange::ModifiedBuffer {
-                    mut code,
-                    edit,
+                EditorEvent::ModifiedBuffer {
+                    code,
                     refactor_allowed,
                 } => {
-                    code.apply_edit(edit)?;
-                    self.analysis_sender
-                        .send(analysis_thread::Msg::SourceCodeModified {
+                    self.analysis_sender.send(
+                        analysis_thread::Msg::SourceCodeModified {
                             code: code.clone(),
                             refactor: refactor_allowed,
-                        })?;
+                        },
+                    )?;
                     code
                 }
-                BufferChange::OpenedNewBuffer {
-                    bytes,
-                    path,
-                    buffer,
-                } => {
-                    log::info!("new buffer opened: {:?}", buffer);
-                    self.compilation_sender
-                        .send(compilation_thread::Msg::OpenedNewSourceFile {
-                            buffer,
+                EditorEvent::OpenedNewBuffer { code, path } => {
+                    log::info!("new buffer opened: {:?}", code.buffer);
+                    self.compilation_sender.send(
+                        compilation_thread::Msg::OpenedNewSourceFile {
+                            buffer: code.buffer,
                             path: path.clone(),
-                        })?;
-                    let code = SourceFileSnapshot::new(buffer, bytes)?;
-                    self.analysis_sender
-                        .send(analysis_thread::Msg::OpenedNewSourceFile {
+                        },
+                    )?;
+                    self.analysis_sender.send(
+                        analysis_thread::Msg::OpenedNewSourceFile {
                             path,
                             code: code.clone(),
-                        })?;
+                        },
+                    )?;
                     code
                 }
             };
-            if !new_code.tree.root_node().has_error()
-                && Some(&new_code.revision) > last_compiled_candidates.get(&buffer)
-            {
-                last_compiled_candidates.insert(buffer, new_code.revision);
-                self.compilation_sender
-                    .send(compilation_thread::Msg::CompilationRequested(
-                        new_code.clone(),
-                    ))?;
+            if !new_code.tree.root_node().has_error() {
+                self.compilation_sender.send(
+                    compilation_thread::Msg::CompilationRequested(new_code),
+                )?;
             }
-            self.buffers.insert(buffer, new_code);
             Ok(())
         })?;
         self.analysis_sender
@@ -178,12 +166,11 @@ impl EditorListenerLoop {
 // An API for communicatating with an editor.
 pub trait Editor {
     type Driver: analysis_thread::EditorDriver;
-    type Event: EditorEvent;
 
     // Listen for changes to source files happening in the editor.
     fn listen<F>(self, on_event: F) -> Result<(), Error>
     where
-        F: FnMut(Buffer, &mut Self::Event) -> Result<(), Error>;
+        F: FnMut(EditorEvent) -> Result<(), Error>;
 
     // Obtain an EditorDriver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
@@ -191,24 +178,13 @@ pub trait Editor {
     fn name(&self) -> &'static str;
 }
 
-// A notification of an editor change. To get to the actual change we have to
-// pass the existing source code for this file to `apply_to_buffer`. This allows
-// the editor integration to copy new source code directly into the existing
-// code.
-pub trait EditorEvent {
-    fn apply_to_buffer(&mut self, code: Option<SourceFileSnapshot>) -> Result<BufferChange, Error>;
-}
-
-pub enum BufferChange {
-    NoChanges,
+pub enum EditorEvent {
     OpenedNewBuffer {
-        buffer: Buffer,
+        code: SourceFileSnapshot,
         path: PathBuf,
-        bytes: Rope,
     },
     ModifiedBuffer {
         code: SourceFileSnapshot,
-        edit: InputEdit,
         refactor_allowed: RefactorAllowed,
     },
 }
