@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-04-08: Release 16
+
+- Fixed a bug where renaming an argument would sometimes cause Elm-pair to needlessly add a suffix to the name of arguments of other, unrelated functions.
+
 ## 2022-04-07: Release 15
 
 - When changing a name Elm-pair will now change usages of that name in other files as well.
