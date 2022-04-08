@@ -35,20 +35,37 @@ pub fn free_names(
     skip_byteranges: &[&Range<usize>],
 ) -> Result<(), Error> {
     let mut cursor = QueryCursor::new();
-    let mut names_in_use: HashSet<Name> = HashSet::new();
-    let mut definition_sites: HashMap<Name, usize> = HashMap::new();
-    let matches = queries.query_for_unqualified_values.run_in(
-        &mut cursor,
-        code,
-        code.tree.root_node(),
-    );
-    for result in matches {
-        let (node, is_definition, name) = result?;
-        if let IsDefinition::Yes = is_definition {
-            definition_sites.insert(name.clone(), node.start_byte());
-        }
-        names_in_use.insert(name);
-    }
+    let unqualified_names: Vec<(Node, IsDefinition, Name)> = queries
+        .query_for_unqualified_values
+        .run_in(&mut cursor, code, code.tree.root_node())
+        .collect::<Result<Vec<(Node, IsDefinition, Name)>, Error>>()?;
+
+    let mut cursor2 = QueryCursor::new();
+    let scopes: Vec<Range<usize>> =
+        queries.query_for_scopes.run(&mut cursor2, code).collect();
+
+    let definitions_with_scopes: Vec<(Name, Range<usize>)> = unqualified_names
+        .iter()
+        .filter_map(|(node, is_definition, name)| {
+            if !matches!(is_definition, IsDefinition::Yes) {
+                None
+            } else {
+                let definition_scope = scopes
+                    .iter()
+                    .filter(|scope| scope.contains(&node.start_byte()))
+                    // If the variable definition is in multiple scopes, the innermost
+                    // (i.e. shortes) scope will be the one the variable can be used in.
+                    .min_by_key(|scope| scope.len())?;
+                Some((name.clone(), definition_scope.clone()))
+            }
+        })
+        .collect();
+
+    let names_in_use: HashSet<Name> = unqualified_names
+        .into_iter()
+        .map(|(_, _, name)| name)
+        .collect();
+
     let names_from_other_modules = imported_names(
         queries,
         &mut cursor,
@@ -57,9 +74,9 @@ pub fn free_names(
         skip_byteranges,
     )?;
 
-    for name in names_in_use.intersection(names) {
-        // if another module is exposing a variable by this name, un-expose it
+    for name in names {
         if let Some(other_qualifier) = names_from_other_modules.get(name) {
+            // If an import is exposing a variable by this name, un-expose it.
             qualify_value(
                 queries,
                 computation,
@@ -70,33 +87,18 @@ pub fn free_names(
                 name,
                 true,
             )?;
-            continue;
-        }
-
-        // If an unqualified variable with this name already exists, rename it
-        if names_in_use.contains(name) {
-            // TODO: Make it so we query for 'scopes' at most once.
-            if !scope_must_include_one_of.is_empty() {
-                if let Some(definition_site) = definition_sites.get(name) {
-                    let opt_scope = queries
-                        .query_for_scopes
-                        .run(&mut cursor, code)
-                        .filter(|scope| scope.contains(definition_site))
-                        // If the variable definition is in multiple scopes, the innermost
-                        // (i.e. shortes) scope will be the one the variable can be used in.
-                        .min_by_key(|scope| scope.len());
-                    if let Some(scope) = opt_scope {
-                        let overlaps_with_included =
-                            scope_must_include_one_of.iter().any(|included| {
-                                included.contains(&scope.start)
-                                    || included.contains(&scope.end)
-                            });
-                        if !overlaps_with_included {
-                            continue;
-                        }
-                    }
-                }
-            }
+        } else {
+            let scopes: Vec<&Range<usize>> = definitions_with_scopes
+                .iter()
+                .filter(|(name_, scope)| {
+                    name_ == name
+                        && (scope_must_include_one_of.is_empty()
+                            || scope_must_include_one_of
+                                .iter()
+                                .any(|include| scope.contains(&include.start)))
+                })
+                .map(|(_, scope)| scope)
+                .collect();
 
             let new_name = names_with_digit(name)
                 .find(|name| !names_in_use.contains(name))
@@ -105,13 +107,14 @@ pub fn free_names(
                         "names_with_digit unexpectedly ran out of names."
                     )
                 })?;
+
             rename(
                 queries,
                 refactor,
                 code,
                 name,
                 &new_name,
-                &[],
+                &scopes,
                 skip_byteranges,
             )?;
         }

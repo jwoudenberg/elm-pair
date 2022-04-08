@@ -381,6 +381,9 @@ mod tests {
     );
     simulation_test!(change_name_of_function_in_type_definition_in_let_binding);
     simulation_test!(change_function_argument_name);
+    simulation_test!(
+        change_function_argument_name_to_name_used_as_other_function_argument
+    );
     simulation_test!(change_variable_name_in_case_pattern);
     simulation_test!(change_variable_name_to_already_existing_name_in_scope);
     simulation_test!(change_lambda_argument_name);
