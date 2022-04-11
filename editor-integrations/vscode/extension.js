@@ -43,7 +43,12 @@ function listenOnSocket(vscode, socket) {
   writeInt32(socket, 0);
   const elmFileIdsByPath = {};
 
-  const processData = listenForCommands(vscode);
+  let refactorUnderway = false;
+  const setRefactorUnderway = (val) => {
+    refactorUnderway = val;
+  };
+
+  const processData = listenForCommands(vscode, setRefactorUnderway);
   processData.next(); // Run to first `yield` (moment we need data).
   socket.on("data", (data) => {
     processData.next(data);
@@ -77,7 +82,9 @@ function listenOnSocket(vscode, socket) {
       // We don't want Elm-pair to respond to undo or redo changes, as it might
       // result in programmers getting stuck in a loop.
       const doNotRefactor =
-        changeEvent.reason === 1 || changeEvent.reason === 2;
+        refactorUnderway ||
+        changeEvent.reason === 1 ||
+        changeEvent.reason === 2;
       for (const change of changeEvent.contentChanges) {
         const range = change.range;
         writeInt32(socket, fileId);
@@ -142,13 +149,13 @@ function getElmPairSocket(context) {
 
 // Parse refactors streamed from Elm-pair and apply them to vscode files.
 // This is a generator function so it can 'yield's when it needs more bytes.
-async function* listenForCommands(vscode) {
+async function* listenForCommands(vscode, setRefactorUnderway) {
   let buffer = yield;
   while (true) {
     [commandId, buffer] = yield* readInt8(buffer);
     switch (commandId) {
       case CMD_REFACTOR:
-        buffer = yield* processRefactor(vscode, buffer);
+        buffer = yield* processRefactor(vscode, buffer, setRefactorUnderway);
         break;
       case CMD_OPEN_FILES:
         buffer = yield* processOpenFiles(vscode, buffer);
@@ -160,7 +167,7 @@ async function* listenForCommands(vscode) {
   }
 }
 
-async function* processRefactor(vscode, buffer) {
+async function* processRefactor(vscode, buffer, setRefactorUnderway) {
   const edit = new vscode.WorkspaceEdit();
   let editsInRefactor;
 
@@ -181,7 +188,9 @@ async function* processRefactor(vscode, buffer) {
     edit.replace(uri, range, newText, EDIT_METADATA);
   }
 
+  setRefactorUnderway(true);
   await vscode.workspace.applyEdit(edit);
+  setRefactorUnderway(false);
 
   return buffer;
 }

@@ -58,4 +58,12 @@ local function start()
     if job_id <= 0 then error("calling `elm-pair` failed: " .. job_id) end
 end
 
+function _G.elm_pair_start_changes()
+    vim.fn.rpcnotify(_G.elm_pair_channel, "started_refactor")
+end
+
+function _G.elm_pair_finished_changes()
+    vim.fn.rpcnotify(_G.elm_pair_channel, "finished_refactor")
+end
+
 return {start = start}

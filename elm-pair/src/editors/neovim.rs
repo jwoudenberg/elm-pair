@@ -25,6 +25,7 @@ pub struct Neovim<R, W> {
     write: Arc<Mutex<W>>,
     buffers: HashMap<Buffer, SourceFileSnapshot>,
     paths_for_new_buffers: HashMap<Buffer, PathBuf>,
+    refactor_allowed: RefactorAllowed,
 }
 
 impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
@@ -41,6 +42,7 @@ impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
             write: Arc::new(Mutex::new(BufWriter::new(write))),
             buffers: HashMap::new(),
             paths_for_new_buffers: HashMap::new(),
+            refactor_allowed: RefactorAllowed::Yes,
         };
         Ok(neovim)
     }
@@ -137,6 +139,14 @@ where
             }
             b"nvim_buf_detach_event" => self.parse_buf_detach_event()?,
             b"buffer_opened" => self.parse_buffer_opened()?,
+            b"started_refactor" => {
+                skip_objects(&mut self.read, 1)?; // Skip empty argument list.
+                self.refactor_allowed = RefactorAllowed::No;
+            }
+            b"finished_refactor" => {
+                skip_objects(&mut self.read, 1)?; // Skip empty argument list.
+                self.refactor_allowed = RefactorAllowed::Yes;
+            }
             method => {
                 return Err(log::mk_err!(
                     "received neovim message with unknown name: {:?}",
@@ -234,7 +244,7 @@ where
                     code.apply_edit(edit)?;
                     on_event(EditorEvent::ModifiedBuffer {
                         code: code.clone(),
-                        refactor_allowed: RefactorAllowed::Yes,
+                        refactor_allowed: self.refactor_allowed,
                     })?;
                     code
                 } else {
@@ -531,7 +541,19 @@ where
 
         rmp::encode::write_array_len(write, 1)?; // nvim_call_atomic args
 
-        rmp::encode::write_array_len(write, refactor.len() as u32)?; // calls array
+        rmp::encode::write_array_len(write, 2 + refactor.len() as u32)?; // calls array
+
+        // Call '_G.elm_pair_start_changes' before making actual changes. This
+        // will result in Neovim sending a notification back to this process,
+        // which we use as a bookmark to figure out which change events from
+        // Neovim are caused by this refactor vs. the programmer. We want to
+        // know this to make it so refactors don't trigger more refactors.
+        rmp::encode::write_array_len(write, 2)?; // call tuple
+        write_str(write, "nvim_exec_lua")?;
+        rmp::encode::write_array_len(write, 2)?; // nvim_exec_lua args
+        write_str(write, "return _G.elm_pair_start_changes()")?;
+        rmp::encode::write_array_len(write, 0)?;
+
         for edit in refactor {
             let start = edit.input_edit.start_position;
             let end = edit.input_edit.old_end_position;
@@ -554,6 +576,15 @@ where
                 write_str(write, line)?;
             }
         }
+
+        // Let Neovim know we're done making changes. See comment for
+        // _G.elm_pair_start_changes above.
+        rmp::encode::write_array_len(write, 2)?; // call tuple
+        write_str(write, "nvim_exec_lua")?;
+        rmp::encode::write_array_len(write, 2)?; // nvim_exec_lua args
+        write_str(write, "return _G.elm_pair_finished_changes()")?;
+        rmp::encode::write_array_len(write, 0)?;
+
         write.flush().map_err(|err| {
             log::mk_err!("failed writing to neovim: {:?}", err)
         })?;
