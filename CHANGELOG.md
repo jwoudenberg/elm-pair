@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-04-11: Release 17
+
+- Fixed a bug where Elm-pair would get into a refactor loop, causing it to keep updating a file endlessly.
+
 ## 2022-04-08: Release 16
 
 - Fixed a bug where renaming an argument would sometimes cause Elm-pair to needlessly add a suffix to the name of arguments of other, unrelated functions.

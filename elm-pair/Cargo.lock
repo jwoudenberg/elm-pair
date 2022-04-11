@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "elm-pair"
-version = "16.0.0"
+version = "17.0.0"
 dependencies = [
  "abomonation",
  "abomonation_derive",
