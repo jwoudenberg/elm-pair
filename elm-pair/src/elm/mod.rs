@@ -122,13 +122,15 @@ pub struct Queries {
 }
 
 pub struct Refactor {
+    pub description: &'static str,
     replacements: Vec<(Buffer, Range<usize>, String)>,
     files_to_open: Vec<PathBuf>,
 }
 
 impl Refactor {
-    fn new() -> Refactor {
+    fn new(description: &'static str) -> Refactor {
         Refactor {
+            description,
             replacements: Vec::new(),
             files_to_open: Vec::new(),
         }
@@ -222,12 +224,10 @@ impl RefactorEngine {
         debug_print_tree_changes(diff, &changes);
         #[cfg(not(debug_assertions))]
         if changes.old_removed.is_empty() && changes.new_added.is_empty() {
-            return Ok(Refactor::new());
+            return Ok(Refactor::new("empty refactor"));
         }
         let before = attach_kinds(&changes.old_removed);
         let after = attach_kinds(&changes.new_added);
-        let mut refactor = Refactor::new();
-
         match (Change {
             before: before.as_slice(),
             after: after.as_slice(),
@@ -262,6 +262,8 @@ impl RefactorEngine {
                     &diff.new,
                     new_import_node,
                 )?;
+                let mut refactor =
+                    Refactor::new("changed exposing list of import");
                 refactors::changed_values_in_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -269,7 +271,8 @@ impl RefactorEngine {
                     &diff.new,
                     old_import,
                     new_import,
-                )?
+                )?;
+                Ok(refactor)
             }
             Change {
                 before: [TYPE_IDENTIFIER],
@@ -301,6 +304,7 @@ impl RefactorEngine {
                             "parsing qualified value node using query failed"
                         )
                     })??;
+                let mut refactor = Refactor::new("added module qualifier");
                 if old_name.name == qualified_name.unqualified_name.name {
                     refactors::added_module_qualifier_to_name::refactor(
                         &self.queries,
@@ -308,8 +312,9 @@ impl RefactorEngine {
                         &mut refactor,
                         &diff.new,
                         qualified_name,
-                    )?
+                    )?;
                 }
+                Ok(refactor)
             }
             Change {
                 before: [MODULE_NAME_SEGMENT, DOT, .., TYPE_IDENTIFIER],
@@ -348,6 +353,7 @@ impl RefactorEngine {
                             "parsing qualified value node using query failed"
                         )
                     })??;
+                let mut refactor = Refactor::new("removed module qualifier");
                 if new_reference.name == qualified_name.unqualified_name.name {
                     refactors::removed_module_qualifier_from_name::refactor(
                         &self.queries,
@@ -356,8 +362,9 @@ impl RefactorEngine {
                         &diff.new,
                         node,
                         qualified_name,
-                    )?
+                    )?;
                 }
+                Ok(refactor)
             }
             Change {
                 before: [],
@@ -369,13 +376,16 @@ impl RefactorEngine {
                     &diff.new,
                     changes.new_parent,
                 )?;
+                let mut refactor =
+                    Refactor::new("added exposing list to import");
                 refactors::added_exposing_list_to_import::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
                     import,
-                )?
+                )?;
+                Ok(refactor)
             }
             Change {
                 before: [EXPOSING_LIST],
@@ -387,13 +397,16 @@ impl RefactorEngine {
                     &diff.old,
                     changes.old_parent,
                 )?;
+                let mut refactor =
+                    Refactor::new("removed exposing list from import");
                 refactors::removed_exposing_list_from_import::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
                     &mut refactor,
                     &diff.new,
                     import,
-                )?
+                )?;
+                Ok(refactor)
             }
             Change {
                 before: [],
@@ -415,6 +428,8 @@ impl RefactorEngine {
                     })?;
                 let import =
                     parse_import_node(&self.queries, &diff.new, import_node)?;
+                let mut refactor =
+                    Refactor::new("exposed constructors in import");
                 refactors::added_constructors_to_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -423,6 +438,7 @@ impl RefactorEngine {
                     import,
                     type_name,
                 )?;
+                Ok(refactor)
             }
             Change {
                 before: [EXPOSED_UNION_CONSTRUCTORS],
@@ -448,6 +464,8 @@ impl RefactorEngine {
                     &diff.old,
                     old_import_node,
                 )?;
+                let mut refactor =
+                    Refactor::new("stopped exposing constructors in import");
                 refactors::removed_constructors_from_exposing_list::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -455,7 +473,8 @@ impl RefactorEngine {
                     &diff.new,
                     old_import,
                     type_name,
-                )?
+                )?;
+                Ok(refactor)
             }
             Change {
                 before: [] | [AS_CLAUSE],
@@ -496,6 +515,7 @@ impl RefactorEngine {
                     old_import_node,
                 )?;
                 let old_aliased_name = old_import.aliased_name();
+                let mut refactor = Refactor::new("changed as-clause of import");
                 refactors::changed_as_clause::refactor(
                     &self.queries,
                     &mut refactor,
@@ -503,6 +523,7 @@ impl RefactorEngine {
                     old_aliased_name,
                     new_aliased_name,
                 )?;
+                Ok(refactor)
             }
             Change {
                 before: [.., MODULE_NAME_SEGMENT],
@@ -530,6 +551,7 @@ impl RefactorEngine {
                             "parsing qualified value node using query failed"
                         )
                     })??;
+                let mut refactor = Refactor::new("changed module qualifier");
                 refactors::changed_module_qualifier::refactor(
                     &self.queries,
                     &mut refactor,
@@ -537,6 +559,7 @@ impl RefactorEngine {
                     old_name,
                     new_name,
                 )?;
+                Ok(refactor)
             }
             Change {
                 before: [LOWER_CASE_IDENTIFIER],
@@ -558,6 +581,7 @@ impl RefactorEngine {
                         .into(),
                     kind: NameKind::Value,
                 };
+                let mut refactor = Refactor::new("changed name of value");
                 refactors::changed_name::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -570,6 +594,7 @@ impl RefactorEngine {
                     new_name,
                     &changes.new_parent,
                 )?;
+                Ok(refactor)
             }
             Change {
                 before: [TYPE_IDENTIFIER],
@@ -590,6 +615,7 @@ impl RefactorEngine {
                         .into(),
                     kind: NameKind::Type,
                 };
+                let mut refactor = Refactor::new("changed name of type");
                 refactors::changed_name::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -602,6 +628,7 @@ impl RefactorEngine {
                     new_name,
                     &changes.new_parent,
                 )?;
+                Ok(refactor)
             }
             Change {
                 before: [CONSTRUCTOR_IDENTIFIER],
@@ -622,6 +649,7 @@ impl RefactorEngine {
                         .into(),
                     kind: NameKind::Constructor,
                 };
+                let mut refactor = Refactor::new("changed name of constructor");
                 refactors::changed_name::refactor(
                     &self.queries,
                     &mut self.dataflow_computation,
@@ -634,6 +662,7 @@ impl RefactorEngine {
                     new_name,
                     &changes.new_parent,
                 )?;
+                Ok(refactor)
             }
             _ => {
                 let unimported_qualifiers = find_unimported_qualifiers(
@@ -641,6 +670,9 @@ impl RefactorEngine {
                     &diff.new,
                     changes.new_parent,
                 )?;
+                let mut refactor = Refactor::new(
+                    "added qualified value from unimported module",
+                );
                 if !unimported_qualifiers.is_empty() {
                     refactors::typed_unimported_qualified_value::refactor(
                         &mut self.dataflow_computation,
@@ -649,9 +681,9 @@ impl RefactorEngine {
                         unimported_qualifiers,
                     )?;
                 }
+                Ok(refactor)
             }
         }
-        Ok(refactor)
     }
 
     pub fn init_buffer(

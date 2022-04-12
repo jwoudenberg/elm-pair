@@ -104,11 +104,16 @@ impl MsgLoop for AnalysisLoop {
                     }
                 }),
             );
+            let refactor_description = refactor.description;
             let result = refactor.edits(&mut refactored_code);
             match result {
                 Ok((edits, files_to_open)) => {
                     if !files_to_open.is_empty() {
-                        log::info!("directing editor to open files");
+                        log::info!(
+                            "open {} files in preparation of refactor: {}",
+                            changed_buffers.len(),
+                            refactor_description
+                        );
                         editor_driver.open_files(files_to_open);
                         return Ok(());
                     }
@@ -135,7 +140,11 @@ impl MsgLoop for AnalysisLoop {
                         return Ok(());
                     }
 
-                    log::info!("applying refactor to editor");
+                    log::info!(
+                        "edit {} buffers to refactor: {}",
+                        changed_buffers.len(),
+                        refactor_description
+                    );
 
                     if editor_driver.apply_edits(edits.clone()) {
                         for (buffer, mut code) in refactored_code.into_iter() {
