@@ -56,6 +56,13 @@
         };
         elm-pair-app = utils.lib.mkApp { drv = elm-pair; };
 
+        licensing-server = pkgs.buildGoModule {
+          name = "licensing-server";
+          src = ./licensing-server;
+          vendorSha256 = null;
+        };
+        licensing-server-app = utils.lib.mkApp { drv = licensing-server; };
+
         neovim-plugin = pkgs.vimUtils.buildVimPlugin {
           name = "elm-pair";
           src = ./editor-integrations/neovim;
@@ -84,12 +91,14 @@
         defaultPackage = elm-pair;
         packages.site = site;
         packages.elm-pair = elm-pair;
+        packages.licensing-server = licensing-server;
         packages.neovim-plugin = neovim-plugin;
         packages.vscode-extension = vscode-extension;
 
         # Apps
-        apps.elm-pair = elm-pair-app;
         defaultApp = elm-pair-app;
+        apps.elm-pair = elm-pair-app;
+        apps.licensing-server = licensing-server-app;
 
         # Checks
         checks.vscode-extension = pkgs.runCommand "vscode-extension" { } ''
@@ -117,6 +126,9 @@
             # Site development
             pkgs.zola
             pkgs.python38
+
+            # Licensing server
+            pkgs.go
           ];
         };
       });
