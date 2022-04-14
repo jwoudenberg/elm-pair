@@ -47,16 +47,22 @@ func main() {
 		return
 	}
 
+	httpClient := http.Client{Timeout: 10 * time.Second}
+
+	http.HandleFunc("/v1/ping",
+		func(writer http.ResponseWriter, r *http.Request) {
+			responder := Responder{writer, httpClient, healthChecksIoUuid}
+			responder.success("pong")
+		})
 	http.HandleFunc("/v1/generate-license-key",
 		func(writer http.ResponseWriter, r *http.Request) {
-			httpClient := http.Client{Timeout: 10 * time.Second}
 			responder := Responder{writer, httpClient, healthChecksIoUuid}
-			handler(pkey, paddleKey, responder, r)
+			generateLicenseKeyHandler(pkey, paddleKey, responder, r)
 		})
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
-func handler(
+func generateLicenseKeyHandler(
 	pkey *ecdsa.PrivateKey,
 	paddleKey *rsa.PublicKey,
 	w Responder,
