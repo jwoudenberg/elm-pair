@@ -41,9 +41,17 @@ func main() {
 		return
 	}
 
+	healthChecksIoUuid := os.Getenv("ELM_PAIR_LICENSING_SERVER_HEALTH_CHECKS_IO_UUID")
+	if healthChecksIoUuid == "" {
+		log.Fatal("not set: ELM_PAIR_LICENSING_SERVER_HEALTH_CHECKS_IO_UUID")
+		return
+	}
+
 	http.HandleFunc("/v1/generate-license-key",
-		func(w http.ResponseWriter, r *http.Request) {
-			handler(pkey, paddleKey, w, r)
+		func(writer http.ResponseWriter, r *http.Request) {
+			httpClient := http.Client{Timeout: 10 * time.Second}
+			responder := Responder{writer, httpClient, healthChecksIoUuid}
+			handler(pkey, paddleKey, responder, r)
 		})
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
@@ -51,51 +59,71 @@ func main() {
 func handler(
 	pkey *ecdsa.PrivateKey,
 	paddleKey *rsa.PublicKey,
-	w http.ResponseWriter,
+	w Responder,
 	r *http.Request,
 ) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024)
+	r.Body = http.MaxBytesReader(w.writer, r.Body, 1024*1024)
 	if err := r.ParseForm(); err != nil {
-		writeErrorResponse(w, "failed to parse formdata")
+		w.error("failed to parse formdata")
 		return
 	}
 
 	err := verifyPaddleSig(r.Form, paddleKey)
 	if err != nil {
-		writeErrorResponse(w, "invalid paddle signature")
+		w.error("invalid paddle signature")
 		return
 	}
 
 	orderId := r.FormValue("p_order_id")
 	if orderId == "" {
-		writeErrorResponse(w, "missing p_order_id field")
+		w.error("missing p_order_id field")
 		return
 	}
 
 	eventTimeStr := r.FormValue("p_event_time")
 	if eventTimeStr == "" {
-		writeErrorResponse(w, "missing p_event_time field")
+		w.error("missing p_event_time field")
 		return
 	}
 
 	layout := "2006-01-02 15:04:05"
 	eventTime, err := time.Parse(layout, eventTimeStr)
 	if err != nil {
-		writeErrorResponse(w, fmt.Sprintf("failed to parse p_event_time %s: %s", eventTimeStr, err))
+		w.error(fmt.Sprintf("failed to parse p_event_time %s: %s", eventTimeStr, err))
 		return
 	}
 
 	licenseKey, err := generateLicenseKey(pkey, orderId, eventTime)
 	if err != nil {
-		writeErrorResponse(w, fmt.Sprintf("failed to generate license key: %s", err))
+		w.error(fmt.Sprintf("failed to generate license key: %s", err))
 	}
 
-	fmt.Fprintf(w, "%s", licenseKey)
+	w.success(licenseKey)
 }
 
-func writeErrorResponse(w http.ResponseWriter, err string) {
-	http.Error(w, err, http.StatusBadRequest)
-	return
+type Responder struct {
+	writer             http.ResponseWriter
+	httpClient         http.Client
+	healthChecksIoUuid string
+}
+
+func (w Responder) success(res string) {
+	url := fmt.Sprintf("https://hc-ping.com/%s", w.healthChecksIoUuid)
+	_, err := w.httpClient.Head(url)
+	if err != nil {
+		log.Println(err)
+	}
+	fmt.Fprintf(w.writer, "%s", res)
+}
+
+func (w Responder) error(msg string) {
+	url := fmt.Sprintf("https://hc-ping.com/%s/fail", w.healthChecksIoUuid)
+	log.Println(url)
+	_, err := w.httpClient.Post(url, "text/plain;charset=UTF-8", bytes.NewBuffer([]byte(msg)))
+	if err != nil {
+		log.Println(err)
+	}
+	http.Error(w.writer, "Internal Server Error", http.StatusInternalServerError)
 }
 
 func generateLicenseKey(pkey *ecdsa.PrivateKey, orderId string, orderTime time.Time) (string, error) {

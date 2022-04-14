@@ -18,6 +18,7 @@ Uib9P30h8MIiAYTNqkTmhMDfmKChsjcAHZIBJwRqmX165efdkI7GNEjDMiM3fnUg
 +gn/kQ8zm/iGzrZEo1BBsMeHTb0Md05mIP1zq3upPxgRlnZjzBCV8xTBrFF5jfdv
 IQIDAQAB
 -----END PUBLIC KEY-----'
+export ELM_PAIR_LICENSING_SERVER_HEALTH_CHECKS_IO_UUID='3546eacf-2698-4f5a-bfbb-09a9e0372313'
 
 # Watch source files and recompile when any change.
 git ls-files | entr -ccr -s "go build && go run ."
