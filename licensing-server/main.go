@@ -86,16 +86,16 @@ func generateLicenseKeyHandler(
 		return
 	}
 
-	eventTimeStr := r.FormValue("p_event_time")
+	eventTimeStr := r.FormValue("event_time")
 	if eventTimeStr == "" {
-		w.error("missing p_event_time field")
+		w.error("missing event_time field")
 		return
 	}
 
 	layout := "2006-01-02 15:04:05"
 	eventTime, err := time.Parse(layout, eventTimeStr)
 	if err != nil {
-		w.error(fmt.Sprintf("failed to parse p_event_time %s: %s", eventTimeStr, err))
+		w.error(fmt.Sprintf("failed to parse event_time %s: %s", eventTimeStr, err))
 		return
 	}
 
