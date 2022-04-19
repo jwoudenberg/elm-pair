@@ -56,8 +56,8 @@ impl<R: Read, W: 'static + Write + Send> editors::Editor for Neovim<R, W> {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "neovim"
+    fn kind(&self) -> editors::Kind {
+        editors::Kind::Neovim
     }
 
     fn listen<F>(mut self, mut on_event: F) -> Result<(), crate::Error>

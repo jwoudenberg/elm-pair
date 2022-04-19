@@ -36,7 +36,8 @@ pub trait Editor {
     // Obtain a driver for sending commands to the editor.
     fn driver(&self) -> Self::Driver;
 
-    fn name(&self) -> &'static str;
+    // Get the kind of editor this is.
+    fn kind(&self) -> Kind;
 }
 
 pub enum Event {

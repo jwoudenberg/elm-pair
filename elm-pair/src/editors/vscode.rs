@@ -57,8 +57,8 @@ impl<R: Read, W: 'static + Write + Send> editors::Editor for VsCode<R, W> {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "vs-code"
+    fn kind(&self) -> editors::Kind {
+        editors::Kind::VsCode
     }
 
     fn listen<F>(mut self, mut on_event: F) -> Result<(), crate::Error>

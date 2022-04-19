@@ -104,7 +104,10 @@ impl EditorListenerLoop {
     ) -> Result<(), Error> {
         log::info!(
             "editor {} connected and given id {:?}",
-            editor.name(),
+            match editor.kind() {
+                editors::Kind::VsCode => "vs-code",
+                editors::Kind::Neovim => "neovim",
+            },
             editor_id
         );
         let driver = editor.driver();
