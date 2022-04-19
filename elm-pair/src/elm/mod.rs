@@ -22,7 +22,6 @@ pub mod module_name;
 pub mod project;
 pub mod queries;
 pub mod refactors;
-pub mod type_checking;
 
 // Macro for defining constants for the elm tree-sitter node kinds. This macro
 // ensures a test is added checking each constant is correct.
@@ -36,7 +35,10 @@ macro_rules! node_constants {
     };
 
     ($($name:ident $(($kind_name:expr))? = $kind_id:expr;)+) => {
-        $(const $name: u16 = $kind_id;)+
+        $(
+            #[allow(dead_code)]
+            const $name: u16 = $kind_id;
+        )+
 
         #[cfg(test)]
         mod kind_constants {

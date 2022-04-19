@@ -8,6 +8,7 @@ use std::path::Path;
 pub struct ModuleName(pub String);
 
 impl ModuleName {
+    #[allow(dead_code)]
     pub fn from_str(name: &str) -> ModuleName {
         ModuleName(name.to_string())
     }
