@@ -10,14 +10,13 @@
 // containing original and refactored Elm code (points 1 and 3).
 
 use crate::analysis_thread;
-use crate::analysis_thread::{EditorDriver, Msg};
+use crate::analysis_thread::Msg;
+use crate::editors;
 use crate::elm::compiler::Compiler;
 use crate::lib::included_answer_test as ia_test;
 use crate::lib::log;
 use crate::lib::simulation;
-use crate::lib::source_code::{
-    update_bytes, Buffer, Edit, EditorId, SourceFileSnapshot,
-};
+use crate::lib::source_code::{update_bytes, Buffer, Edit, SourceFileSnapshot};
 use crate::MsgLoop;
 use std::collections::HashMap;
 use std::iter::FromIterator;
@@ -74,7 +73,7 @@ impl MockEditorDriver {
     }
 }
 
-impl EditorDriver for MockEditorDriver {
+impl editors::Driver for MockEditorDriver {
     fn apply_edits(&self, edits: Vec<Edit>) -> bool {
         let mut apply_edits_calls = self.apply_edits_calls.lock().unwrap();
         apply_edits_calls.push(edits);
@@ -94,7 +93,7 @@ fn run_simulation_test_helper(
     let (sender, mut receiver) = mpsc::channel();
     let compiler = Compiler::new().unwrap();
     let mut analysis_loop = analysis_thread::create(compiler)?;
-    let editor_id = EditorId::new(0);
+    let editor_id = editors::Id::new(0);
     let editor_driver = MockEditorDriver::new();
 
     let mut opt_simulation = None;

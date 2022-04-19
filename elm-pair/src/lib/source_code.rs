@@ -1,3 +1,4 @@
+use crate::editors;
 use crate::lib::log;
 use crate::lib::log::Error;
 use abomonation_derive::Abomonation;
@@ -12,19 +13,8 @@ use tree_sitter::{InputEdit, Node, Tree};
     Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
 pub struct Buffer {
-    pub editor_id: EditorId,
+    pub editor_id: editors::Id,
     pub buffer_id: u32,
-}
-
-#[derive(
-    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-pub struct EditorId(u32);
-
-impl EditorId {
-    pub fn new(id: u32) -> EditorId {
-        EditorId(id)
-    }
 }
 
 #[derive(Clone)]

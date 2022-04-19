@@ -1,10 +1,11 @@
+use crate::editors;
 use crate::elm::io::ExportedName;
 use crate::elm::module_name::ModuleName;
 use crate::elm::queries::exports;
 use crate::elm::queries::imports;
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use std::io::Read;
 use std::path::Path;
 use tree_sitter::QueryCursor;
@@ -47,7 +48,7 @@ fn parse_bytes(
         tree,
         // TODO: Remove need to make up a buffer and revision here.
         buffer: Buffer {
-            editor_id: EditorId::new(0),
+            editor_id: editors::Id::new(0),
             buffer_id: 0,
         },
         revision: 0,

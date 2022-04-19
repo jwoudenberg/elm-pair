@@ -1,4 +1,5 @@
 use crate::analysis_thread::{SourceFileDiff, TreeChanges};
+use crate::editors;
 use crate::elm::compiler::Compiler;
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
@@ -7,7 +8,7 @@ use crate::elm::queries::imports::{ExposedConstructors, Import};
 use crate::elm::queries::qualified_values::QualifiedName;
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::{Buffer, Edit, EditorId, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, Edit, SourceFileSnapshot};
 use core::ops::Range;
 use ropey::Rope;
 use std::collections::HashMap;
@@ -220,7 +221,7 @@ impl RefactorEngine {
         diff: &SourceFileDiff,
         changes: TreeChanges<'a>,
         buffers: &HashMap<Buffer, SourceFileSnapshot>,
-        buffers_by_path: &HashMap<(EditorId, PathBuf), Buffer>,
+        buffers_by_path: &HashMap<(editors::Id, PathBuf), Buffer>,
     ) -> Result<Refactor, Error> {
         #[cfg(debug_assertions)]
         debug_print_tree_changes(diff, &changes);

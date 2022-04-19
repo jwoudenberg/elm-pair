@@ -1,8 +1,9 @@
+use crate::editors;
 use crate::elm;
 use crate::elm::compiler::Compiler;
 use crate::lib::log;
 use crate::lib::source_code::{
-    Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot,
+    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
 use crate::{Error, MsgLoop};
 use std::collections::hash_map;
@@ -17,8 +18,8 @@ pub enum Msg {
         refactor: RefactorAllowed,
     },
     ThreadFailed(Error),
-    EditorConnected(EditorId, Box<dyn EditorDriver>),
-    EditorDisconnected(EditorId),
+    EditorConnected(editors::Id, Box<dyn editors::Driver>),
+    EditorDisconnected(editors::Id),
     OpenedNewSourceFile {
         path: PathBuf,
         code: SourceFileSnapshot,
@@ -47,10 +48,10 @@ pub fn create(compiler: Compiler) -> Result<AnalysisLoop, Error> {
 
 pub struct AnalysisLoop {
     buffers: HashMap<Buffer, SourceFileSnapshot>,
-    buffers_by_path: HashMap<(EditorId, PathBuf), Buffer>,
+    buffers_by_path: HashMap<(editors::Id, PathBuf), Buffer>,
     last_change: Option<(Buffer, RefactorAllowed)>,
     last_compiling_code: HashMap<Buffer, SourceFileSnapshot>,
-    editor_driver: HashMap<EditorId, Box<dyn EditorDriver>>,
+    editor_driver: HashMap<editors::Id, Box<dyn editors::Driver>>,
     refactor_engine: elm::RefactorEngine,
     previous_refactors: Vec<Vec<Edit>>,
 }
@@ -248,13 +249,6 @@ impl AnalysisLoop {
         let diff = SourceFileDiff { old, new };
         Some(diff)
     }
-}
-
-// An API for sending commands to an editor. This is defined as a trait to
-// support different kinds of editors.
-pub trait EditorDriver: 'static + Send {
-    fn apply_edits(&self, edits: Vec<Edit>) -> bool;
-    fn open_files(&self, files: Vec<PathBuf>) -> bool;
 }
 
 pub struct SourceFileDiff {

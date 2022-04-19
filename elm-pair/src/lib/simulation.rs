@@ -2,9 +2,10 @@
 // it.
 
 use crate::analysis_thread::Msg;
+use crate::editors;
 use crate::lib::intersperse::Intersperse;
 use crate::lib::source_code::{
-    Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot,
+    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
 use core::ops::Range;
 use ropey::Rope;
@@ -144,7 +145,7 @@ impl SimulationRunner {
     fn add_edit(&mut self, range: &Range<usize>, new_bytes: String) {
         let edit = Edit::new(
             Buffer {
-                editor_id: EditorId::new(0),
+                editor_id: editors::Id::new(0),
                 buffer_id: 0,
             },
             &mut self.open_file.as_mut().unwrap().1.current_code.bytes,

@@ -1,10 +1,9 @@
-use crate::analysis_thread as analysis;
-use crate::editor_listener_thread::{Editor, EditorEvent};
+use crate::editors;
 use crate::lib::bytes;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{
-    Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot,
+    Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -22,7 +21,7 @@ const CMD_REFACTOR: u8 = 0;
 const CMD_OPEN_FILES: u8 = 1;
 
 pub struct VsCode<R, W> {
-    editor_id: EditorId,
+    editor_id: editors::Id,
     read: R,
     write: Arc<Mutex<W>>,
     buffers: HashMap<Buffer, SourceFileSnapshot>,
@@ -32,7 +31,7 @@ pub struct VsCode<R, W> {
 impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
     pub fn from_unix_socket(
         socket: UnixStream,
-        editor_id: EditorId,
+        editor_id: editors::Id,
     ) -> Result<Self, crate::Error> {
         let write = socket.try_clone().map_err(|err| {
             log::mk_err!("failed cloning vscode socket: {:?}", err)
@@ -48,7 +47,7 @@ impl VsCode<BufReader<UnixStream>, BufWriter<UnixStream>> {
     }
 }
 
-impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
+impl<R: Read, W: 'static + Write + Send> editors::Editor for VsCode<R, W> {
     type Driver = VsCodeDriver<W>;
 
     fn driver(&self) -> VsCodeDriver<W> {
@@ -64,7 +63,7 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
 
     fn listen<F>(mut self, mut on_event: F) -> Result<(), crate::Error>
     where
-        F: FnMut(EditorEvent) -> Result<(), crate::Error>,
+        F: FnMut(editors::Event) -> Result<(), crate::Error>,
     {
         loop {
             let mut u32_buffer = [0; 4];
@@ -105,8 +104,10 @@ impl<R: Read, W: 'static + Write + Send> Editor for VsCode<R, W> {
             self.buffers.insert(
                 buffer,
                 match &event {
-                    EditorEvent::ModifiedBuffer { code, .. } => code.clone(),
-                    EditorEvent::OpenedNewBuffer { code, .. } => code.clone(),
+                    editors::Event::ModifiedBuffer { code, .. } => code.clone(),
+                    editors::Event::OpenedNewBuffer { code, .. } => {
+                        code.clone()
+                    }
                 },
             );
 
@@ -120,7 +121,7 @@ pub struct VsCodeDriver<W> {
     buffer_paths: Arc<Mutex<HashMap<Buffer, PathBuf>>>,
 }
 
-impl<W> analysis::EditorDriver for VsCodeDriver<W>
+impl<W> editors::Driver for VsCodeDriver<W>
 where
     W: 'static + Write + Send,
 {
@@ -204,7 +205,7 @@ fn parse_new_file_msg<R: Read>(
     read: &mut R,
     buffer_paths: &mut HashMap<Buffer, PathBuf>,
     buffer: Buffer,
-) -> Result<EditorEvent, Error> {
+) -> Result<editors::Event, Error> {
     let path_len = bytes::read_u32(read)?;
     let path_string = bytes::read_string(read, path_len as usize)?;
     let path = PathBuf::from(path_string);
@@ -220,7 +221,7 @@ fn parse_new_file_msg<R: Read>(
             Ok(())
         },
     )?;
-    let change = EditorEvent::OpenedNewBuffer {
+    let change = editors::Event::OpenedNewBuffer {
         code: SourceFileSnapshot::new(buffer, bytes_builder.finish())?,
         path,
     };
@@ -230,7 +231,7 @@ fn parse_new_file_msg<R: Read>(
 fn parse_file_changed_msg<R: Read>(
     read: &mut R,
     mut code: SourceFileSnapshot,
-) -> Result<EditorEvent, Error> {
+) -> Result<editors::Event, Error> {
     let refactor_allowed = if bytes::read_u8(read)? == 0 {
         RefactorAllowed::No
     } else {
@@ -280,7 +281,7 @@ fn parse_file_changed_msg<R: Read>(
         old_end_position,
         new_end_position,
     })?;
-    let change = EditorEvent::ModifiedBuffer {
+    let change = editors::Event::ModifiedBuffer {
         code,
         refactor_allowed,
     };

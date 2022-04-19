@@ -1,3 +1,4 @@
+use crate::editors;
 use crate::elm::dependencies::DataflowComputation;
 use crate::elm::io::ExportedName;
 use crate::elm::module_name::ModuleName;
@@ -9,7 +10,7 @@ use crate::elm::{
 };
 use crate::lib::log;
 use crate::lib::log::Error;
-use crate::lib::source_code::{Buffer, EditorId, SourceFileSnapshot};
+use crate::lib::source_code::{Buffer, SourceFileSnapshot};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::FromIterator;
@@ -24,7 +25,7 @@ pub fn refactor(
     code: &SourceFileSnapshot,
     old_code: &SourceFileSnapshot,
     buffers: &HashMap<Buffer, SourceFileSnapshot>,
-    buffers_by_path: &HashMap<(EditorId, PathBuf), Buffer>,
+    buffers_by_path: &HashMap<(editors::Id, PathBuf), Buffer>,
     old_name: Name,
     new_name: Name,
     new_node: &Node,

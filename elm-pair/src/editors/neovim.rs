@@ -1,11 +1,10 @@
-use crate::analysis_thread as analysis;
-use crate::editor_listener_thread::{Editor, EditorEvent};
+use crate::editors;
 use crate::lib::bytes;
 use crate::lib::bytes::read_chunks;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::{
-    byte_to_point, Buffer, Edit, EditorId, RefactorAllowed, SourceFileSnapshot,
+    byte_to_point, Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
 use byteorder::ReadBytesExt;
 use messagepack::read_tuple;
@@ -20,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use tree_sitter::InputEdit;
 
 pub struct Neovim<R, W> {
-    editor_id: EditorId,
+    editor_id: editors::Id,
     read: R,
     write: Arc<Mutex<W>>,
     buffers: HashMap<Buffer, SourceFileSnapshot>,
@@ -31,7 +30,7 @@ pub struct Neovim<R, W> {
 impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
     pub fn from_unix_socket(
         socket: UnixStream,
-        editor_id: EditorId,
+        editor_id: editors::Id,
     ) -> Result<Self, crate::Error> {
         let write = socket.try_clone().map_err(|err| {
             log::mk_err!("failed cloning neovim socket: {:?}", err)
@@ -48,7 +47,7 @@ impl Neovim<BufReader<UnixStream>, BufWriter<UnixStream>> {
     }
 }
 
-impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
+impl<R: Read, W: 'static + Write + Send> editors::Editor for Neovim<R, W> {
     type Driver = NeovimDriver<W>;
 
     fn driver(&self) -> NeovimDriver<W> {
@@ -63,7 +62,7 @@ impl<R: Read, W: 'static + Write + Send> Editor for Neovim<R, W> {
 
     fn listen<F>(mut self, mut on_event: F) -> Result<(), crate::Error>
     where
-        F: FnMut(EditorEvent) -> Result<(), crate::Error>,
+        F: FnMut(editors::Event) -> Result<(), crate::Error>,
     {
         while self.parse_msg(&mut on_event)? {}
         Ok(())
@@ -82,7 +81,7 @@ where
     // TODO handle neovim API versions
     fn parse_msg<F>(&mut self, on_event: &mut F) -> Result<bool, Error>
     where
-        F: FnMut(EditorEvent) -> Result<(), crate::Error>,
+        F: FnMut(editors::Event) -> Result<(), crate::Error>,
     {
         let array_len_res = rmp::decode::read_array_len(&mut self.read);
         // There's currently no way to check if there's more to read save by
@@ -117,7 +116,7 @@ where
         on_event: &mut F,
     ) -> Result<(), Error>
     where
-        F: FnMut(EditorEvent) -> Result<(), crate::Error>,
+        F: FnMut(editors::Event) -> Result<(), crate::Error>,
     {
         let mut buffer = [0u8; 30];
         let len = rmp::decode::read_str_len(&mut self.read)? as usize;
@@ -206,7 +205,7 @@ where
         on_event: &mut F,
     ) -> Result<(), Error>
     where
-        F: FnMut(EditorEvent) -> Result<(), crate::Error>,
+        F: FnMut(editors::Event) -> Result<(), crate::Error>,
     {
         read_tuple!(
             &mut self.read,
@@ -223,7 +222,7 @@ where
                 let new_code = if contains_entire_buffer {
                     let rope = self.read_rope()?;
                     let new_code = SourceFileSnapshot::new(buffer, rope)?;
-                    on_event(EditorEvent::OpenedNewBuffer {
+                    on_event(editors::Event::OpenedNewBuffer {
                         code: new_code.clone(),
                         path: self
                             .paths_for_new_buffers
@@ -242,7 +241,7 @@ where
                         &mut code.bytes,
                     )?;
                     code.apply_edit(edit)?;
-                    on_event(EditorEvent::ModifiedBuffer {
+                    on_event(editors::Event::ModifiedBuffer {
                         code: code.clone(),
                         refactor_allowed: self.refactor_allowed,
                     })?;
@@ -502,7 +501,7 @@ pub struct NeovimDriver<W> {
     write: Arc<Mutex<W>>,
 }
 
-impl<W> analysis::EditorDriver for NeovimDriver<W>
+impl<W> editors::Driver for NeovimDriver<W>
 where
     W: 'static + Write + Send,
 {
