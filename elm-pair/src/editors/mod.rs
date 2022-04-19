@@ -2,12 +2,12 @@ use crate::lib::source_code::Edit;
 use crate::lib::source_code::{RefactorAllowed, SourceFileSnapshot};
 use crate::Error;
 use abomonation_derive::Abomonation;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod neovim;
 pub mod vscode;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Kind {
     Neovim,
     VsCode,
@@ -53,6 +53,8 @@ pub enum Event {
 
 // An API for sending commands to an editor.
 pub trait Driver: 'static + Send {
+    fn kind(&self) -> Kind;
     fn apply_edits(&self, edits: Vec<Edit>) -> bool;
     fn open_files(&self, files: Vec<PathBuf>) -> bool;
+    fn show_file(&self, path: &Path) -> bool;
 }

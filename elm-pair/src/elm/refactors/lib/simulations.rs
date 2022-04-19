@@ -74,6 +74,10 @@ impl MockEditorDriver {
 }
 
 impl editors::Driver for MockEditorDriver {
+    fn kind(&self) -> editors::Kind {
+        editors::Kind::Neovim
+    }
+
     fn apply_edits(&self, edits: Vec<Edit>) -> bool {
         let mut apply_edits_calls = self.apply_edits_calls.lock().unwrap();
         apply_edits_calls.push(edits);
@@ -83,6 +87,10 @@ impl editors::Driver for MockEditorDriver {
     fn open_files(&self, files: Vec<PathBuf>) -> bool {
         let mut open_files_calls = self.open_files_calls.lock().unwrap();
         open_files_calls.push(files);
+        true
+    }
+
+    fn show_file(&self, _path: &Path) -> bool {
         true
     }
 }

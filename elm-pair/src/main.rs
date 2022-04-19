@@ -15,6 +15,7 @@ mod editor_listener_thread;
 mod editors;
 mod elm;
 mod lib;
+mod licensing;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_COMPILATION_CANDIDATES: usize = 10;

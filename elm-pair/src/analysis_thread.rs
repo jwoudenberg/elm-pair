@@ -5,6 +5,7 @@ use crate::lib::log;
 use crate::lib::source_code::{
     Buffer, Edit, RefactorAllowed, SourceFileSnapshot,
 };
+use crate::licensing;
 use crate::{Error, MsgLoop};
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -42,6 +43,7 @@ pub fn create(compiler: Compiler) -> Result<AnalysisLoop, Error> {
         editor_driver: HashMap::new(),
         refactor_engine: elm::RefactorEngine::new(compiler)?,
         previous_refactors: Vec::new(),
+        license: licensing::read_license(),
     };
     Ok(analysis_loop)
 }
@@ -54,6 +56,7 @@ pub struct AnalysisLoop {
     editor_driver: HashMap<editors::Id, Box<dyn editors::Driver>>,
     refactor_engine: elm::RefactorEngine,
     previous_refactors: Vec<Vec<Edit>>,
+    license: licensing::License,
 }
 
 impl MsgLoop for AnalysisLoop {
@@ -195,6 +198,10 @@ impl MsgLoop for AnalysisLoop {
             }
             Msg::ThreadFailed(err) => return Err(err),
             Msg::EditorConnected(editor_id, editor_driver) => {
+                licensing::show_license_info(
+                    &self.license,
+                    editor_driver.as_ref(),
+                );
                 self.editor_driver.insert(editor_id, editor_driver);
             }
             Msg::EditorDisconnected(editor_id) => {

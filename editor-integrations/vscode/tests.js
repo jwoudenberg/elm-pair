@@ -197,6 +197,23 @@ const suite = () => {
     assert.deepEqual(path2.value, "/My/SecondModule.elm");
   });
 
+  test("command to show file sent by elm-pair is executed", async () => {
+    const showFileBuffer = Buffer.concat([
+      int8ToChunk(2), // command id, indicating a an open files command.
+      int32ToChunk("/my/file.txt".length),
+      stringToChunk("/my/file.txt"),
+    ]);
+
+    // Feed the data to the extension as individual bytes to stress-test logic
+    // in extension responsible for blocking on limited data.
+    for (const byte of showFileBuffer) {
+      fakeSocket.push(Buffer.from([byte]));
+    }
+
+    const path1 = await fakeVscode.recordedShowFile.next();
+    assert.deepEqual(path1.value, "uri:/my/file.txt");
+  });
+
   test("deactivating plugin calls finishes the socket", async () => {
     deactivate();
     await new Promise((resolve, reject) => {
@@ -274,11 +291,13 @@ function makeFakeSocket() {
 
 function makeFakeVscode() {
   const editsStream = new stream.PassThrough({ objectMode: true });
-  const openFileStream = new stream.PassThrough({ objectMode: true });
+  const openFilesStream = new stream.PassThrough({ objectMode: true });
+  const showFileStream = new stream.PassThrough({ objectMode: true });
   const errorStream = new stream.PassThrough({ objectMode: true });
   const ret = {
     recordedEdits: editsStream[Symbol.asyncIterator](),
-    recordedOpenFiles: openFileStream[Symbol.asyncIterator](),
+    recordedOpenFiles: openFilesStream[Symbol.asyncIterator](),
+    recordedShowFile: showFileStream[Symbol.asyncIterator](),
     recordedErrors: errorStream[Symbol.asyncIterator](),
   };
   ret.vscode = {
@@ -294,12 +313,15 @@ function makeFakeVscode() {
         editsStream.write(edit);
       },
       openTextDocument(path) {
-        openFileStream.write(path);
+        openFilesStream.write(path);
       },
     },
     window: {
       showErrorMessage(err) {
         errorStream.write(err);
+      },
+      showTextDocument(path) {
+        showFileStream.write(path);
       },
     },
     WorkspaceEdit,

@@ -11,6 +11,7 @@ const MSG_FILE_CHANGED = 1;
 
 const CMD_REFACTOR = 0;
 const CMD_OPEN_FILES = 1;
+const CMD_SHOW_FILE = 2;
 
 const EDIT_METADATA = {
   label: "Change by Elm-pair",
@@ -160,6 +161,9 @@ async function* listenForCommands(vscode, setRefactorUnderway) {
       case CMD_OPEN_FILES:
         buffer = yield* processOpenFiles(vscode, buffer);
         break;
+      case CMD_SHOW_FILE:
+        buffer = yield* processShowFile(vscode, buffer);
+        break;
       default:
         await reportError(vscode, "Unknown command id: " + commandId);
         return;
@@ -204,6 +208,15 @@ async function* processOpenFiles(vscode, buffer) {
     [path, buffer] = yield* readString(buffer);
     await vscode.workspace.openTextDocument(path);
   }
+
+  return buffer;
+}
+
+async function* processShowFile(vscode, buffer) {
+  let amountOfFiles, path;
+
+  [path, buffer] = yield* readString(buffer);
+  await vscode.window.showTextDocument(vscode.Uri.file(path));
 
   return buffer;
 }

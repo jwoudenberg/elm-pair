@@ -19,6 +19,7 @@ const MSG_FILE_CHANGED: u8 = 1;
 
 const CMD_REFACTOR: u8 = 0;
 const CMD_OPEN_FILES: u8 = 1;
+const CMD_SHOW_FILE: u8 = 2;
 
 pub struct VsCode<R, W> {
     editor_id: editors::Id,
@@ -125,6 +126,10 @@ impl<W> editors::Driver for VsCodeDriver<W>
 where
     W: 'static + Write + Send,
 {
+    fn kind(&self) -> editors::Kind {
+        editors::Kind::VsCode
+    }
+
     fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
         let mut write_guard = crate::lock(&self.write);
         let mut write = write_guard.deref_mut();
@@ -137,6 +142,7 @@ where
             }
         }
     }
+
     fn open_files(&self, files: Vec<PathBuf>) -> bool {
         let mut write_guard = crate::lock(&self.write);
         let mut write = write_guard.deref_mut();
@@ -144,6 +150,18 @@ where
             Ok(()) => true,
             Err(err) => {
                 log::error!("failed to write open files to vscode: {:?}", err);
+                false
+            }
+        }
+    }
+
+    fn show_file(&self, path: &Path) -> bool {
+        let mut write_guard = crate::lock(&self.write);
+        let mut write = write_guard.deref_mut();
+        match write_show_file(&mut write, path) {
+            Ok(()) => true,
+            Err(err) => {
+                log::error!("failed to write show file to vscode: {:?}", err);
                 false
             }
         }
@@ -190,6 +208,14 @@ fn write_open_files<W: Write>(
     }
     write.flush().map_err(|err| {
         log::mk_err!("failed flushing open files cmd to vscode: {:?}", err)
+    })
+}
+
+fn write_show_file<W: Write>(write: &mut W, path: &Path) -> Result<(), Error> {
+    bytes::write_u8(write, CMD_SHOW_FILE)?;
+    write_path(write, path)?;
+    write.flush().map_err(|err| {
+        log::mk_err!("failed flushing show file cmd to vscode: {:?}", err)
     })
 }
 

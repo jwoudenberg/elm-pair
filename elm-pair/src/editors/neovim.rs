@@ -505,6 +505,10 @@ impl<W> editors::Driver for NeovimDriver<W>
 where
     W: 'static + Write + Send,
 {
+    fn kind(&self) -> editors::Kind {
+        editors::Kind::Neovim
+    }
+
     fn apply_edits(&self, refactor: Vec<Edit>) -> bool {
         match self.write_refactor(refactor) {
             Ok(()) => true,
@@ -519,6 +523,16 @@ where
             Ok(()) => true,
             Err(err) => {
                 log::error!("failed opening buffers in neovim: {:?}", err);
+                false
+            }
+        }
+    }
+
+    fn show_file(&self, path: &Path) -> bool {
+        match self.show_file_(path) {
+            Ok(()) => true,
+            Err(err) => {
+                log::error!("failed to create a buffer in neovim: {:?}", err);
                 false
             }
         }
@@ -645,6 +659,34 @@ where
                 log::mk_err!("failed writing to neovim: {:?}", err)
             })?;
         }
+
+        write.flush().map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?;
+        Ok(())
+    }
+
+    fn show_file_(&self, path: &Path) -> Result<(), Error> {
+        let mut write_guard = crate::lock(&self.write);
+        let write = write_guard.deref_mut();
+        rmp::encode::write_array_len(write, 3)?; // msgpack envelope
+        rmp::encode::write_i8(write, 2)?;
+
+        // nvim_command("tabnew {path}")
+        write_str(write, "nvim_command")?;
+        rmp::encode::write_array_len(write, 1)?; // args
+        let command = b"tabnew ";
+        let path_bytes = path.as_os_str().as_bytes();
+        rmp::encode::write_str_len(
+            write,
+            (command.len() + path_bytes.len()) as u32,
+        )?;
+        write.write_all(command).map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?;
+        write.write_all(path_bytes).map_err(|err| {
+            log::mk_err!("failed writing to neovim: {:?}", err)
+        })?;
 
         write.flush().map_err(|err| {
             log::mk_err!("failed writing to neovim: {:?}", err)

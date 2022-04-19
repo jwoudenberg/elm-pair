@@ -1,0 +1,12 @@
+Thank you for using Elm-pair!
+
+Please be aware that you're using the free version of Elm-pair, which allows
+non-commercial uses only. You can learn what uses qualify as non-commercial
+here:
+
+  https://github.com/jwoudenberg/elm-pair/blob/main/LICENSE
+
+If you would like to use Elm-pair for commercial work you can buy a commercial
+license here:
+
+  https://elm-pair.com/commercial-license/

@@ -36,9 +36,9 @@ impl Compiler {
         project_root: &Path,
         code: &ropey::Rope,
     ) -> Result<std::process::Output, Error> {
-        // Write lates code to temporary file. We don't compile the original source
-        // file, because the version stored on disk is likely ahead or behind the
-        // version in the editor.
+        // Write latest code to temporary file. We don't compile the original
+        // source file, because the version stored on disk is likely ahead or
+        // behind the version in the editor.
         let temp_path = crate::elm_pair_dir()?.join("Temp.elm");
         std::fs::write(&temp_path, &code.bytes().collect::<Vec<u8>>())
             .map_err(|err| {
