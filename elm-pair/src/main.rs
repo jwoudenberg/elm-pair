@@ -54,8 +54,8 @@ fn run() -> Result<(), Error> {
         None => {}
     }
 
-    let elm_pair_dir = elm_pair_dir()?;
-    let socket_path = elm_pair_dir.join("socket");
+    let cache_dir = cache_dir()?;
+    let socket_path = cache_dir.join("socket");
     // Print the socket we're listening on so the editor can connect to it.
     // Immediately flush stdout or we might write to stdout only after
     // daemonization, meaning the socket path would end up in the log instead of
@@ -71,8 +71,7 @@ fn run() -> Result<(), Error> {
 
     // Get an exclusive lock to ensure only one elm-pair is running at a time.
     // Otherwise, every time we start an editor we'll spawn a new elm-pair.
-    let did_obtain_lock =
-        unsafe { try_obtain_lock(elm_pair_dir.join("lock"))? };
+    let did_obtain_lock = unsafe { try_obtain_lock(cache_dir.join("lock"))? };
     if !did_obtain_lock {
         return Ok(());
     }
@@ -89,7 +88,7 @@ fn run() -> Result<(), Error> {
 
     // Fork a daemon process. The main process will exit returning the path to
     // the socket that can be used to communicate with the daemon.
-    let log_file_path = elm_pair_dir.join("log");
+    let log_file_path = cache_dir.join("log");
     daemonize(log_file_path)?;
 
     // Find an Elm compiler for elm-pair to use.
@@ -239,7 +238,7 @@ unsafe fn try_obtain_lock(path: PathBuf) -> Result<bool, Error> {
 // elm-pair versions because they will probably waste a bunch of resources on
 // calculating/storing the same information, but this seems an unlikely enough
 // situation to not invest more work in it for the moment.
-fn elm_pair_dir() -> Result<PathBuf, Error> {
+fn cache_dir() -> Result<PathBuf, Error> {
     let mut dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     dir.push("elm-pair");
     dir.push(VERSION);

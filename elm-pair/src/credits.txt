@@ -3,6 +3,7 @@ Elm-pair is made possible thanks to a number of dependencies under the MIT licen
 abomonation: Copyright (c) 2015 Frank McSherry
 abomonation_derive: https://github.com/mystor/abomonation_derive
 autocfg: Copyright (c) 2018 Josh Stone
+base64: Copyright (c) 2015 Alice Maz
 bimap: https://github.com/billyrieger/bimap-rs
 bitflags: Copyright (c) 2014 The Rust Project Developers
 cc: Copyright (c) 2014 Alex Crichton
@@ -62,6 +63,7 @@ wasi: https://github.com/bytecodealliance/wasi
 
 Elm-pair is also made possible thanks to a number of dependencies under the ISC license (license text printed below):
 
+ed25519-compact: Copyright (c) 2020-2021 Frank Denis
 inotify: Copyright (c) Hanno Braun and contributors
 inotify-sys: Copyright (c) Hanno Braun and contributors
 rdrand: Copyright © 2014, Simonas Kazlauskas
