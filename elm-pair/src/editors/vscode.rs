@@ -84,7 +84,7 @@ impl<R: Read, W: 'static + Write + Send> editors::Editor for VsCode<R, W> {
 
             let opt_code = self.buffers.remove(&buffer);
 
-            let event = match bytes::read_u8(&mut self.read)? {
+            let (event, new_code) = match bytes::read_u8(&mut self.read)? {
                 MSG_NEW_FILE => parse_new_file_msg(
                     &mut self.read,
                     &mut crate::lock(&self.buffer_paths),
@@ -102,15 +102,7 @@ impl<R: Read, W: 'static + Write + Send> editors::Editor for VsCode<R, W> {
                 other => Err(log::mk_err!("unknown vscode msg type {}", other)),
             }?;
 
-            self.buffers.insert(
-                buffer,
-                match &event {
-                    editors::Event::ModifiedBuffer { code, .. } => code.clone(),
-                    editors::Event::OpenedNewBuffer { code, .. } => {
-                        code.clone()
-                    }
-                },
-            );
+            self.buffers.insert(buffer, new_code);
 
             on_event(event)?;
         }
@@ -231,7 +223,7 @@ fn parse_new_file_msg<R: Read>(
     read: &mut R,
     buffer_paths: &mut HashMap<Buffer, PathBuf>,
     buffer: Buffer,
-) -> Result<editors::Event, Error> {
+) -> Result<(editors::Event, SourceFileSnapshot), Error> {
     let path_len = bytes::read_u32(read)?;
     let path_string = bytes::read_string(read, path_len as usize)?;
     let path = PathBuf::from(path_string);
@@ -247,17 +239,18 @@ fn parse_new_file_msg<R: Read>(
             Ok(())
         },
     )?;
-    let change = editors::Event::OpenedNewBuffer {
-        code: SourceFileSnapshot::new(buffer, bytes_builder.finish())?,
+    let code = SourceFileSnapshot::new(buffer, bytes_builder.finish())?;
+    let event = editors::Event::OpenedNewBuffer {
+        code: code.clone(),
         path,
     };
-    Ok(change)
+    Ok((event, code))
 }
 
 fn parse_file_changed_msg<R: Read>(
     read: &mut R,
     mut code: SourceFileSnapshot,
-) -> Result<editors::Event, Error> {
+) -> Result<(editors::Event, SourceFileSnapshot), Error> {
     let refactor_allowed = if bytes::read_u8(read)? == 0 {
         RefactorAllowed::No
     } else {
@@ -307,9 +300,9 @@ fn parse_file_changed_msg<R: Read>(
         old_end_position,
         new_end_position,
     })?;
-    let change = editors::Event::ModifiedBuffer {
-        code,
+    let event = editors::Event::ModifiedBuffer {
+        code: code.clone(),
         refactor_allowed,
     };
-    Ok(change)
+    Ok((event, code))
 }

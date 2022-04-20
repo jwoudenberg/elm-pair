@@ -4,6 +4,7 @@ use crate::editors;
 use crate::editors::neovim;
 use crate::editors::vscode;
 use crate::lib::log;
+use crate::lib::source_code::SourceFileSnapshot;
 use crate::Error;
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -114,47 +115,56 @@ impl EditorListenerLoop {
         let boxed = Box::new(driver);
         self.analysis_sender
             .send(analysis_thread::Msg::EditorConnected(editor_id, boxed))?;
-        editor.listen(|event| {
-            let new_code = match event {
-                editors::Event::ModifiedBuffer {
-                    code,
-                    refactor_allowed,
-                } => {
-                    self.analysis_sender.send(
-                        analysis_thread::Msg::SourceCodeModified {
-                            code: code.clone(),
-                            refactor: refactor_allowed,
-                        },
-                    )?;
-                    code
-                }
-                editors::Event::OpenedNewBuffer { code, path } => {
-                    log::info!("new buffer opened: {:?}", code.buffer);
-                    self.compilation_sender.send(
-                        compilation_thread::Msg::OpenedNewSourceFile {
-                            buffer: code.buffer,
-                            path: path.clone(),
-                        },
-                    )?;
-                    self.analysis_sender.send(
-                        analysis_thread::Msg::OpenedNewSourceFile {
-                            path,
-                            code: code.clone(),
-                        },
-                    )?;
-                    code
-                }
-            };
-            if !new_code.tree.root_node().has_error() {
-                self.compilation_sender.send(
-                    compilation_thread::Msg::CompilationRequested(new_code),
+        editor.listen(|event| match event {
+            editors::Event::ModifiedBuffer {
+                code,
+                refactor_allowed,
+            } => {
+                self.analysis_sender.send(
+                    analysis_thread::Msg::SourceCodeModified {
+                        code: code.clone(),
+                        refactor: refactor_allowed,
+                    },
                 )?;
+                self.maybe_request_compilation(code)
             }
-            Ok(())
+            editors::Event::OpenedNewBuffer { code, path } => {
+                log::info!("new buffer opened: {:?}", code.buffer);
+                self.compilation_sender.send(
+                    compilation_thread::Msg::OpenedNewSourceFile {
+                        buffer: code.buffer,
+                        path: path.clone(),
+                    },
+                )?;
+                self.analysis_sender.send(
+                    analysis_thread::Msg::OpenedNewSourceFile {
+                        path,
+                        code: code.clone(),
+                    },
+                )?;
+                self.maybe_request_compilation(code)
+            }
+            editors::Event::EnteredLicenseKey { key } => {
+                log::info!("license key entered");
+                self.analysis_sender
+                    .send(analysis_thread::Msg::EnteredLicenseKey(key))?;
+                Ok(())
+            }
         })?;
         self.analysis_sender
             .send(analysis_thread::Msg::EditorDisconnected(editor_id))?;
         log::info!("editor with id {:?} disconnected", editor_id);
+        Ok(())
+    }
+
+    fn maybe_request_compilation(
+        &self,
+        code: SourceFileSnapshot,
+    ) -> Result<(), Error> {
+        if !code.tree.root_node().has_error() {
+            self.compilation_sender
+                .send(compilation_thread::Msg::CompilationRequested(code))?;
+        }
         Ok(())
     }
 }
