@@ -145,7 +145,11 @@ func readPrivateKeyFromEnv() (ed25519.PrivateKey, error) {
 		return nil, errors.New("not set: ELM_PAIR_LICENSING_SERVER_SIGNING_KEY")
 	}
 
-	pkeyX509, _ := pem.Decode([]byte(pkeyPem))
+	return parsePrivateKey([]byte(pkeyPem))
+}
+
+func parsePrivateKey(pkeyPem []byte) (ed25519.PrivateKey, error) {
+	pkeyX509, _ := pem.Decode(pkeyPem)
 	data, err := x509.ParsePKCS8PrivateKey(pkeyX509.Bytes)
 	if err != nil {
 		return nil, err
