@@ -3,11 +3,9 @@ package main
 import (
 	"bytes"
 	"crypto"
-	"crypto/ecdsa"
-	"crypto/rand"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -63,7 +61,7 @@ func main() {
 }
 
 func generateLicenseKeyHandler(
-	pkey *ecdsa.PrivateKey,
+	pkey ed25519.PrivateKey,
 	paddleKey *rsa.PublicKey,
 	w Responder,
 	r *http.Request,
@@ -132,29 +130,30 @@ func (w Responder) error(msg string) {
 	http.Error(w.writer, "Internal Server Error", http.StatusInternalServerError)
 }
 
-func generateLicenseKey(pkey *ecdsa.PrivateKey, orderId string, orderTime time.Time) (string, error) {
+func generateLicenseKey(pkey ed25519.PrivateKey, orderId string, orderTime time.Time) (string, error) {
 	licenseVersion := 1
 	licenseKey := fmt.Sprintf("%d-%s-%d", licenseVersion, orderId, orderTime.Unix())
-	hash := sha256.Sum256([]byte(licenseKey))
-	signature, err := ecdsa.SignASN1(rand.Reader, pkey, hash[:])
-	if err != nil {
-		return "", err
-	}
+	signature := ed25519.Sign(pkey, []byte(licenseKey))
 
 	encodedSignature := base64.StdEncoding.EncodeToString(signature)
 	return fmt.Sprintf("%s-%s", licenseKey, encodedSignature), nil
 }
 
-func readPrivateKeyFromEnv() (*ecdsa.PrivateKey, error) {
+func readPrivateKeyFromEnv() (ed25519.PrivateKey, error) {
 	pkeyPem := os.Getenv("ELM_PAIR_LICENSING_SERVER_SIGNING_KEY")
 	if pkeyPem == "" {
 		return nil, errors.New("not set: ELM_PAIR_LICENSING_SERVER_SIGNING_KEY")
 	}
 
 	pkeyX509, _ := pem.Decode([]byte(pkeyPem))
-	pkey, err := x509.ParseECPrivateKey(pkeyX509.Bytes)
+	data, err := x509.ParsePKCS8PrivateKey(pkeyX509.Bytes)
 	if err != nil {
 		return nil, err
+	}
+
+	pkey, ok := data.(ed25519.PrivateKey)
+	if !ok {
+		return nil, errors.New("Could not parse ed25119 private key")
 	}
 
 	return pkey, nil
