@@ -5,9 +5,9 @@
 export ELM_PAIR_LICENSING_SERVER_PORT="8080"
 # These are test credentials, so don't worry / get your hopes up!
 
-export ELM_PAIR_LICENSING_SERVER_SIGNING_KEY='-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEICmsW6EitQMuynQs3FwoATwc/VyQJJk3np1xPvlSlJR3
------END PRIVATE KEY-----'
+ELM_PAIR_LICENSING_SERVER_SIGNING_KEY="$(cat testing_private_signing_key.pem)"
+export ELM_PAIR_LICENSING_SERVER_SIGNING_KEY
+
 export ELM_PAIR_LICENSING_SERVER_PADDLE_KEY='-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyAk9bR43XI1XXnDXsFHh
 NPM7Q9tx9oJ7uE5ZQa+DhXswSqHOQIeLMAL1hPH3aafNSuLR614qLcR+Lp2cZFyx
@@ -20,4 +20,4 @@ IQIDAQAB
 export ELM_PAIR_LICENSING_SERVER_HEALTH_CHECKS_IO_UUID='3546eacf-2698-4f5a-bfbb-09a9e0372313'
 
 # Watch source files and recompile when any change.
-git ls-files | entr -ccr -s "go build && go run ."
+git ls-files | entr -ccr -s "go build && go test && go run ."
