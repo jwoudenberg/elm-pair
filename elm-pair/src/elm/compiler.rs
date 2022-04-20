@@ -39,7 +39,7 @@ impl Compiler {
         // Write latest code to temporary file. We don't compile the original
         // source file, because the version stored on disk is likely ahead or
         // behind the version in the editor.
-        let temp_path = crate::elm_pair_dir()?.join("Temp.elm");
+        let temp_path = crate::cache_dir()?.join("Temp.elm");
         std::fs::write(&temp_path, &code.bytes().collect::<Vec<u8>>())
             .map_err(|err| {
                 log::mk_err!(
