@@ -34,6 +34,15 @@ fn read_license_err() -> Result<License, Error> {
     }
 }
 
+pub fn validate_license(key: &str) -> Result<License, Error> {
+    let license = parse_license(key)?;
+    let license_path = license_path()?;
+    std::fs::write(license_path, key).map_err(|err| {
+        log::mk_err!("failed to write license file: {:?}", err)
+    })?;
+    Ok(license)
+}
+
 const YEAR_IN_SECS: u64 = 365 * 24 * 60 * 60;
 const ED25519_PUBLIC_KEY: &[u8; 32] = include_bytes!("ed25519.public");
 

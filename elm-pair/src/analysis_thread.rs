@@ -26,6 +26,7 @@ pub enum Msg {
         code: SourceFileSnapshot,
     },
     CompilationSucceeded(SourceFileSnapshot),
+    EnteredLicenseKey(String),
 }
 
 impl From<Error> for Msg {
@@ -235,6 +236,14 @@ impl MsgLoop for AnalysisLoop {
                             }
                         }
                     };
+                }
+            }
+            Msg::EnteredLicenseKey(key_str) => {
+                match licensing::validate_license(&key_str) {
+                    Ok(key) => self.license = key,
+                    Err(err) => {
+                        log::error!("failed to register license key: {:?}", err)
+                    }
                 }
             }
         }

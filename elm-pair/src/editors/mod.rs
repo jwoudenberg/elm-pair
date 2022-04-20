@@ -49,6 +49,9 @@ pub enum Event {
         code: SourceFileSnapshot,
         refactor_allowed: RefactorAllowed,
     },
+    EnteredLicenseKey {
+        key: String,
+    },
 }
 
 // An API for sending commands to an editor.
