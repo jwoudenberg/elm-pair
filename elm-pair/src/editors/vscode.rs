@@ -16,6 +16,7 @@ use tree_sitter::{InputEdit, Point};
 
 const MSG_NEW_FILE: u8 = 0;
 const MSG_FILE_CHANGED: u8 = 1;
+const MSG_REGISTERED_KEY: u8 = 2;
 
 const CMD_REFACTOR: u8 = 0;
 const CMD_OPEN_FILES: u8 = 1;
@@ -67,42 +68,47 @@ impl<R: Read, W: 'static + Write + Send> editors::Editor for VsCode<R, W> {
         F: FnMut(editors::Event) -> Result<(), crate::Error>,
     {
         loop {
-            let mut u32_buffer = [0; 4];
-            let buffer_id = match self.read.read_exact(&mut u32_buffer) {
-                Ok(()) => std::primitive::u32::from_be_bytes(u32_buffer),
-                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    return Ok(());
+            let event = match bytes::read_u8(&mut self.read)? {
+                MSG_NEW_FILE => {
+                    let buffer =
+                        match parse_buffer(self.editor_id, &mut self.read)? {
+                            Some(buffer_) => buffer_,
+                            None => return Ok(()),
+                        };
+                    let (event, new_code) = parse_new_file_msg(
+                        &mut self.read,
+                        &mut crate::lock(&self.buffer_paths),
+                        buffer,
+                    )?;
+                    self.buffers.insert(buffer, new_code);
+                    Ok(event)
                 }
-                Err(err) => {
-                    return Err(log::mk_err!("could not read u8: {:?}", err));
-                }
-            };
-            let buffer = Buffer {
-                buffer_id,
-                editor_id: self.editor_id,
-            };
-
-            let opt_code = self.buffers.remove(&buffer);
-
-            let (event, new_code) = match bytes::read_u8(&mut self.read)? {
-                MSG_NEW_FILE => parse_new_file_msg(
-                    &mut self.read,
-                    &mut crate::lock(&self.buffer_paths),
-                    buffer,
-                ),
                 MSG_FILE_CHANGED => {
+                    let buffer =
+                        match parse_buffer(self.editor_id, &mut self.read)? {
+                            Some(buffer_) => buffer_,
+                            None => return Ok(()),
+                        };
+                    let opt_code = self.buffers.remove(&buffer);
                     if let Some(code) = opt_code {
-                        parse_file_changed_msg(&mut self.read, code)
+                        let (event, new_code) =
+                            parse_file_changed_msg(&mut self.read, code)?;
+                        self.buffers.insert(buffer, new_code);
+                        Ok(event)
                     } else {
                         Err(log::mk_err!(
                             "vscode MSG_FILE_CHANGED for unknown buffer"
                         ))
                     }
                 }
+                MSG_REGISTERED_KEY => {
+                    let key_len = bytes::read_u32(&mut self.read)?;
+                    let key =
+                        bytes::read_string(&mut self.read, key_len as usize)?;
+                    Ok(editors::Event::EnteredLicenseKey { key })
+                }
                 other => Err(log::mk_err!("unknown vscode msg type {}", other)),
             }?;
-
-            self.buffers.insert(buffer, new_code);
 
             on_event(event)?;
         }
@@ -217,6 +223,27 @@ fn write_path<W: Write>(write: &mut W, path: &Path) -> Result<(), Error> {
     write
         .write_all(path_bytes)
         .map_err(|err| log::mk_err!("failed writing path to vscode: {:?}", err))
+}
+
+fn parse_buffer<R: Read>(
+    editor_id: editors::Id,
+    read: &mut R,
+) -> Result<Option<Buffer>, Error> {
+    let mut u32_buffer = [0; 4];
+    let buffer_id = match read.read_exact(&mut u32_buffer) {
+        Ok(()) => std::primitive::u32::from_be_bytes(u32_buffer),
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return Ok(None);
+        }
+        Err(err) => {
+            return Err(log::mk_err!("could not read u8: {:?}", err));
+        }
+    };
+    let buffer = Buffer {
+        buffer_id,
+        editor_id,
+    };
+    Ok(Some(buffer))
 }
 
 fn parse_new_file_msg<R: Read>(

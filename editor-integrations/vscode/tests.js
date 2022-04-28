@@ -18,8 +18,8 @@ const suite = () => {
     const chunk = fakeSocket.read();
     assert.equal(int32FromChunk(chunk), 0);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 0);
     assert.equal(int8FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 0);
     assert.equal(int32FromChunk(fakeSocket.read()), "Existing.elm".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "Existing.elm");
     assert.equal(int32FromChunk(fakeSocket.read()), "elm!".length);
@@ -42,8 +42,8 @@ const suite = () => {
     };
     fakeVscode.simulateOpen(document);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int8FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), "New.elm".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "New.elm");
     assert.equal(int32FromChunk(fakeSocket.read()), "abcd".length);
@@ -68,8 +68,8 @@ const suite = () => {
     };
     fakeVscode.simulateChange(change);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 0);
+    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int32FromChunk(fakeSocket.read()), "Test.elm".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "Test.elm");
     assert.equal(int32FromChunk(fakeSocket.read()), "abcd".length);
@@ -99,8 +99,8 @@ const suite = () => {
     };
     fakeVscode.simulateChange(change);
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
+    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 2);
@@ -109,8 +109,8 @@ const suite = () => {
     assert.equal(int32FromChunk(fakeSocket.read()), "pqr".length);
     assert.equal(stringFromChunk(fakeSocket.read()), "pqr");
 
-    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
+    assert.equal(int32FromChunk(fakeSocket.read()), 2);
     assert.equal(int8FromChunk(fakeSocket.read()), 1);
     assert.equal(int32FromChunk(fakeSocket.read()), 5);
     assert.equal(int32FromChunk(fakeSocket.read()), 6);
