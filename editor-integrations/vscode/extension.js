@@ -8,6 +8,7 @@ const ELM_PAIR_NIX_PATH = "nix-build-put-path-to-elm-pair-here";
 
 const MSG_NEW_FILE = 0;
 const MSG_FILE_CHANGED = 1;
+const MSG_REGISTERED_KEY = 2;
 
 const CMD_REFACTOR = 0;
 const CMD_OPEN_FILES = 1;
@@ -26,6 +27,11 @@ module.exports = {
       const socketPath = await getElmPairSocket(context);
       const socket = await connectToElmPair(socketPath);
       deactivate_ = listenOnSocket(vscode, socket);
+      context.subscriptions.push(
+        vscode.commands.registerCommand("elmPair.registerKey", async () =>
+          onRegisterKey(socket, vscode)
+        )
+      );
     } catch (err) {
       reportError(vscode, err);
       throw err;
@@ -88,8 +94,8 @@ function listenOnSocket(vscode, socket) {
         changeEvent.reason === 2;
       for (const change of changeEvent.contentChanges) {
         const range = change.range;
-        writeInt32(socket, fileId);
         writeInt8(socket, MSG_FILE_CHANGED);
+        writeInt32(socket, fileId);
         writeInt8(socket, doNotRefactor ? 0 : 1);
         writeInt32(socket, range.start.line);
         writeInt32(socket, range.start.character);
@@ -116,10 +122,21 @@ function listenOnSocket(vscode, socket) {
 function onNewElmFile(socket, doc, elmFileIdsByPath) {
   const fileId = (elmFileIdsByPath[doc.fileName] =
     Object.keys(elmFileIdsByPath).length);
-  writeInt32(socket, fileId);
   writeInt8(socket, MSG_NEW_FILE);
+  writeInt32(socket, fileId);
   writeString(socket, doc.fileName);
   writeString(socket, doc.getText());
+}
+
+async function onRegisterKey(socket, vscode) {
+  const key = await vscode.window.showInputBox({
+    placeHolder: "Elm-pair license key",
+    prompt: "Enter your Elm-pair license key",
+  });
+  if (key !== undefined) {
+    writeInt8(socket, MSG_REGISTERED_KEY);
+    writeString(socket, key);
+  }
 }
 
 async function reportError(vscode, err) {
