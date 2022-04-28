@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-04-28: Release 18
+
+- Introduce license keys commercial licenses. If using the free license you'll see notification informing you of the limitations of the free license when starting elm-pair.
+
 ## 2022-04-11: Release 17
 
 - Fixed a bug where Elm-pair would get into a refactor loop, causing it to keep updating a file endlessly.
