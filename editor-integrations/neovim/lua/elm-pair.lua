@@ -56,6 +56,9 @@ local function start()
         end
     });
     if job_id <= 0 then error("calling `elm-pair` failed: " .. job_id) end
+
+    vim.cmd(
+        [[command! -bang -nargs=1 ElmPairActivateLicense call v:lua.elm_pair_entered_key(<q-args>)]])
 end
 
 function _G.elm_pair_start_changes()
@@ -64,6 +67,10 @@ end
 
 function _G.elm_pair_finished_changes()
     vim.fn.rpcnotify(_G.elm_pair_channel, "finished_refactor")
+end
+
+function _G.elm_pair_entered_key(license_key)
+    vim.fn.rpcnotify(_G.elm_pair_channel, "entered_key", license_key)
 end
 
 return {start = start}
