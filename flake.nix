@@ -111,7 +111,6 @@
         devShell = pkgs.mkShell {
           buildInputs = [
             rust-toolchain
-            pkgs.cargo-license
             pkgs.elmPackages.elm
             pkgs.elmPackages.elm-format
 

@@ -11,6 +11,9 @@ function fail {
 
 release="$1"
 
+# check we're crediting all dependencies
+./check-credits.sh
+
 # check elm-pair/Cargo.toml contains the expected version
 grep "^version = \"$release.0.0\"$" < elm-pair/Cargo.toml
 
