@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn finds_files() {
-        let dir = tempdir::TempDir::new("elm-pair-tests").unwrap().into_path();
+        let dir = crate::lib::tempdir::new();
 
         let mut files = vec![
             dir.join("top-level-path.txt"),

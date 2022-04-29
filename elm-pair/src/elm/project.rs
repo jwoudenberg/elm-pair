@@ -60,7 +60,7 @@ mod root_tests {
 
     #[test]
     fn finds_root_when_ancestor_directory_contains_elm_json() {
-        let dir = tempdir::TempDir::new("elm-pair-tests").unwrap().into_path();
+        let dir = crate::lib::tempdir::new();
 
         let path = dir.join("project/src/long/winding/path");
         std::fs::create_dir_all(&path).unwrap();
@@ -71,7 +71,7 @@ mod root_tests {
 
     #[test]
     fn returns_error_when_no_ancestor_directory_contains_elm_json() {
-        let dir = tempdir::TempDir::new("elm-pair-tests").unwrap().into_path();
+        let dir = crate::lib::tempdir::new();
 
         let path = dir.join("project/src/long/winding/path");
         std::fs::create_dir_all(&path).unwrap();

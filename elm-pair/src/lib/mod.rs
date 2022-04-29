@@ -9,3 +9,5 @@ pub mod source_code;
 pub mod included_answer_test;
 #[cfg(test)]
 pub mod simulation;
+#[cfg(test)]
+pub mod tempdir;

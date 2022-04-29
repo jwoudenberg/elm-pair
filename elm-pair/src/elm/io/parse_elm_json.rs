@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn application_elm_json() {
-        let dir = tempdir::TempDir::new("elm-pair-tests").unwrap().into_path();
+        let dir = crate::lib::tempdir::new();
         let elm_json = r#"
             {
                 "type": "application",
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn package_elm_json() {
-        let dir = tempdir::TempDir::new("elm-pair-tests").unwrap().into_path();
+        let dir = crate::lib::tempdir::new();
         let elm_json = r#"
             {
                 "type": "package",
