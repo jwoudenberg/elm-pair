@@ -7,21 +7,20 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-base64 = "^0.13.0"
-bimap = "^0.6.2"
-byteorder = "^1.4.3"
-differential-dataflow = "^0.12.0"
-dirs = "^4.0.0"
+base64 = { version = "^0.13.0", default-features = false, features = ["std"] }
+byteorder = { version = "^1.4.3", default-features = false, features = ["std"] }
+differential-dataflow = { version ="^0.12.0", default-features = false }
+dirs = { version = "^4.0.0", default-features = false }
 ed25519-compact = { version = "^1.0.11", default-features = false, features = ["std"] }
-libc = "^0.2.112"
-notify = "^4.0.17"
-rmp = "^0.8.10"
-ropey = "^1.3.1"
-serde = { version = "^1.0.131", features = ["derive"] }
-serde_json = "^1.0.73"
+libc = { version = "^0.2.112", default-features = false }
+notify = { version = "^4.0.17", default-features = false }
+rmp = { version = "^0.8.10", default-features = false, features = ["std"] }
+ropey = { version = "^1.3.1", default-features = false }
+serde = { version = "^1.0.131", features = ["derive"], default-features = false }
+serde_json = { version = "^1.0.73", default-features = false, features = ["std"] }
 timely = { version = "^0.12.0", default-features = false, features = ["bincode"] }
-tree-sitter = "^0.20.3"
-tree-sitter-elm = { git = "http://github.com/jwoudenberg/tree-sitter-elm", branch = "main" }
+tree-sitter = { version = "^0.20.3", default-features = false }
+tree-sitter-elm = { git = "http://github.com/jwoudenberg/tree-sitter-elm", branch = "main", default-features = false }
 
 [[bin]]
 name = "elm-pair"
