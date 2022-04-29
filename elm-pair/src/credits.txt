@@ -2,11 +2,9 @@ Elm-pair is made possible thanks to a number of dependencies under the MIT licen
 
 abomonation: Copyright (c) 2015 Frank McSherry
 abomonation_derive: https://github.com/mystor/abomonation_derive
-autocfg: Copyright (c) 2018 Josh Stone
 base64: Copyright (c) 2015 Alice Maz
-bimap: https://github.com/billyrieger/bimap-rs
+bincode: Copyright (c) 2014 Ty Overby
 bitflags: Copyright (c) 2014 The Rust Project Developers
-cc: Copyright (c) 2014 Alex Crichton
 cfg-if: Copyright (c) 2014 Alex Crichton
 crossbeam-channel: Copyright (c) 2019 The Crossbeam Project Developers
 crossbeam-utils: Copyright (c) 2019 The Crossbeam Project Developers
@@ -25,20 +23,23 @@ getopts: Copyright (c) 2014 The Rust Project Developers
 getrandom: Copyright 2018 Developers of the Rand project, Copyright (c) 2014 The Rust Project Developers
 iovec: Copyright (c) 2018 Carl Lerche
 itoa: https://github.com/dtolnay/itoa
+kernel32-sys: Copyright (c) 2015-2018 The winapi-rs Developers
 lazycell: Original work Copyright (c) 2014 The Rust Project Developers, Modified work Copyright (c) 2016-2018 Nikita Pekin and lazycell contributors
 lazy_static: Copyright (c) 2010 The Rust Project Developers
 libc: Copyright (c) 2014-2020 The Rust Project Developers
 log: Copyright (c) 2014 The Rust Project Developers
 mio: Copyright (c) 2014 Carl Lerche and other MIO contributors
 mio-extras: Copyright (c) 2017 Mio authors
+miow: Copyright (c) 2014 Alex Crichton
 net2: Copyright (c) 2014 The Rust Project Developers
 num-traits: Copyright (c) 2014 The Rust Project Developers
+paste: https://github.com/dtolnay/paste
 pin-project-lite: https://github.com/taiki-e/pin-project-lite
 pin-utils: Copyright (c) 2018 The pin-utils authors
 proc-macro2: Copyright (c) 2014 Alex Crichton
 quote: Copyright (c) 2016 The Rust Project Developers
-rand: Copyright 2018 Developers of the Rand project, Copyright (c) 2014 The Rust Project Developers
-rand_core: Copyright 2018 Developers of the Rand project, Copyright (c) 2014 The Rust Project Developers
+redox_syscall: Copyright (c) 2017 Redox OS Developers
+redox_users: Copyright (c) 2017 Jose Narvaez
 regex: Copyright (c) 2014 The Rust Project Developers
 regex-syntax: Copyright (c) 2014 The Rust Project Developers
 rmp: Copyright (c) 2017 Evgeny Safronov
@@ -48,25 +49,35 @@ serde_derive: https://github.com/serde-rs/serde
 serde_json: https://github.com/serde-rs/json
 slab: Copyright (c) 2019 Carl Lerche
 smallvec: Copyright (c) 2018 The Servo Project Developers
+str_indices: https://github.com/cessen/str_indices
 syn: https://github.com/dtolnay/syn
 synstructure: Copyright 2016 Nika Layzell
-tempdir: Copyright (c) 2014 The Rust Project Developers
+thiserror: https://github.com/dtolnay/thiserror
+thiserror-impl: https://github.com/dtolnay/thiserror
 timely: Copyright (c) 2014 Frank McSherry
 timely_bytes: Copyright (c) 2014 Frank McSherry
 timely_communication: Copyright (c) 2014 Frank McSherry
 timely_logging: Copyright (c) 2014 Frank McSherry
 tree-sitter: Copyright (c) 2018-2021 Max Brunsfeld
 tree-sitter-elm: Copyright (c) 2018 Kolja Lampe
-uncicode-width: Copyright (c) 2015 The Rust Project Developers
+unicode-width: Copyright (c) 2015 The Rust Project Developers
 unicode-xid: Copyright (c) 2015 The Rust Project Developers
 wasi: https://github.com/bytecodealliance/wasi
+winapi: Copyright (c) 2015-2018 The winapi-rs Developers
+winapi-i686-pc-windows-gnu: Copyright (c) 2015-2018 The winapi-rs Developers
+winapi-x86_64-pc-windows-gnu: Copyright (c) 2015-2018 The winapi-rs Developers
+ws2_32-sys: Copyright (c) 2015-2018 The winapi-rs Developers
 
 Elm-pair is also made possible thanks to a number of dependencies under the ISC license (license text printed below):
 
 ed25519-compact: Copyright (c) 2020-2021 Frank Denis
 inotify: Copyright (c) Hanno Braun and contributors
 inotify-sys: Copyright (c) Hanno Braun and contributors
-rdrand: Copyright © 2014, Simonas Kazlauskas
+
+Elm-pair is also made possible thanks to a number of dependencies under the BSD-3 license (license text printed below):
+
+fuchsia-zircon: https://crates.io/crates/fuchsia-zircon
+fuchsia-zircon-sys: https://crates.io/crates/fuchsia-zircon-sys
 
 The MIT License:
     Permission is hereby granted, free of charge, to any
@@ -105,3 +116,29 @@ The ISC License:
     WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
     ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
     IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The BSD-3 License:
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    1. Redistributions of source code must retain the above copyright notice, this
+       list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimer in the documentation
+       and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its
+       contributors may be used to endorse or promote products derived from
+       this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+    FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+    OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
