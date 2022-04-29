@@ -7,6 +7,7 @@ use crate::lib::dataflow;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::Buffer;
+use differential_dataflow::input::Input;
 use differential_dataflow::operators::arrange::ArrangeBySelf;
 use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
@@ -24,6 +25,10 @@ pub struct DataflowComputation {
     // library. Differential-dataflow supports having multiple workers share
     // work, but we don't make use of that.
     worker: dataflow::Worker,
+    graph: DataflowGraph,
+}
+
+struct DataflowGraph {
     // These probes let us check whether the dataflow computation has processed
     // all changes made to the inputs below, i.e. whether the outputs will show
     // up-to-date information.
@@ -63,151 +68,11 @@ struct ProjectId(u8); // 256 Elm projects should be enough for everyone.
 
 impl DataflowComputation {
     pub fn new(compiler: Compiler) -> Result<DataflowComputation, Error> {
-        let mut project_ids = HashMap::new();
-        let elm_io = RealElmIO::new(compiler)?;
-
         let alloc = timely::communication::allocator::thread::Thread::new();
         let mut worker =
             timely::worker::Worker::new(timely::WorkerConfig::default(), alloc);
-
-        let mut queried_buffers_input =
-            differential_dataflow::input::InputSession::new();
-        let mut queried_modules_input =
-            differential_dataflow::input::InputSession::new();
-        let mut buffers_input =
-            differential_dataflow::input::InputSession::new();
-        let mut filepath_events_input =
-            differential_dataflow::input::InputSession::new();
-
-        let (file_event_sender, file_event_receiver) = channel();
-        let mut file_watcher = notify::watcher(
-            file_event_sender,
-            core::time::Duration::from_millis(100),
-        )
-        .map_err(|err| {
-            log::mk_err!("failed creating file watcher: {:?}", err)
-        })?;
-
-        let (exports_output, dependents_output, probes) =
-            worker.dataflow(|scope| {
-                let queried_buffers =
-                    queried_buffers_input.to_collection(scope);
-                let queried_modules =
-                    queried_modules_input.to_collection(scope);
-                let buffers = buffers_input.to_collection(scope);
-                let filepath_events =
-                    filepath_events_input.to_collection(scope);
-
-                let buffer_projects =
-                    buffers.flat_map(
-                        move |(buffer, path): (Buffer, PathBuf)| {
-                            match project::root(&path) {
-                                Ok(root) => {
-                                    let next_project_id =
-                                        ProjectId(project_ids.len() as u8);
-                                    let project_id = project_ids
-                                        .entry(root.to_owned())
-                                        .or_insert(next_project_id);
-                                    Some((buffer, *project_id, root.to_owned()))
-                                }
-                                Err(err) => {
-                                    log::error!(
-                            "Can't find Elm project root for path {:?}: {:?}",
-                            path,
-                            err,
-                        );
-                                    None
-                                }
-                            }
-                        },
-                    );
-
-                let project_roots = buffer_projects
-                    .map(|(_, project, root)| (project, root))
-                    .distinct();
-
-                let (exports_by_project, paths_to_watch, dependent_modules) =
-                    dataflow_graph(elm_io, project_roots, filepath_events);
-
-                let watched_paths =
-                    paths_to_watch.inspect(move |(path, _, diff)| {
-                        match std::cmp::Ord::cmp(diff, &0) {
-                            std::cmp::Ordering::Equal => {}
-                            std::cmp::Ordering::Less => {
-                                if let Err(err) = file_watcher.unwatch(path) {
-                                    log::error!(
-                "failed while remove path {:?} to watch for changes: {:?}",
-                                path,
-                                err
-                            )
-                                }
-                            }
-                            std::cmp::Ordering::Greater => {
-                                if let Err(err) = file_watcher.watch(
-                                    path,
-                                    notify::RecursiveMode::Recursive,
-                                ) {
-                                    log::error!(
-                "failed while adding path {:?} to watch for changes: {:?}",
-                                path,
-                                err
-                            )
-                                }
-                            }
-                        }
-                    });
-
-                let queried_projects = buffer_projects
-                    .map(|(buffer, project, _)| (buffer, project))
-                    .semijoin(&queried_buffers)
-                    .map(|(_, project)| project);
-
-                let exports_output = exports_by_project
-                    .semijoin(&queried_projects)
-                    .map(|(_, x)| x)
-                    .semijoin(&queried_modules)
-                    .map(|(_, export)| export)
-                    .arrange_by_self();
-
-                let queried_paths: dataflow::Collection<(ProjectId, PathBuf)> =
-                    buffer_projects
-                        .map(|(buffer, project, _)| (buffer, project))
-                        .semijoin(&queried_buffers)
-                        .join_map(&buffers, |_buffer, project, path| {
-                            (*project, path.clone())
-                        });
-
-                let dependents_output: dataflow::Collection<PathBuf> =
-                    dependent_modules
-                        .semijoin(&queried_paths)
-                        .map(|(_, path)| path);
-
-                let dependents_output_arr = dependents_output.arrange_by_self();
-
-                (
-                    exports_output.trace,
-                    dependents_output_arr.trace,
-                    vec![
-                        watched_paths.probe(),
-                        exports_output.stream.probe(),
-                        dependents_output_arr.stream.probe(),
-                    ],
-                )
-            });
-
-        let computation = DataflowComputation {
-            worker,
-            probes,
-            queried_buffers_input,
-            queried_modules_input,
-            buffers_input,
-            filepath_events_input,
-            file_event_receiver,
-            exports_output,
-            dependents_output,
-        };
-
-        Ok(computation)
+        let graph = worker.dataflow(|scope| make_graph(scope, compiler))?;
+        Ok(DataflowComputation { worker, graph })
     }
 
     pub fn track_buffer(&mut self, buffer: Buffer, path: PathBuf) {
@@ -222,20 +87,23 @@ impl DataflowComputation {
                 path
             }
         };
-        self.buffers_input.insert((buffer, canonical_path));
+        self.graph.buffers_input.insert((buffer, canonical_path));
     }
 
     pub fn advance(&mut self) {
         let DataflowComputation {
             worker,
-            queried_buffers_input,
-            queried_modules_input,
-            buffers_input,
-            filepath_events_input,
-            probes,
-            file_event_receiver,
-            exports_output,
-            dependents_output,
+            graph:
+                DataflowGraph {
+                    queried_buffers_input,
+                    queried_modules_input,
+                    buffers_input,
+                    filepath_events_input,
+                    probes,
+                    file_event_receiver,
+                    exports_output,
+                    dependents_output,
+                },
         } = self;
         while let Ok(event) = file_event_receiver.try_recv() {
             let mut push_event = |path: PathBuf| {
@@ -287,15 +155,15 @@ impl DataflowComputation {
         buffer: Buffer,
         module: ModuleName,
     ) -> dataflow::Cursor<dataflow::SelfTrace<ExportedName>> {
-        self.queried_buffers_input.insert(buffer);
-        self.queried_modules_input.insert(module.clone());
+        self.graph.queried_buffers_input.insert(buffer);
+        self.graph.queried_modules_input.insert(module.clone());
         self.advance();
         // Remove the existing query as to not affect future queries.
         // This change will take effect the next time we `advance()`.
-        self.queried_buffers_input.remove(buffer);
-        self.queried_modules_input.remove(module);
+        self.graph.queried_buffers_input.remove(buffer);
+        self.graph.queried_modules_input.remove(module);
 
-        let (cursor, storage) = self.exports_output.cursor();
+        let (cursor, storage) = self.graph.exports_output.cursor();
         dataflow::Cursor { cursor, storage }
     }
 
@@ -303,14 +171,132 @@ impl DataflowComputation {
         &mut self,
         buffer: Buffer,
     ) -> dataflow::Cursor<dataflow::SelfTrace<PathBuf>> {
-        self.queried_buffers_input.insert(buffer);
+        self.graph.queried_buffers_input.insert(buffer);
         self.advance();
         // Remove the existing query as to not affect future queries.
         // This change will take effect the next time we `advance()`.
-        self.queried_buffers_input.remove(buffer);
-        let (cursor, storage) = self.dependents_output.cursor();
+        self.graph.queried_buffers_input.remove(buffer);
+        let (cursor, storage) = self.graph.dependents_output.cursor();
         dataflow::Cursor { cursor, storage }
     }
+}
+
+// TODO: clarify difference between this function and dataflow_graph.
+fn make_graph(
+    scope: &mut dataflow::Scope,
+    compiler: Compiler,
+) -> Result<DataflowGraph, Error> {
+    let mut project_ids = HashMap::new();
+    let elm_io = RealElmIO::new(compiler)?;
+    let (file_event_sender, file_event_receiver) = channel();
+    let mut file_watcher = notify::watcher(
+        file_event_sender,
+        core::time::Duration::from_millis(100),
+    )
+    .map_err(|err| log::mk_err!("failed creating file watcher: {:?}", err))?;
+
+    let (queried_buffers_input, queried_buffers) = scope.new_collection();
+    let (queried_modules_input, queried_modules) = scope.new_collection();
+    let (buffers_input, buffers) = scope.new_collection();
+    let (filepath_events_input, filepath_events) = scope.new_collection();
+
+    let buffer_projects =
+        buffers.flat_map(move |(buffer, path): (Buffer, PathBuf)| {
+            match project::root(&path) {
+                Ok(root) => {
+                    let next_project_id = ProjectId(project_ids.len() as u8);
+                    let project_id = project_ids
+                        .entry(root.to_owned())
+                        .or_insert(next_project_id);
+                    Some((buffer, *project_id, root.to_owned()))
+                }
+                Err(err) => {
+                    log::error!(
+                        "Can't find Elm project root for path {:?}: {:?}",
+                        path,
+                        err,
+                    );
+                    None
+                }
+            }
+        });
+
+    let project_roots = buffer_projects
+        .map(|(_, project, root)| (project, root))
+        .distinct();
+
+    let (exports_by_project, paths_to_watch, dependent_modules) =
+        dataflow_graph(elm_io, project_roots, filepath_events);
+
+    let watched_paths =
+        paths_to_watch.inspect(
+            move |(path, _, diff)| match std::cmp::Ord::cmp(diff, &0) {
+                std::cmp::Ordering::Equal => {}
+                std::cmp::Ordering::Less => {
+                    if let Err(err) = file_watcher.unwatch(path) {
+                        log::error!(
+                "failed while remove path {:?} to watch for changes: {:?}",
+                                path,
+                                err
+                            )
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    if let Err(err) = file_watcher
+                        .watch(path, notify::RecursiveMode::Recursive)
+                    {
+                        log::error!(
+                "failed while adding path {:?} to watch for changes: {:?}",
+                                path,
+                                err
+                            )
+                    }
+                }
+            },
+        );
+
+    let queried_projects = buffer_projects
+        .map(|(buffer, project, _)| (buffer, project))
+        .semijoin(&queried_buffers)
+        .map(|(_, project)| project);
+
+    let exports_output = exports_by_project
+        .semijoin(&queried_projects)
+        .map(|(_, x)| x)
+        .semijoin(&queried_modules)
+        .map(|(_, export)| export)
+        .arrange_by_self();
+
+    let queried_paths: dataflow::Collection<(ProjectId, PathBuf)> =
+        buffer_projects
+            .map(|(buffer, project, _)| (buffer, project))
+            .semijoin(&queried_buffers)
+            .join_map(&buffers, |_buffer, project, path| {
+                (*project, path.clone())
+            });
+
+    let dependents_output: dataflow::Collection<PathBuf> = dependent_modules
+        .semijoin(&queried_paths)
+        .map(|(_, path)| path);
+
+    let dependents_output_arr = dependents_output.arrange_by_self();
+
+    let probes = vec![
+        watched_paths.probe(),
+        exports_output.stream.probe(),
+        dependents_output_arr.stream.probe(),
+    ];
+    let graph = DataflowGraph {
+        probes,
+        queried_buffers_input,
+        queried_modules_input,
+        buffers_input,
+        filepath_events_input,
+        file_event_receiver,
+        exports_output: exports_output.trace,
+        dependents_output: dependents_output_arr.trace,
+    };
+    Ok(graph)
 }
 
 #[allow(clippy::type_complexity)]
