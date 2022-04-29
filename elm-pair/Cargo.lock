@@ -5,7 +5,8 @@ version = 3
 [[package]]
 name = "abomonation"
 version = "0.7.3"
-source = "git+http://github.com/jwoudenberg/abomonation?branch=master#c370fca11c0cb08fdbc8451241e31765b53ad457"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56e72913c99b1f927aa7bd59a41518fdd9995f63ffc8760f211609e0241c4fb2"
 
 [[package]]
 name = "abomonation_derive"
@@ -44,6 +45,15 @@ name = "bimap"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0455254eb5c6964c4545d8bac815e1a1be4f3afe0ae695ea539c12d728d44b"
+
+[[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bitflags"
@@ -139,8 +149,6 @@ checksum = "24e1f30f0312ac83726c1197abeacd91c9557f8a623e904a009ae6bc529ae8d8"
 name = "elm-pair"
 version = "18.0.0"
 dependencies = [
- "abomonation",
- "abomonation_derive",
  "base64",
  "bimap",
  "byteorder",
@@ -716,6 +724,7 @@ checksum = "3435bab8a9b9909b5bc907cc562b3659c62a05c1abbc1268e914b024b66dff60"
 dependencies = [
  "abomonation",
  "abomonation_derive",
+ "bincode",
  "crossbeam-channel",
  "getopts",
  "serde",

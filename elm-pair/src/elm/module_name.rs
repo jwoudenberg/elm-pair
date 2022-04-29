@@ -1,10 +1,12 @@
 use crate::lib::intersperse::Intersperse;
 use crate::lib::log;
 use crate::lib::log::Error;
-use abomonation_derive::Abomonation;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Abomonation, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub struct ModuleName(pub String);
 
 impl ModuleName {

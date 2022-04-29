@@ -7,13 +7,13 @@ use crate::lib::dataflow;
 use crate::lib::log;
 use crate::lib::log::Error;
 use crate::lib::source_code::Buffer;
-use abomonation_derive::Abomonation;
 use differential_dataflow::operators::arrange::ArrangeBySelf;
 use differential_dataflow::operators::Join;
 use differential_dataflow::operators::Reduce;
 use differential_dataflow::operators::Threshold;
 use differential_dataflow::trace::TraceReader;
 use notify::Watcher;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
@@ -48,7 +48,16 @@ pub struct DataflowComputation {
 }
 
 #[derive(
-    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
 )]
 struct ProjectId(u8); // 256 Elm projects should be enough for everyone.
 

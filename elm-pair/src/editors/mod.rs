@@ -1,7 +1,7 @@
 use crate::lib::source_code::Edit;
 use crate::lib::source_code::{RefactorAllowed, SourceFileSnapshot};
 use crate::Error;
-use abomonation_derive::Abomonation;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod neovim;
@@ -14,7 +14,16 @@ pub enum Kind {
 }
 
 #[derive(
-    Abomonation, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
 )]
 pub struct Id(u32);
 

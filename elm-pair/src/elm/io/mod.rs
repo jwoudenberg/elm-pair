@@ -7,7 +7,7 @@ use crate::elm::queries::exports;
 use crate::elm::queries::imports;
 use crate::lib::dir_walker::DirWalker;
 use crate::lib::log::Error;
-use abomonation_derive::Abomonation;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -30,7 +30,9 @@ pub trait ElmIO: Clone {
     fn find_files_recursively(&self, path: &Path) -> Self::FilesInDir;
 }
 
-#[derive(Abomonation, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum ExportedName {
     Value {
         name: String,
