@@ -8,15 +8,8 @@ Using Elm-pair for non-commercial projects is free! You can find the full text o
 If you'd like to use Elm-pair for commercial projects as well then you need to buy a commercial license. A commercial license is personal, and grants you the right to use Elm-pair for commercial projects for a year. The license covers all version of Elm-pair, including any new versions that will be released in the licensing period, and allows you to use Elm-pair for commercial work on as many machines as you like.
 
 ---
-**1-year commercial license for Elm-pair**
 
-[Full license terms][commercial-license]
-
-Price: € 40
-
-*We refund orders up to 30 days after the purchase date. To request a refund, please send an email to [refunds@elm-pair.com](mailto:refunds@jasperwoudenberg.com) and send us the order reference number.*
-
-{{purchase()}}
+Purchase of the Elm-pair commercial license is temporarily blocked while Elm-pair licensing is being reconsidered.
 
 ---
 
