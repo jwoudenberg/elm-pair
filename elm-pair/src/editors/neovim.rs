@@ -146,7 +146,6 @@ where
                 skip_objects(&mut self.read, 1)?; // Skip empty argument list.
                 self.refactor_allowed = RefactorAllowed::Yes;
             }
-            b"entered_key" => self.parse_entered_key(on_event)?,
             method => {
                 return Err(log::mk_err!(
                     "received neovim message with unknown name: {:?}",
@@ -199,24 +198,6 @@ where
         );
         self.paths_for_new_buffers.insert(buf, path);
         self.nvim_buf_attach(buf)
-    }
-
-    fn parse_entered_key<F>(&mut self, on_event: &mut F) -> Result<(), Error>
-    where
-        F: FnMut(editors::Event) -> Result<(), crate::Error>,
-    {
-        read_tuple!(
-            &mut self.read,
-            key = {
-                let len = rmp::decode::read_str_len(&mut self.read)?;
-                let mut buffer = vec![0; len as usize];
-                self.read.read_exact(&mut buffer).map_err(|err| {
-                    log::mk_err!("failed reading msgpack-rpc string: {:?}", err)
-                })?;
-                from_utf8(&buffer)?.to_owned()
-            }
-        );
-        on_event(editors::Event::EnteredLicenseKey { key })
     }
 
     fn parse_buf_lines_event<F>(

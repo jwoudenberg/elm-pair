@@ -144,12 +144,6 @@ impl EditorListenerLoop {
                 )?;
                 self.maybe_request_compilation(code)
             }
-            editors::Event::EnteredLicenseKey { key } => {
-                log::info!("license key entered");
-                self.analysis_sender
-                    .send(analysis_thread::Msg::EnteredLicenseKey(key))?;
-                Ok(())
-            }
         })?;
         self.analysis_sender
             .send(analysis_thread::Msg::EditorDisconnected(editor_id))?;

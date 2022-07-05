@@ -4,8 +4,6 @@ Elm-pair helps you write Elm code. You tell Elm-pair about the change you want t
 
 You talk to Elm-pair by making a change in your code. If Elm-pair understands your intent then it will follow up with its own change.
 
-Elm-pair is free for non-commercial use. If you'd like to use Elm-pair for commercial projects you need to buy a license. Find out more [here][get-license].
-
 ### Renaming variables, types, and constructors
 
 Rename a variable and Elm-pair will propagate the new name wherever the variable is used. Elm-pair will propagate type and constructor names in the same way.
@@ -37,7 +35,6 @@ This project is made possible by a couple of others.
 - [differential-dataflow][] provides a way to do incremental computation, allowing Elm-pair to do the bare minimum of work when a file changes.
 
 [differential-dataflow]: https://crates.io/crates/differential-dataflow
-[get-license]: https://elm-pair.com/commercial-license
 [home-manager]: https://github.com/nix-community/home-manager
 [imports-gif]: https://elm-pair.com/imports.gif
 [neovim]: https://neovim.io/

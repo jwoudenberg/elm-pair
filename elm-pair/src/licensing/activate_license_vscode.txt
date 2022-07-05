@@ -1,8 +1,0 @@
-If you've already bought a commercial license you can activate it by following
-these steps:
-
-1. Get your license key from the email you received after buying your commercial
-   license.
-2. Press Ctrl+Shift+P to open the Visual Studio Code command palette.
-3. Search for the 'Activate Elm-pair License' command and press enter.
-4. Enter your license key into the prompt that appears and confirm.

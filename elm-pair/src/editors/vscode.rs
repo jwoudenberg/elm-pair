@@ -16,7 +16,6 @@ use tree_sitter::{InputEdit, Point};
 
 const MSG_NEW_FILE: u8 = 0;
 const MSG_FILE_CHANGED: u8 = 1;
-const MSG_REGISTERED_KEY: u8 = 2;
 
 const CMD_REFACTOR: u8 = 0;
 const CMD_OPEN_FILES: u8 = 1;
@@ -100,12 +99,6 @@ impl<R: Read, W: 'static + Write + Send> editors::Editor for VsCode<R, W> {
                             "vscode MSG_FILE_CHANGED for unknown buffer"
                         ))
                     }
-                }
-                MSG_REGISTERED_KEY => {
-                    let key_len = bytes::read_u32(&mut self.read)?;
-                    let key =
-                        bytes::read_string(&mut self.read, key_len as usize)?;
-                    Ok(editors::Event::EnteredLicenseKey { key })
                 }
                 other => Err(log::mk_err!("unknown vscode msg type {}", other)),
             }?;

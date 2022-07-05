@@ -1,9 +1,0 @@
-If you've already bought a commercial license you can activate it by following
-these steps:
-
-1. Get your license key from the email you received after buying your commercial
-   license.
-1. In normal code, type : (colon) to enter command mode.
-2. Type the following into the command prompt:
-      ElmPairActivateLicense your-license-key-here
-3. Press enter.

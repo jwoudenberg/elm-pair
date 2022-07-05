@@ -18,8 +18,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:elm",
-    "onCommand:elmPair.registerKey"
+    "onLanguage:elm"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -35,11 +34,6 @@
         ]
       }
     ],
-    "commands": [
-      {
-        "command": "elmPair.registerKey",
-        "title": "Activate Elm-pair License"
-      }
-    ]
+    "commands": []
   }
 }

@@ -3,8 +3,6 @@ title = "Installing Elm-pair"
 template = "page.html"
 +++
 
-Elm-pair is free for non-commercial usage. If you'd like to use Elm-pair in commercial projects you can [buy a license](/commercial-license).
-
 ### Visual Studio Code
 
 Elm-pair is available as an extension for Visual Studio Code. You can [install Elm-pair from the Visual Studio Code marketplace](/install/vscode-marketplace).
