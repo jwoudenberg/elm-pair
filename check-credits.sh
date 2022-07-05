@@ -20,7 +20,7 @@ CREDITED_DEPS=$(
   grep --extended-regexp --only-matching "^$PACKAGE_PATTERN:" src/credits.txt \
     | sort
 )
-difftastic <(echo "$USED_DEPS") <(echo "$CREDITED_DEPS")
+difft <(echo "$USED_DEPS") <(echo "$CREDITED_DEPS")
 
 if [ "$USED_DEPS" != "$CREDITED_DEPS" ]; then
   exit 1;

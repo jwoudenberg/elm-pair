@@ -1,5 +1,9 @@
 # Changelog
 
+## 2022-07-05: Release 19
+
+- Return to using an open source license.
+
 ## 2022-04-28: Release 18
 
 - Introduce license keys commercial licenses. If using the free license you'll see notification informing you of the limitations of the free license when starting elm-pair.

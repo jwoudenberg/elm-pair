@@ -141,7 +141,7 @@ checksum = "24e1f30f0312ac83726c1197abeacd91c9557f8a623e904a009ae6bc529ae8d8"
 
 [[package]]
 name = "elm-pair"
-version = "18.0.0"
+version = "19.0.0"
 dependencies = [
  "base64",
  "byteorder",
